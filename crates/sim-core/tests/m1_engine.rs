@@ -334,3 +334,40 @@ duration = { dist = "exponential", mean = "8m" }
     assert!((wq - 32.0).abs() < 3.0, "Wq = {wq}");
     assert!((w - 40.0).abs() < 3.0, "W = {w}");
 }
+
+#[test]
+fn skeleton_round_trips_through_toml_and_runs() {
+    for fixture in ["v1-single-task.bpmn", "v4-xor.bpmn", "v5-and.bpmn"] {
+        let project = load(fixture);
+        let sk = Scenario::skeleton(&project, None);
+        let text = sk.to_toml().unwrap();
+        let back = Scenario::from_toml(&text).unwrap_or_else(|e| panic!("{fixture}: {e}\n{text}"));
+        let bound = back
+            .bind(&project)
+            .unwrap_or_else(|e| panic!("{fixture}: {e}\n{text}"));
+        let r = run_replications(&bound);
+        assert_eq!(r[0].cases_completed, 100, "{fixture}");
+    }
+}
+
+#[test]
+fn exports_have_one_row_per_record() {
+    let project = load("v5-and.bpmn");
+    let r = run("v5-and.bpmn", V5);
+    let log = sim_core::export::event_log_csv(&project, &r);
+    assert_eq!(log.lines().count(), 1 + 100);
+    assert!(log.lines().nth(1).unwrap().contains("v5-and.bpmn#Task_"));
+    let sum = sim_core::export::summary_csv(&project, &r);
+    assert!(sum.contains("resource,TeamA,TeamA,utilisation"));
+}
+
+#[test]
+fn progress_is_reported_per_replication() {
+    let project = load("v1-single-task.bpmn");
+    let s = Scenario::from_toml(&v1("60m", 5).replace("seed = 1", "seed = 1\nreplications = 3"))
+        .unwrap();
+    let bound = s.bind(&project).unwrap();
+    let mut seen = Vec::new();
+    run_replications_with(&bound, |d, t| seen.push((d, t)));
+    assert_eq!(seen, vec![(1, 3), (2, 3), (3, 3)]);
+}

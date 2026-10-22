@@ -4,6 +4,7 @@
 pub mod dist;
 pub mod engine;
 pub mod error;
+pub mod export;
 pub mod model;
 pub mod parser;
 pub mod project;
@@ -11,7 +12,7 @@ pub mod scenario;
 pub mod stats;
 pub mod validate;
 
-pub use engine::{Engine, run_replications};
+pub use engine::{Engine, run_replications, run_replications_with};
 pub use error::ParseError;
 pub use model::*;
 pub use project::Project;

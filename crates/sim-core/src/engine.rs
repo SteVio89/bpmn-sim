@@ -94,8 +94,21 @@ pub struct Engine<'a> {
 
 /// Run all replications; replication `i` uses seed `seed + i`.
 pub fn run_replications(m: &BoundModel) -> Vec<ReplicationResult> {
-    (0..u64::from(m.sim.replications))
-        .map(|i| Engine::new(m, m.sim.seed.wrapping_add(i)).run())
+    run_replications_with(m, |_, _| {})
+}
+
+/// Like `run_replications`; `progress(done, total)` is called after each replication.
+pub fn run_replications_with(
+    m: &BoundModel,
+    mut progress: impl FnMut(u32, u32),
+) -> Vec<ReplicationResult> {
+    let total = m.sim.replications;
+    (0..total)
+        .map(|i| {
+            let r = Engine::new(m, m.sim.seed.wrapping_add(u64::from(i))).run();
+            progress(i + 1, total);
+            r
+        })
         .collect()
 }
 

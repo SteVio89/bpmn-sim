@@ -1,0 +1,14 @@
+[package]
+name = "sim-gui"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+anyhow = "1.0.104"
+eframe = "0.37.0"
+egui = "0.37.0"
+egui_plot = "0.38.0"
+rfd = "0.17.2"
+serde_json = "1.0.154"
+sim-core = { version = "0.1.0", path = "../sim-core" }
+toml = "1.1.8"

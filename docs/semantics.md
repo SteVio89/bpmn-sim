@@ -32,3 +32,11 @@ Kept up to date with the implementation (spec §5, §11). Each entry notes the m
 - **Stuck report.** Tokens alive when the queue runs empty are listed with case, process, element and state (`working`, `queued for resource 'X'`, `waiting at AND join`).
 - **Percentiles** use linear interpolation between closest ranks (R type 7); standard deviation is the sample standard deviation.
 - **Scenario strictness.** Unknown keys are errors (typos). Sections of later milestones (`calendars`, `events`, `boundary`, `messages`, `horizon`, resource `calendar`, `model.files`) are accepted and reported as ignored warnings. Elements the engine cannot run yet (messages, timers, subprocesses, call activities, boundary events, OR/event gateways, non-none end events) make binding fail instead of being silently skipped.
+
+## M2: GUI and export
+
+- **GUI scope.** `sim-gui` only calls `sim-core` (bind, run, export) and displays results. A run executes on a worker thread; the scenario is bound on that thread and bind errors come back as a message. Progress is per finished replication.
+- **Opening files.** Opening one file loads only that file (automatic discovery of referenced files comes with M4); opening a folder loads every `*.bpmn` in it. Opening a model while the scenario is still empty generates a skeleton.
+- **Skeleton.** One `[activities]` entry per task (10 min fixed), one `[gateways]` entry per XOR split (equal probabilities), one resource pool (count 1) per lane / pool name used by a task, and one arrival every hour triggering all none/timer start events of the main file (default: first file). Keys are qualified ids.
+- **Scenario files** are written back with durations in the largest exact unit (`7200` s becomes `"2h"`). Comments in a hand-written file are not preserved.
+- **Exports.** JSON is the full result list. The summary CSV is a tidy table (replication, scope, id, name, metric, value); the event log CSV has one row per finished task. All times in exports are seconds.

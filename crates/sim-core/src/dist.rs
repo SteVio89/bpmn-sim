@@ -2,7 +2,7 @@
 
 use rand::Rng;
 use rand_distr::{Distribution, Exp, LogNormal, Normal, Triangular, Uniform};
-use serde::{Deserialize, Deserializer};
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 /// A duration in seconds. Deserialises from `"30m"` (units s, m, h, d, w) or a plain number of seconds.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -36,6 +36,28 @@ pub fn parse_duration(text: &str) -> Result<f64, String> {
     Ok(value * factor)
 }
 
+/// Written back in the largest unit that represents the value exactly ("90m" -> "90m", 7200 -> "2h").
+impl Serialize for Seconds {
+    fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        s.serialize_str(&format_duration(self.0))
+    }
+}
+
+pub fn format_duration(seconds: f64) -> String {
+    for (unit, factor) in [
+        ("w", 604_800.0),
+        ("d", 86_400.0),
+        ("h", 3600.0),
+        ("m", 60.0),
+    ] {
+        let q = seconds / factor;
+        if seconds > 0.0 && q.fract() == 0.0 {
+            return format!("{q}{unit}");
+        }
+    }
+    format!("{seconds}s")
+}
+
 impl<'de> Deserialize<'de> for Seconds {
     fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
         #[derive(Deserialize)]
@@ -56,7 +78,7 @@ impl<'de> Deserialize<'de> for Seconds {
 }
 
 /// Distribution as written in a scenario file.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "dist", rename_all = "lowercase", deny_unknown_fields)]
 pub enum DistSpec {
     Fixed {

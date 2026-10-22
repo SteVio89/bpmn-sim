@@ -5,7 +5,7 @@
 
 use std::collections::BTreeMap;
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use crate::dist::{Dist, DistSpec};
@@ -22,10 +22,10 @@ pub enum ScenarioError {
     Many(Vec<String>),
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Scenario {
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model: Option<ModelSection>,
     #[serde(default)]
     pub simulation: SimulationSection,
@@ -38,31 +38,35 @@ pub struct Scenario {
     #[serde(default)]
     pub gateways: BTreeMap<String, GatewaySpec>,
     // Sections of later milestones: accepted, reported as "not supported yet".
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub calendars: Option<toml::Value>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub events: Option<toml::Value>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub boundary: Option<toml::Value>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub messages: Option<toml::Value>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ModelSection {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub main: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub files: Option<Vec<String>>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SimulationSection {
     #[serde(default = "default_seed")]
     pub seed: u64,
     #[serde(default = "default_replications")]
     pub replications: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cases: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub horizon: Option<String>,
     #[serde(default)]
     pub warm_up_cases: u64,
@@ -93,7 +97,7 @@ impl Default for SimulationSection {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum TimeUnit {
     Seconds,
@@ -121,36 +125,41 @@ impl TimeUnit {
     }
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ArrivalSpec {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub label: Option<String>,
     pub inter_arrival: DistSpec,
     pub triggers: Vec<String>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ResourceSpec {
     pub count: u32,
     #[serde(default)]
     pub cost_per_hour: f64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub calendar: Option<String>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ActivitySpec {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub label: Option<String>,
     pub duration: DistSpec,
     #[serde(default)]
     pub fixed_cost: f64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub resource: Option<String>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct GatewaySpec {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub label: Option<String>,
     pub probabilities: BTreeMap<String, f64>,
 }
@@ -511,5 +520,97 @@ fn unsupported(n: &FlowNode) -> Option<String> {
             todo("inclusive/event-based gateway", "M6")
         }
         NodeKind::Unsupported(k) => Some(format!("'{k}' is not supported")),
+    }
+}
+
+impl Scenario {
+    /// A complete starting scenario for a loaded model: every task, XOR split and resource pool
+    /// gets an entry with placeholder values, using qualified ids (spec §4).
+    /// Arrivals trigger every none/timer start event of `main` (default: first file).
+    pub fn skeleton(project: &Project, main: Option<&str>) -> Scenario {
+        let main = main
+            .map(str::to_string)
+            .or_else(|| project.files.keys().next().cloned());
+        let triggers: Vec<String> = project
+            .nodes()
+            .filter(|n| {
+                n.kind == NodeKind::StartEvent
+                    && Some(&n.id.file) == main.as_ref()
+                    && n.event_defs
+                        .iter()
+                        .all(|d| matches!(d, EventDef::None | EventDef::Timer))
+            })
+            .map(|n| n.id.to_string())
+            .collect();
+
+        let fixed = |secs: f64| DistSpec::Fixed {
+            value: crate::dist::Seconds(secs),
+        };
+        let mut resources = BTreeMap::new();
+        let mut activities = BTreeMap::new();
+        let mut gateways = BTreeMap::new();
+        for n in project.nodes() {
+            match &n.kind {
+                NodeKind::Task(_) => {
+                    let pool = n
+                        .lane
+                        .clone()
+                        .or_else(|| project.participant_name(&n.process).map(str::to_string));
+                    if let Some(p) = pool {
+                        resources.entry(p).or_insert(ResourceSpec {
+                            count: 1,
+                            cost_per_hour: 0.0,
+                            calendar: None,
+                        });
+                    }
+                    activities.insert(
+                        n.id.to_string(),
+                        ActivitySpec {
+                            label: n.name.clone(),
+                            duration: fixed(600.0),
+                            fixed_cost: 0.0,
+                            resource: None,
+                        },
+                    );
+                }
+                NodeKind::ExclusiveGateway if n.outgoing.len() > 1 => {
+                    let p = 1.0 / n.outgoing.len() as f64;
+                    gateways.insert(
+                        n.id.to_string(),
+                        GatewaySpec {
+                            label: n.name.clone(),
+                            probabilities: n.outgoing.iter().map(|f| (f.id.clone(), p)).collect(),
+                        },
+                    );
+                }
+                _ => {}
+            }
+        }
+        Scenario {
+            model: main.map(|m| ModelSection {
+                main: Some(m),
+                files: None,
+            }),
+            simulation: SimulationSection {
+                cases: Some(100),
+                ..SimulationSection::default()
+            },
+            arrivals: vec![ArrivalSpec {
+                label: Some("Arrivals".into()),
+                inter_arrival: fixed(3600.0),
+                triggers,
+            }],
+            resources,
+            activities,
+            gateways,
+            calendars: None,
+            events: None,
+            boundary: None,
+            messages: None,
+        }
+    }
+
+    pub fn to_toml(&self) -> Result<String, ScenarioError> {
+        toml::to_string_pretty(self).map_err(|e| ScenarioError::Toml(e.to_string()))
     }
 }
