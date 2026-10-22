@@ -10,7 +10,7 @@ use rand::{RngExt, SeedableRng};
 use rand_chacha::ChaCha8Rng;
 
 use crate::model::*;
-use crate::scenario::BoundModel;
+use crate::scenario::{BoundModel, SignalScope};
 use crate::stats::*;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -31,6 +31,11 @@ impl Ord for Time {
 enum Ev {
     Arrival(usize),
     TaskDone(usize),
+    /// A black box replies: deliver message flow `flow` (index into `Engine::msg_flows`) in `case`.
+    Reply {
+        case: usize,
+        flow: usize,
+    },
 }
 
 struct Case {
@@ -90,6 +95,15 @@ pub struct Engine<'a> {
     pools: BTreeMap<String, Pool>,
     records: Vec<ActivityRecord>,
     end_events: BTreeMap<QId, u64>,
+    msg_flows: Vec<&'a MessageFlow>,
+    /// (case, receiving element) -> waiting (instance, token), FIFO.
+    waiting_msg: BTreeMap<(usize, QId), VecDeque<(usize, u64)>>,
+    /// signal name -> waiting (case, instance, token).
+    waiting_sig: BTreeMap<String, BTreeSet<(usize, usize, u64)>>,
+    /// (case, receiving element) -> buffered message count.
+    buffer: BTreeMap<(usize, QId), usize>,
+    messages: Vec<MessageRecord>,
+    signals: Vec<SignalRecord>,
 }
 
 /// Run all replications; replication `i` uses seed `seed + i`.
@@ -134,6 +148,17 @@ impl<'a> Engine<'a> {
                 .collect(),
             records: Vec::new(),
             end_events: BTreeMap::new(),
+            msg_flows: m
+                .project
+                .files
+                .values()
+                .flat_map(|f| f.message_flows.values())
+                .collect(),
+            waiting_msg: BTreeMap::new(),
+            waiting_sig: BTreeMap::new(),
+            buffer: BTreeMap::new(),
+            messages: Vec::new(),
+            signals: Vec::new(),
         }
     }
 
@@ -152,6 +177,7 @@ impl<'a> Engine<'a> {
             match ev {
                 Ev::Arrival(g) => self.on_arrival(g),
                 Ev::TaskDone(run) => self.on_task_done(run),
+                Ev::Reply { case, flow } => self.deliver(case, flow),
             }
         }
         self.finish()
@@ -183,26 +209,40 @@ impl<'a> Engine<'a> {
                 None => per_process.push((node.process.clone(), vec![t.clone()])),
             }
         }
-        for (process, starts) in per_process {
-            let inst = self.instances.len();
-            self.instances.push(Instance {
-                case,
-                process,
-                tokens: BTreeMap::new(),
-                joins: BTreeMap::new(),
-                done: false,
-            });
-            self.cases[case].open_instances += 1;
-            let mut work = Vec::new();
-            for s in starts.into_iter().rev() {
-                let tok = self.new_token(inst, &s, "starting");
-                work.push((tok, s, None));
-            }
-            self.process(inst, work);
+        // Create every instance before running any of them: a case must not look complete
+        // while a later pool's instance has not been created yet. Instances then run in trigger order.
+        let created: Vec<(usize, Vec<QId>)> = per_process
+            .into_iter()
+            .map(|(process, starts)| (self.create_instance(case, process), starts))
+            .collect();
+        for (inst, starts) in created {
+            self.start_instance(inst, starts);
         }
 
         let gap = self.m.arrivals[g].inter_arrival.sample(&mut self.rng);
         self.schedule(self.now + gap, Ev::Arrival(g));
+    }
+
+    fn create_instance(&mut self, case: usize, process: QId) -> usize {
+        let inst = self.instances.len();
+        self.instances.push(Instance {
+            case,
+            process,
+            tokens: BTreeMap::new(),
+            joins: BTreeMap::new(),
+            done: false,
+        });
+        self.cases[case].open_instances += 1;
+        inst
+    }
+
+    fn start_instance(&mut self, inst: usize, starts: Vec<QId>) {
+        let mut work = Vec::new();
+        for s in starts.into_iter().rev() {
+            let tok = self.new_token(inst, &s, "starting");
+            work.push((tok, s, None));
+        }
+        self.process(inst, work);
     }
 
     fn new_token(&mut self, inst: usize, node: &QId, state: &str) -> u64 {
@@ -234,10 +274,34 @@ impl<'a> Engine<'a> {
             };
             match &node.kind {
                 NodeKind::EndEvent => {
+                    self.throw(inst, node);
                     self.instances[inst].tokens.remove(&tok);
                     *self.end_events.entry(node_id.clone()).or_default() += 1;
                 }
+                NodeKind::Task(TaskKind::Receive) => self.wait_message(inst, tok, node, &mut work),
                 NodeKind::Task(_) => self.request_task(inst, tok, node),
+                NodeKind::IntermediateCatchEvent => match node.event_defs.first() {
+                    Some(EventDef::Signal(name)) => {
+                        let name = name.clone().unwrap_or_default();
+                        let case = self.instances[inst].case;
+                        self.set_token(
+                            inst,
+                            tok,
+                            &node_id,
+                            &format!("waiting for signal '{name}'"),
+                        );
+                        self.waiting_sig
+                            .entry(name)
+                            .or_default()
+                            .insert((case, inst, tok));
+                    }
+                    _ => self.wait_message(inst, tok, node, &mut work),
+                },
+                NodeKind::IntermediateThrowEvent => {
+                    self.set_token(inst, tok, &node_id, "passing");
+                    self.throw(inst, node);
+                    self.route(inst, tok, node, &mut work);
+                }
                 NodeKind::ParallelGateway if node.incoming.len() > 1 => {
                     self.and_join(inst, tok, node, via, &mut work)
                 }
@@ -423,7 +487,155 @@ impl<'a> Engine<'a> {
         let Some(node) = m.project.node(&node_id) else {
             return;
         };
+        if node.kind == NodeKind::Task(TaskKind::Send) {
+            self.throw(inst, node);
+        }
         let mut work = Vec::new();
+        self.route(inst, tok, node, &mut work);
+        self.process(inst, work);
+    }
+
+    // ------------------------------------------------------------ messages and signals
+
+    /// A throwing element sends its messages and signals (take no time, spec §5.3).
+    fn throw(&mut self, inst: usize, node: &FlowNode) {
+        let case = self.instances[inst].case;
+        let is_message = node.kind == NodeKind::Task(TaskKind::Send)
+            || node
+                .event_defs
+                .iter()
+                .any(|d| matches!(d, EventDef::Message(_)));
+        if is_message {
+            let flows: Vec<usize> = self
+                .msg_flows
+                .iter()
+                .enumerate()
+                .filter(|(_, f)| f.source == node.id)
+                .map(|(i, _)| i)
+                .collect();
+            for f in flows {
+                self.deliver(case, f);
+            }
+        }
+        for d in &node.event_defs {
+            if let EventDef::Signal(name) = d {
+                self.broadcast(case, name.clone().unwrap_or_default());
+            }
+        }
+    }
+
+    /// Deliver message flow `flow` within `case` (spec §5.3).
+    fn deliver(&mut self, case: usize, flow: usize) {
+        let f = self.msg_flows[flow];
+        let key = (case, f.target.clone());
+        let mut outcome = MessageOutcome::Lost;
+        if let Some(target) = self.m.project.node(&f.target) {
+            let waiting = self.waiting_msg.get_mut(&key).and_then(VecDeque::pop_front);
+            if let Some((inst, tok)) = waiting {
+                self.log_message(case, f, MessageOutcome::Delivered);
+                self.resume(inst, tok, target);
+                return;
+            } else if target.kind == NodeKind::StartEvent {
+                if self.cases[case].completion.is_none() {
+                    self.log_message(case, f, MessageOutcome::StartedInstance);
+                    let inst = self.create_instance(case, target.process.clone());
+                    self.start_instance(inst, vec![target.id.clone()]);
+                    return;
+                }
+            } else if self.m.buffer_unconsumed {
+                outcome = MessageOutcome::Buffered;
+                *self.buffer.entry(key).or_default() += 1;
+            }
+        } else {
+            // Black-box pool: only logged, optionally answered after a delay.
+            outcome = MessageOutcome::BlackBox;
+            if let Some(delay) = self.m.black_box_reply.get(&f.target) {
+                let delay = delay.sample(&mut self.rng);
+                let replies: Vec<usize> = self
+                    .msg_flows
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, r)| r.source == f.target)
+                    .map(|(i, _)| i)
+                    .collect();
+                for r in replies {
+                    self.schedule(self.now + delay, Ev::Reply { case, flow: r });
+                }
+            }
+        }
+        self.log_message(case, f, outcome);
+    }
+
+    fn log_message(&mut self, case: usize, f: &MessageFlow, outcome: MessageOutcome) {
+        self.messages.push(MessageRecord {
+            time: self.now,
+            case: case as u64,
+            flow: f.id.clone(),
+            source: f.source.clone(),
+            target: f.target.clone(),
+            outcome,
+        });
+    }
+
+    /// A token arrives at a receive task / message catch event: take a buffered message or wait.
+    fn wait_message(&mut self, inst: usize, tok: u64, node: &FlowNode, work: &mut Vec<Work>) {
+        let case = self.instances[inst].case;
+        let key = (case, node.id.clone());
+        match self.buffer.get_mut(&key) {
+            Some(n) if *n > 0 => {
+                *n -= 1;
+                self.set_token(inst, tok, &node.id, "passing");
+                self.route(inst, tok, node, work);
+            }
+            _ => {
+                self.set_token(inst, tok, &node.id, "waiting for message");
+                self.waiting_msg
+                    .entry(key)
+                    .or_default()
+                    .push_back((inst, tok));
+            }
+        }
+    }
+
+    /// Signals are not stored: only tokens waiting right now receive them (spec §5.4).
+    fn broadcast(&mut self, case: usize, name: String) {
+        let global = self.m.signal_scope == SignalScope::Global;
+        let woken: Vec<(usize, usize, u64)> = self
+            .waiting_sig
+            .get(&name)
+            .map(|set| {
+                set.iter()
+                    .filter(|(c, _, _)| global || *c == case)
+                    .copied()
+                    .collect()
+            })
+            .unwrap_or_default();
+        if let Some(set) = self.waiting_sig.get_mut(&name) {
+            for w in &woken {
+                set.remove(w);
+            }
+        }
+        self.signals.push(SignalRecord {
+            time: self.now,
+            case: case as u64,
+            name,
+            receivers: woken.len(),
+        });
+        for (_, inst, tok) in woken {
+            let node = self.instances[inst]
+                .tokens
+                .get(&tok)
+                .map(|t| t.node.clone());
+            if let Some(node) = node.and_then(|n| self.m.project.node(&n)) {
+                self.resume(inst, tok, node);
+            }
+        }
+    }
+
+    /// Continue a token that was waiting at `node`.
+    fn resume(&mut self, inst: usize, tok: u64, node: &FlowNode) {
+        let mut work = Vec::new();
+        self.set_token(inst, tok, &node.id, "passing");
         self.route(inst, tok, node, &mut work);
         self.process(inst, work);
     }
@@ -549,6 +761,23 @@ impl<'a> Engine<'a> {
             resources,
             end_events: self.end_events,
             stuck,
+            messages_lost: self
+                .messages
+                .iter()
+                .filter(|x| x.outcome == MessageOutcome::Lost)
+                .count() as u64,
+            undelivered: self
+                .buffer
+                .iter()
+                .filter(|(_, n)| **n > 0)
+                .map(|((case, target), n)| UndeliveredMessage {
+                    case: *case as u64,
+                    target: target.clone(),
+                    count: *n,
+                })
+                .collect(),
+            messages: self.messages,
+            signals: self.signals,
             cases,
             records: self.records,
         }

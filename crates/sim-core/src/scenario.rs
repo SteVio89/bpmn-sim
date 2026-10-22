@@ -45,7 +45,40 @@ pub struct Scenario {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub boundary: Option<toml::Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub messages: Option<toml::Value>,
+    pub messages: Option<MessagesSection>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MessagesSection {
+    /// Keep messages that arrive before the receiver waits (otherwise they are lost, spec §5.3).
+    #[serde(default = "default_true")]
+    pub buffer_unconsumed: bool,
+    /// Black-box participant -> delay until it replies along its outgoing message flows.
+    #[serde(default)]
+    pub black_box_reply: BTreeMap<String, DistSpec>,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+impl Default for MessagesSection {
+    fn default() -> Self {
+        Self {
+            buffer_unconsumed: true,
+            black_box_reply: BTreeMap::new(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum SignalScope {
+    /// Signals reach only instances of the same case (default, spec §5.4).
+    #[default]
+    Case,
+    Global,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -72,6 +105,12 @@ pub struct SimulationSection {
     pub warm_up_cases: u64,
     #[serde(default = "default_time_unit")]
     pub time_unit: TimeUnit,
+    #[serde(default, skip_serializing_if = "is_default_scope")]
+    pub signal_scope: SignalScope,
+}
+
+fn is_default_scope(s: &SignalScope) -> bool {
+    *s == SignalScope::Case
 }
 
 fn default_seed() -> u64 {
@@ -93,6 +132,7 @@ impl Default for SimulationSection {
             horizon: None,
             warm_up_cases: 0,
             time_unit: default_time_unit(),
+            signal_scope: SignalScope::Case,
         }
     }
 }
@@ -213,6 +253,10 @@ pub struct BoundModel<'p> {
     pub activities: BTreeMap<QId, ActivityCfg>,
     /// XOR split -> (outgoing flow, probability), in model order.
     pub gateways: BTreeMap<QId, Vec<(QId, f64)>>,
+    pub buffer_unconsumed: bool,
+    pub signal_scope: SignalScope,
+    /// Black-box participant -> reply delay.
+    pub black_box_reply: BTreeMap<QId, Dist>,
     pub warnings: Vec<String>,
 }
 
@@ -250,7 +294,6 @@ impl Scenario {
             ("[calendars]", self.calendars.is_some()),
             ("[events]", self.events.is_some()),
             ("[boundary]", self.boundary.is_some()),
-            ("[messages]", self.messages.is_some()),
             ("simulation.horizon", self.simulation.horizon.is_some()),
         ] {
             if present {
@@ -313,6 +356,14 @@ impl Scenario {
                         let Some(n) = project.node(&q) else { continue };
                         if n.kind != NodeKind::StartEvent {
                             errors.push(format!("{label}: trigger '{q}' is not a start event"));
+                        } else if !n
+                            .event_defs
+                            .iter()
+                            .all(|d| matches!(d, EventDef::None | EventDef::Timer))
+                        {
+                            errors.push(format!(
+                                "{label}: trigger '{q}' is a message/signal/other start event; arrivals can only fire none or timer start events"
+                            ));
                         } else {
                             if !processes.contains(&n.process) {
                                 processes.push(n.process.clone());
@@ -332,6 +383,102 @@ impl Scenario {
                     inter_arrival,
                     triggers,
                 });
+            }
+        }
+
+        // Message-related configuration and the processes reached through messages.
+        let messages = self.messages.clone().unwrap_or_default();
+        let mut black_box_reply = BTreeMap::new();
+        for (key, spec) in &messages.black_box_reply {
+            match resolve_participant(project, key) {
+                Ok(q) => match Dist::new(spec) {
+                    Ok(d) => {
+                        black_box_reply.insert(q, d);
+                    }
+                    Err(e) => errors.push(format!("[messages.black_box_reply.{key}]: {e}")),
+                },
+                Err(e) => errors.push(format!("[messages.black_box_reply]: {e}")),
+            }
+        }
+        // Fixpoint: a message flow from an active process (or a replying black box) to a message
+        // start event activates the receiving process.
+        loop {
+            let mut grew = false;
+            for f in project
+                .files
+                .values()
+                .flat_map(|f| f.message_flows.values())
+            {
+                let source_active = match project.node(&f.source) {
+                    Some(n) => processes.contains(&n.process),
+                    None => black_box_reply.contains_key(&f.source),
+                };
+                let Some(t) = project.node(&f.target) else {
+                    continue;
+                };
+                if source_active
+                    && t.kind == NodeKind::StartEvent
+                    && t.event_defs
+                        .iter()
+                        .any(|d| matches!(d, EventDef::Message(_)))
+                    && !processes.contains(&t.process)
+                {
+                    processes.push(t.process.clone());
+                    grew = true;
+                }
+            }
+            if !grew {
+                break;
+            }
+        }
+        for f in project
+            .files
+            .values()
+            .flat_map(|f| f.message_flows.values())
+        {
+            let src = project.node(&f.source);
+            let active = match src {
+                Some(n) => processes.contains(&n.process),
+                None => black_box_reply.contains_key(&f.source),
+            };
+            if !active {
+                continue;
+            }
+            if let Some(n) = src
+                && !sends_messages(n)
+            {
+                errors.push(format!(
+                    "message flow {}: source '{}' is not a send task or message throw/end event",
+                    f.id, f.source
+                ));
+            }
+            match project.node(&f.target) {
+                Some(t) => {
+                    if !receives_messages(t) {
+                        errors.push(format!(
+                            "message flow {}: target '{}' cannot receive a message",
+                            f.id, f.target
+                        ));
+                    } else if !processes.contains(&t.process) && t.kind != NodeKind::StartEvent {
+                        warnings.push(format!(
+                            "message flow {}: target '{}' is in a process that is never instantiated, the message will stay undelivered",
+                            f.id, f.target
+                        ));
+                    }
+                }
+                None => {
+                    let is_black_box = project
+                        .files
+                        .get(&f.target.file)
+                        .and_then(|file| file.participants.get(&f.target))
+                        .is_some_and(|p| p.process.is_none());
+                    if !is_black_box {
+                        errors.push(format!(
+                            "message flow {}: target '{}' is a pool with a process; point the flow at a message start or catch event instead",
+                            f.id, f.target
+                        ));
+                    }
+                }
             }
         }
 
@@ -361,7 +508,10 @@ impl Scenario {
         }
 
         let mut activities = BTreeMap::new();
-        for n in nodes.iter().filter(|n| matches!(n.kind, NodeKind::Task(_))) {
+        for n in nodes
+            .iter()
+            .filter(|n| matches!(n.kind, NodeKind::Task(k) if k != TaskKind::Receive))
+        {
             let Some(spec) = configured.get(&n.id) else {
                 errors.push(format!(
                     "{} ({}): no [activities] entry with a duration",
@@ -487,32 +637,99 @@ impl Scenario {
             pools,
             activities,
             gateways,
+            buffer_unconsumed: messages.buffer_unconsumed,
+            signal_scope: sim.signal_scope,
+            black_box_reply,
             warnings,
         })
     }
 }
 
-/// Elements the M1 engine cannot execute yet; `None` if supported.
-fn unsupported(n: &FlowNode) -> Option<String> {
-    let plain = n.event_defs.iter().all(|d| matches!(d, EventDef::None));
-    let todo = |what: &str, m: &str| Some(format!("{what} is not supported yet ({m})"));
+/// Elements that can send a message along an outgoing message flow.
+pub fn sends_messages(n: &FlowNode) -> bool {
     match &n.kind {
-        NodeKind::Task(TaskKind::Send | TaskKind::Receive) => todo("send/receive task", "M3"),
+        NodeKind::Task(TaskKind::Send) => true,
+        NodeKind::IntermediateThrowEvent | NodeKind::EndEvent => n
+            .event_defs
+            .iter()
+            .any(|d| matches!(d, EventDef::Message(_))),
+        _ => false,
+    }
+}
+
+/// Elements a message flow may end at.
+pub fn receives_messages(n: &FlowNode) -> bool {
+    match &n.kind {
+        NodeKind::Task(TaskKind::Receive) => true,
+        NodeKind::IntermediateCatchEvent | NodeKind::StartEvent => n
+            .event_defs
+            .iter()
+            .any(|d| matches!(d, EventDef::Message(_))),
+        _ => false,
+    }
+}
+
+fn resolve_participant(project: &Project, key: &str) -> Result<QId, String> {
+    let all = || project.files.values().flat_map(|f| f.participants.values());
+    if let Some((file, id)) = key.split_once('#') {
+        let q = QId::new(file, id);
+        return if all().any(|p| p.id == q) {
+            Ok(q)
+        } else {
+            Err(format!(
+                "participant '{key}' does not exist in the loaded model"
+            ))
+        };
+    }
+    let m: Vec<&Participant> = all().filter(|p| p.id.id == key).collect();
+    match m.as_slice() {
+        [] => Err(format!(
+            "participant '{key}' does not exist in the loaded model"
+        )),
+        [one] => Ok(one.id.clone()),
+        many => Err(format!(
+            "participant '{key}' is ambiguous, it exists in {}; use a qualified id",
+            many.iter()
+                .map(|p| p.id.file.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
+        )),
+    }
+}
+
+/// Elements the engine cannot execute yet; `None` if supported.
+fn unsupported(n: &FlowNode) -> Option<String> {
+    let todo = |what: &str, m: &str| Some(format!("{what} is not supported yet ({m})"));
+    let single = |ok: fn(&EventDef) -> bool| n.event_defs.len() == 1 && ok(&n.event_defs[0]);
+    match &n.kind {
         NodeKind::Task(_) | NodeKind::ExclusiveGateway | NodeKind::ParallelGateway => None,
         NodeKind::StartEvent
             if n.event_defs
                 .iter()
-                .all(|d| matches!(d, EventDef::None | EventDef::Timer)) =>
+                .all(|d| matches!(d, EventDef::None | EventDef::Timer))
+                || single(|d| matches!(d, EventDef::Message(_))) =>
         {
             None
         }
-        NodeKind::EndEvent | NodeKind::IntermediateThrowEvent | NodeKind::StartEvent if plain => {
+        NodeKind::EndEvent | NodeKind::IntermediateThrowEvent
+            if single(|d| {
+                matches!(
+                    d,
+                    EventDef::None | EventDef::Message(_) | EventDef::Signal(_)
+                )
+            }) =>
+        {
+            None
+        }
+        NodeKind::IntermediateCatchEvent
+            if single(|d| matches!(d, EventDef::Message(_) | EventDef::Signal(_))) =>
+        {
             None
         }
         NodeKind::StartEvent | NodeKind::EndEvent | NodeKind::IntermediateThrowEvent => {
-            todo("event with a non-none event definition", "M3/M4")
+            todo("event with this event definition", "M4")
         }
-        NodeKind::IntermediateCatchEvent => todo("intermediate catch event", "M3/M4"),
+        NodeKind::IntermediateCatchEvent => todo("timer/link intermediate catch event", "M4"),
         NodeKind::BoundaryEvent => todo("boundary event", "M4"),
         NodeKind::SubProcess => todo("embedded subprocess", "M4"),
         NodeKind::CallActivity => todo("call activity", "M4"),
@@ -551,6 +768,7 @@ impl Scenario {
         let mut gateways = BTreeMap::new();
         for n in project.nodes() {
             match &n.kind {
+                NodeKind::Task(TaskKind::Receive) => {}
                 NodeKind::Task(_) => {
                     let pool = n
                         .lane

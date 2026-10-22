@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL" id="Defs_V7b">
+  <bpmn:collaboration id="Collab">
+    <bpmn:participant id="Part_A" name="A" processRef="Process_A"/>
+    <bpmn:participant id="Part_X" name="Bank"/>
+    <bpmn:messageFlow id="MF1" sourceRef="Task_Send" targetRef="Part_X"/>
+    <bpmn:messageFlow id="MF2" sourceRef="Part_X" targetRef="Wait"/>
+  </bpmn:collaboration>
+  <bpmn:process id="Process_A">
+    <bpmn:startEvent id="Start_A"/>
+    <bpmn:sendTask id="Task_Send" name="Request"/>
+    <bpmn:receiveTask id="Wait" name="Await reply"/>
+    <bpmn:endEvent id="End_A"/>
+    <bpmn:sequenceFlow id="FA1" sourceRef="Start_A" targetRef="Task_Send"/>
+    <bpmn:sequenceFlow id="FA2" sourceRef="Task_Send" targetRef="Wait"/>
+    <bpmn:sequenceFlow id="FA3" sourceRef="Wait" targetRef="End_A"/>
+  </bpmn:process>
+</bpmn:definitions>

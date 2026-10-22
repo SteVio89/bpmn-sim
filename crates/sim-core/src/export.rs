@@ -99,6 +99,15 @@ pub fn summary_csv(project: &Project, results: &[ReplicationResult]) -> String {
                 *n as f64,
             );
         }
+        row("messages", "", "", "sent", r.messages.len() as f64);
+        row("problems", "", "", "lost_messages", r.messages_lost as f64);
+        row(
+            "problems",
+            "",
+            "",
+            "undelivered_messages",
+            r.undelivered.iter().map(|u| u.count).sum::<usize>() as f64,
+        );
         row("problems", "", "", "stuck_tokens", r.stuck.len() as f64);
     }
     out

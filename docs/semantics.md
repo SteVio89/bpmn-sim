@@ -40,3 +40,19 @@ Kept up to date with the implementation (spec §5, §11). Each entry notes the m
 - **Skeleton.** One `[activities]` entry per task (10 min fixed), one `[gateways]` entry per XOR split (equal probabilities), one resource pool (count 1) per lane / pool name used by a task, and one arrival every hour triggering all none/timer start events of the main file (default: first file). Keys are qualified ids.
 - **Scenario files** are written back with durations in the largest exact unit (`7200` s becomes `"2h"`). Comments in a hand-written file are not preserved.
 - **Exports.** JSON is the full result list. The summary CSV is a tidy table (replication, scope, id, name, metric, value); the event log CSV has one row per finished task. All times in exports are seconds.
+
+## M3: collaboration
+
+- **Instances of a case.** An arrival creates *all* instances of its triggers first and only then runs them, in trigger order. (Otherwise a case could look complete before a later pool's instance existed.) Processes without a trigger get an instance only when a message start event receives a message.
+- **Active processes.** Binding follows message flows from the triggered processes (and from replying black boxes) to message start events and treats the receiving processes as part of the run: their tasks need `[activities]` entries and their elements are checked for support. Message start events, signal events and message events cannot be arrival triggers.
+- **Messages** (§5.3). A message goes through the message flow within the sender's case and takes no time. At the target:
+  1. a token is waiting at the target element: the longest-waiting one continues (`delivered`);
+  2. the target is a message start event: a new instance is created in the case (`started_instance`); if the case is already complete the message is `lost`;
+  3. otherwise it is stored if `[messages] buffer_unconsumed = true` (the default; `buffered`) or dropped (`lost`).
+  A buffered message is taken by the next token that reaches that element in the same case. Buffered messages never picked up are reported as `undelivered`. Messages are matched per receiving *element*, not per message name.
+- **Which elements send/receive.** Send tasks (after their duration), message throw events and message end events send; every message flow starting at them is used. Receive tasks, message catch events and message start events receive. A message flow from any other element, or to a pool that has a process, is a scenario error.
+- **Receive task.** It only waits for the message: no resource, no duration, no `[activities]` entry.
+- **Black boxes** (participants without a process). Messages to them are logged (`black_box`). With `[messages.black_box_reply] <participant> = <distribution>` they answer after the sampled delay along every message flow that leaves them; the reply is delivered like any message. Without a configured reply the receivers wait forever and show up as stuck.
+- **Signals** (§5.4). Signal throw/end events broadcast by signal *name*. Only tokens waiting at a matching signal catch event at that moment receive it (all of them, in case/instance/token order); nothing is stored. `simulation.signal_scope = "global"` reaches all cases instead of the sender's. Every broadcast is logged with its receiver count, so missed signals are visible. Signal start events and signal boundary events come with M4.
+- **Reports.** The result lists all messages with outcomes, the lost-message count, undelivered buffered messages and all signals; the GUI problems tab shows them.
+- **Validation** now also warns about receive/catch message elements without an incoming message flow and send/throw message elements without an outgoing one.

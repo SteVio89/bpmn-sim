@@ -1,6 +1,6 @@
 use eframe::egui::{self, ComboBox, DragValue, Id, RichText, Ui};
 use sim_core::scenario::{
-    ActivitySpec, ArrivalSpec, GatewaySpec, ResourceSpec, SimulationSection, TimeUnit,
+    ActivitySpec, ArrivalSpec, GatewaySpec, ResourceSpec, SignalScope, SimulationSection, TimeUnit,
 };
 use sim_core::{NodeKind, Project, Scenario};
 
@@ -180,6 +180,54 @@ pub fn show(app: &mut App, ui: &mut Ui) {
                 });
                 ui.data_mut(|d| d.insert_temp(id, name));
             });
+
+        egui::CollapsingHeader::new("Messages and signals").show(ui, |ui| {
+            let m = s.messages.get_or_insert_with(Default::default);
+            ui.checkbox(
+                &mut m.buffer_unconsumed,
+                "buffer messages that arrive before the receiver waits",
+            );
+            ui.horizontal(|ui| {
+                ui.label("signal scope");
+                ui.selectable_value(
+                    &mut s.simulation.signal_scope,
+                    SignalScope::Case,
+                    "same case",
+                );
+                ui.selectable_value(
+                    &mut s.simulation.signal_scope,
+                    SignalScope::Global,
+                    "all cases",
+                );
+            });
+            let black_boxes: Vec<String> = project
+                .files
+                .values()
+                .flat_map(|f| f.participants.values())
+                .filter(|p| p.process.is_none())
+                .map(|p| p.id.to_string())
+                .collect();
+            for bb in black_boxes {
+                let mut replies = m.black_box_reply.contains_key(&bb);
+                if ui
+                    .checkbox(
+                        &mut replies,
+                        format!("black box {bb} replies after a delay"),
+                    )
+                    .changed()
+                {
+                    if replies {
+                        m.black_box_reply
+                            .insert(bb.clone(), default_dist(0, 1800.0));
+                    } else {
+                        m.black_box_reply.remove(&bb);
+                    }
+                }
+                if let Some(d) = m.black_box_reply.get_mut(&bb) {
+                    dist_edit(ui, Id::unique(("reply", &bb)), d);
+                }
+            }
+        });
 
         egui::CollapsingHeader::new(format!("Activities ({})", s.activities.len())).show(
             ui,

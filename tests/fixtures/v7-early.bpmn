@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL" id="Defs_V7e">
+  <bpmn:message id="Msg_1" name="Ping"/>
+  <bpmn:collaboration id="Collab">
+    <bpmn:participant id="Part_A" name="A" processRef="Process_A"/>
+    <bpmn:participant id="Part_B" name="B" processRef="Process_B"/>
+    <bpmn:messageFlow id="MF1" sourceRef="Throw" targetRef="Catch"/>
+  </bpmn:collaboration>
+  <bpmn:process id="Process_A">
+    <bpmn:startEvent id="Start_A"/>
+    <bpmn:intermediateThrowEvent id="Throw"><bpmn:messageEventDefinition messageRef="Msg_1"/></bpmn:intermediateThrowEvent>
+    <bpmn:endEvent id="End_A"/>
+    <bpmn:sequenceFlow id="FA1" sourceRef="Start_A" targetRef="Throw"/>
+    <bpmn:sequenceFlow id="FA2" sourceRef="Throw" targetRef="End_A"/>
+  </bpmn:process>
+  <bpmn:process id="Process_B">
+    <bpmn:startEvent id="Start_B"/>
+    <bpmn:task id="Task_Pre" name="Prepare"/>
+    <bpmn:receiveTask id="Catch" name="Wait for ping"/>
+    <bpmn:endEvent id="End_B"/>
+    <bpmn:sequenceFlow id="FB1" sourceRef="Start_B" targetRef="Task_Pre"/>
+    <bpmn:sequenceFlow id="FB2" sourceRef="Task_Pre" targetRef="Catch"/>
+    <bpmn:sequenceFlow id="FB3" sourceRef="Catch" targetRef="End_B"/>
+  </bpmn:process>
+</bpmn:definitions>

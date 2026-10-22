@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL" id="Defs_V7">
+  <bpmn:message id="Msg_1" name="Order"/>
+  <bpmn:collaboration id="Collab">
+    <bpmn:participant id="Part_A" name="A" processRef="Process_A"/>
+    <bpmn:participant id="Part_B" name="B" processRef="Process_B"/>
+    <bpmn:messageFlow id="MF1" sourceRef="Task_Send" targetRef="Catch"/>
+  </bpmn:collaboration>
+  <bpmn:process id="Process_A">
+    <bpmn:startEvent id="Start_A"/>
+    <bpmn:sendTask id="Task_Send" name="Send order"/>
+    <bpmn:endEvent id="End_A"/>
+    <bpmn:sequenceFlow id="FA1" sourceRef="Start_A" targetRef="Task_Send"/>
+    <bpmn:sequenceFlow id="FA2" sourceRef="Task_Send" targetRef="End_A"/>
+  </bpmn:process>
+  <bpmn:process id="Process_B">
+    <bpmn:startEvent id="Start_B"/>
+    <bpmn:intermediateCatchEvent id="Catch" name="Order received"><bpmn:messageEventDefinition messageRef="Msg_1"/></bpmn:intermediateCatchEvent>
+    <bpmn:task id="Task_B" name="Process order"/>
+    <bpmn:endEvent id="End_B"/>
+    <bpmn:sequenceFlow id="FB1" sourceRef="Start_B" targetRef="Catch"/>
+    <bpmn:sequenceFlow id="FB2" sourceRef="Catch" targetRef="Task_B"/>
+    <bpmn:sequenceFlow id="FB3" sourceRef="Task_B" targetRef="End_B"/>
+  </bpmn:process>
+</bpmn:definitions>

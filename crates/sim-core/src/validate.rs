@@ -46,6 +46,16 @@ pub fn validate(project: &Project) -> Vec<Issue> {
     };
 
     let reachable = reachable_nodes(project);
+    let incoming_msg: std::collections::BTreeSet<&QId> = project
+        .files
+        .values()
+        .flat_map(|f| f.message_flows.values().map(|m| &m.target))
+        .collect();
+    let outgoing_msg: std::collections::BTreeSet<&QId> = project
+        .files
+        .values()
+        .flat_map(|f| f.message_flows.values().map(|m| &m.source))
+        .collect();
 
     for n in project.nodes() {
         let is_link_throw = n.event_defs.iter().any(|d| matches!(d, EventDef::Link(_)))
@@ -96,6 +106,24 @@ pub fn validate(project: &Project) -> Vec<Issue> {
                 ),
                 Some(_) => {}
             }
+        }
+
+        if crate::scenario::receives_messages(n)
+            && n.kind != NodeKind::StartEvent
+            && !incoming_msg.contains(&n.id)
+        {
+            push(
+                Severity::Warning,
+                n,
+                "waits for a message but has no incoming message flow".into(),
+            );
+        }
+        if crate::scenario::sends_messages(n) && !outgoing_msg.contains(&n.id) {
+            push(
+                Severity::Warning,
+                n,
+                "sends a message but has no outgoing message flow".into(),
+            );
         }
 
         if let NodeKind::Unsupported(kind) = &n.kind {

@@ -199,6 +199,40 @@ pub fn show(app: &mut App, ui: &mut Ui) {
                     }
                 });
             }
+            if r.messages_lost > 0 {
+                ui.colored_label(
+                    egui::Color32::LIGHT_RED,
+                    format!(
+                        "{} lost message(s) (nobody was waiting and buffering is off):",
+                        r.messages_lost
+                    ),
+                );
+                for m in r
+                    .messages
+                    .iter()
+                    .filter(|m| m.outcome == sim_core::MessageOutcome::Lost)
+                {
+                    ui.label(format!(
+                        "t={} case {}: {} → {}",
+                        t(m.time),
+                        m.case,
+                        m.source,
+                        m.target
+                    ));
+                }
+            }
+            if !r.undelivered.is_empty() {
+                ui.colored_label(egui::Color32::YELLOW, "Buffered messages nobody picked up:");
+                for u in &r.undelivered {
+                    ui.label(format!("case {}: {} × {}", u.case, u.count, u.target));
+                }
+            }
+            let missed = r.signals.iter().filter(|s| s.receivers == 0).count();
+            if missed > 0 {
+                ui.label(format!(
+                    "{missed} signal broadcast(s) reached nobody (signals are not stored)."
+                ));
+            }
             let incomplete = r.cases_started - r.cases_completed;
             if incomplete > 0 {
                 ui.label(format!("{incomplete} case(s) did not complete."));

@@ -114,6 +114,48 @@ pub struct StuckToken {
     pub state: String,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MessageOutcome {
+    /// A receiver was waiting and continued.
+    Delivered,
+    /// The target is a message start event: a new instance was created.
+    StartedInstance,
+    /// Nobody was waiting; stored until the receiver reaches the element.
+    Buffered,
+    /// Nobody was waiting and buffering is off (or the case was already complete).
+    Lost,
+    /// Sent to a black-box pool: only logged.
+    BlackBox,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct MessageRecord {
+    pub time: f64,
+    pub case: u64,
+    pub flow: QId,
+    pub source: QId,
+    pub target: QId,
+    pub outcome: MessageOutcome,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct SignalRecord {
+    pub time: f64,
+    pub case: u64,
+    pub name: String,
+    /// Number of waiting tokens that received it; 0 means the signal was missed (not stored).
+    pub receivers: usize,
+}
+
+/// Buffered messages nobody ever picked up.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct UndeliveredMessage {
+    pub case: u64,
+    pub target: QId,
+    pub count: usize,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct ReplicationResult {
     pub seed: u64,
@@ -128,6 +170,10 @@ pub struct ReplicationResult {
     /// Tokens consumed per end event.
     pub end_events: BTreeMap<QId, u64>,
     pub stuck: Vec<StuckToken>,
+    pub messages: Vec<MessageRecord>,
+    pub messages_lost: u64,
+    pub undelivered: Vec<UndeliveredMessage>,
+    pub signals: Vec<SignalRecord>,
     pub cases: Vec<CaseRecord>,
     pub records: Vec<ActivityRecord>,
 }

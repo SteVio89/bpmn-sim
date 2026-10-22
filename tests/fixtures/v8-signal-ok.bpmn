@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL" id="Defs_v8-signal-ok.bpmn">
+  <bpmn:signal id="Sig_1" name="Go"/>
+  <bpmn:collaboration id="Collab">
+    <bpmn:participant id="Part_A" name="A" processRef="Process_A"/>
+    <bpmn:participant id="Part_B" name="B" processRef="Process_B"/>
+  </bpmn:collaboration>
+  <bpmn:process id="Process_A">
+    <bpmn:startEvent id="Start_A"/>
+    <bpmn:task id="Task_A" name="Work"/>
+    <bpmn:endEvent id="End_A"><bpmn:signalEventDefinition signalRef="Sig_1"/></bpmn:endEvent>
+    <bpmn:sequenceFlow id="FA1" sourceRef="Start_A" targetRef="Task_A"/><bpmn:sequenceFlow id="FA2" sourceRef="Task_A" targetRef="End_A"/>
+  </bpmn:process>
+  <bpmn:process id="Process_B">
+    <bpmn:startEvent id="Start_B"/>
+    
+    <bpmn:intermediateCatchEvent id="Catch" name="Wait for go"><bpmn:signalEventDefinition signalRef="Sig_1"/></bpmn:intermediateCatchEvent>
+    <bpmn:endEvent id="End_B"/>
+    <bpmn:sequenceFlow id="FB1" sourceRef="Start_B" targetRef="Catch"/><bpmn:sequenceFlow id="FB2" sourceRef="Catch" targetRef="End_B"/>
+  </bpmn:process>
+</bpmn:definitions>
