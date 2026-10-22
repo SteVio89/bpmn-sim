@@ -171,3 +171,9 @@ pub struct BpmnFile {
     /// Message id -> message name.
     pub messages: BTreeMap<String, String>,
 }
+
+impl serde::Serialize for QId {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        s.collect_str(self)
+    }
+}

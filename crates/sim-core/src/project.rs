@@ -93,3 +93,19 @@ impl Project {
         self.files.get(&q.file)?.processes.get(q)
     }
 }
+
+impl Project {
+    pub fn flow(&self, id: &QId) -> Option<&SequenceFlow> {
+        self.files.get(&id.file)?.sequence_flows.get(id)
+    }
+
+    /// Name of the participant (pool) whose process contains `process`, if the file has a collaboration.
+    pub fn participant_name(&self, process: &QId) -> Option<&str> {
+        self.files
+            .get(&process.file)?
+            .participants
+            .values()
+            .find(|p| p.process.as_ref() == Some(process))
+            .and_then(|p| p.name.as_deref())
+    }
+}

@@ -5,4 +5,5 @@ edition.workspace = true
 
 [dependencies]
 anyhow = "1.0.104"
+serde_json = "1.0.154"
 sim-core = { version = "0.1.0", path = "../sim-core" }

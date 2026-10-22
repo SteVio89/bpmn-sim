@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL" id="Defs_V5">
+  <bpmn:process id="Process_V5">
+    <bpmn:laneSet id="LS">
+      <bpmn:lane id="L1" name="TeamA"><bpmn:flowNodeRef>Task_A</bpmn:flowNodeRef></bpmn:lane>
+      <bpmn:lane id="L2" name="TeamB"><bpmn:flowNodeRef>Task_B</bpmn:flowNodeRef></bpmn:lane>
+    </bpmn:laneSet>
+    <bpmn:startEvent id="Start"/>
+    <bpmn:parallelGateway id="Split"/>
+    <bpmn:task id="Task_A" name="A"/>
+    <bpmn:task id="Task_B" name="B"/>
+    <bpmn:parallelGateway id="Join"/>
+    <bpmn:endEvent id="End"/>
+    <bpmn:sequenceFlow id="F0" sourceRef="Start" targetRef="Split"/>
+    <bpmn:sequenceFlow id="F1" sourceRef="Split" targetRef="Task_A"/>
+    <bpmn:sequenceFlow id="F2" sourceRef="Split" targetRef="Task_B"/>
+    <bpmn:sequenceFlow id="F3" sourceRef="Task_A" targetRef="Join"/>
+    <bpmn:sequenceFlow id="F4" sourceRef="Task_B" targetRef="Join"/>
+    <bpmn:sequenceFlow id="F5" sourceRef="Join" targetRef="End"/>
+  </bpmn:process>
+</bpmn:definitions>

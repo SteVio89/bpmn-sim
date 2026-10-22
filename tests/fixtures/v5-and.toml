@@ -1,0 +1,18 @@
+[simulation]
+seed = 1
+cases = 20
+time_unit = "minutes"
+
+[[arrivals]]
+inter_arrival = { dist = "fixed", value = "60m" }
+triggers = ["Start"]
+
+[resources.TeamA]
+count = 1
+[resources.TeamB]
+count = 1
+
+[activities.Task_A]
+duration = { dist = "fixed", value = "10m" }
+[activities.Task_B]
+duration = { dist = "fixed", value = "20m" }
