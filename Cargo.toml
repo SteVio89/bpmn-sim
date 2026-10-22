@@ -1,6 +1,7 @@
-[package]
-name = "bpmn-sim"
+[workspace]
+resolver = "2"
+members = ["crates/sim-core", "crates/sim-cli"]
+
+[workspace.package]
 version = "0.1.0"
 edition = "2024"
-
-[dependencies]

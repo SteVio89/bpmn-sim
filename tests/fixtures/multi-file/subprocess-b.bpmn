@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL" xmlns:zeebe="http://camunda.org/schema/zeebe/1.0" id="Defs_Process_SubB">
+  <bpmn:collaboration id="Collab_1">
+    <bpmn:participant id="Part_Sub" name="Sub" processRef="Process_SubB"/>
+    <bpmn:participant id="Part_Ext" name="External B"/>
+    <bpmn:messageFlow id="MF_1" sourceRef="Task_Analyse" targetRef="Part_Ext"/>
+  </bpmn:collaboration>
+  <bpmn:process id="Process_SubB">
+    <bpmn:laneSet id="LS_1"><bpmn:lane id="Lane_1" name="Team A"><bpmn:flowNodeRef>Task_Analyse</bpmn:flowNodeRef></bpmn:lane></bpmn:laneSet>
+    <bpmn:startEvent id="Start_1"/>
+    <bpmn:sendTask id="Task_Analyse" name="Analyse"><bpmn:extensionElements><zeebe:taskDefinition type="x"/></bpmn:extensionElements></bpmn:sendTask>
+    <bpmn:endEvent id="End_1"/>
+    <bpmn:sequenceFlow id="Flow_1" sourceRef="Start_1" targetRef="Task_Analyse"/>
+    <bpmn:sequenceFlow id="Flow_2" sourceRef="Task_Analyse" targetRef="End_1"/>
+  </bpmn:process>
+</bpmn:definitions>

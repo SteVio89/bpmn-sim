@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL" xmlns:modeler="http://camunda.org/schema/modeler/1.0" id="Defs_1">
+  <bpmn:process id="Process_V1" isExecutable="true">
+    <bpmn:laneSet id="LS"><bpmn:lane id="Lane_Dev" name="Dev"><bpmn:flowNodeRef>Task_Work</bpmn:flowNodeRef></bpmn:lane></bpmn:laneSet>
+    <bpmn:startEvent id="Start"><bpmn:outgoing>F1</bpmn:outgoing></bpmn:startEvent>
+    <bpmn:userTask id="Task_Work" name="Work"/>
+    <bpmn:dataStoreReference id="DS_1"/>
+    <bpmn:textAnnotation id="TA_1"><bpmn:text>ignored</bpmn:text></bpmn:textAnnotation>
+    <bpmn:endEvent id="End"/>
+    <bpmn:sequenceFlow id="F1" sourceRef="Start" targetRef="Task_Work"/>
+    <bpmn:sequenceFlow id="F2" sourceRef="Task_Work" targetRef="End"/>
+  </bpmn:process>
+</bpmn:definitions>

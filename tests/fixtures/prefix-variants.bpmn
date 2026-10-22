@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<definitions xmlns="http://www.omg.org/spec/BPMN/20100524/MODEL" id="Defs_2">
+  <process id="Process_NoPrefix">
+    <startEvent id="Start"/>
+    <endEvent id="End"/>
+    <sequenceFlow id="F1" sourceRef="Start" targetRef="End"/>
+  </process>
+</definitions>

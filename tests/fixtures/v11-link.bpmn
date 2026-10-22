@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<bpmn2:definitions xmlns:bpmn2="http://www.omg.org/spec/BPMN/20100524/MODEL" id="Defs_3">
+  <bpmn2:process id="Process_Link">
+    <bpmn2:startEvent id="Start"/>
+    <bpmn2:intermediateThrowEvent id="Throw"><bpmn2:linkEventDefinition name="L1"/></bpmn2:intermediateThrowEvent>
+    <bpmn2:intermediateCatchEvent id="Catch"><bpmn2:linkEventDefinition name="L1"/></bpmn2:intermediateCatchEvent>
+    <bpmn2:task id="Task_A"/>
+    <bpmn2:endEvent id="End"/>
+    <bpmn2:sequenceFlow id="F1" sourceRef="Start" targetRef="Throw"/>
+    <bpmn2:sequenceFlow id="F2" sourceRef="Catch" targetRef="Task_A"/>
+    <bpmn2:sequenceFlow id="F3" sourceRef="Task_A" targetRef="End"/>
+  </bpmn2:process>
+</bpmn2:definitions>

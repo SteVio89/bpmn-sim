@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL" id="Defs_4">
+  <bpmn:process id="Process_Bad">
+    <bpmn:startEvent id="Start"/>
+    <bpmn:task id="Task_Orphan" name="Orphan"/>
+    <bpmn:task id="Task_Dead"/>
+    <bpmn:intermediateThrowEvent id="Throw"><bpmn:linkEventDefinition name="Missing"/></bpmn:intermediateThrowEvent>
+    <bpmn:intermediateCatchEvent id="Catch_Never"><bpmn:timerEventDefinition/></bpmn:intermediateCatchEvent>
+    <bpmn:callActivity id="Call_Unknown" calledElement="Process_Nope"/>
+    <bpmn:complexGateway id="Complex"/>
+    <bpmn:endEvent id="End"/>
+    <bpmn:sequenceFlow id="F1" sourceRef="Start" targetRef="Task_Dead"/>
+    <bpmn:sequenceFlow id="F2" sourceRef="Task_Dead" targetRef="Throw"/>
+    <bpmn:sequenceFlow id="F3" sourceRef="Catch_Never" targetRef="Call_Unknown"/>
+    <bpmn:sequenceFlow id="F4" sourceRef="Call_Unknown" targetRef="End"/>
+  </bpmn:process>
+</bpmn:definitions>

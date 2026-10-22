@@ -1,0 +1,8 @@
+[package]
+name = "sim-core"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+roxmltree = "0.21.1"
+thiserror = "2.0.21"
