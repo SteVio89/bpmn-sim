@@ -2,6 +2,7 @@
 //! No UI dependencies.
 
 pub mod dist;
+pub mod dmn;
 pub mod engine;
 pub mod error;
 pub mod export;
@@ -15,7 +16,7 @@ pub mod validate;
 pub use engine::{Engine, run_replications, run_replications_with};
 pub use error::ParseError;
 pub use model::*;
-pub use project::Project;
+pub use project::{Project, discover_files};
 pub use scenario::{BoundModel, Scenario, ScenarioError};
 pub use stats::*;
 pub use validate::{Issue, Severity, validate};

@@ -327,8 +327,16 @@ impl Scenario {
                 warnings.push(format!("{name} is not supported yet and is ignored"));
             }
         }
-        if self.model.as_ref().is_some_and(|m| m.files.is_some()) {
-            warnings.push("model.files is ignored; the loaded files are used".into());
+        if let Some(m) = &self.model {
+            let loaded = |f: &String| project.files.contains_key(f) || project.dmn.contains_key(f);
+            if let Some(main) = &m.main
+                && !project.files.contains_key(main)
+            {
+                errors.push(format!("model.main '{main}' is not a loaded BPMN file"));
+            }
+            for f in m.files.iter().flatten().filter(|f| !loaded(f)) {
+                errors.push(format!("model.files lists '{f}', which is not loaded"));
+            }
         }
 
         let sim = &self.simulation;
@@ -454,6 +462,19 @@ impl Scenario {
                     grew = true;
                 }
             }
+            // Called processes of call activities in active processes.
+            let called: Vec<QId> = project
+                .nodes()
+                .filter(|n| n.kind == NodeKind::CallActivity && processes.contains(&n.process))
+                .filter_map(|n| n.called_element.as_ref())
+                .filter_map(|c| project.processes.get(c).cloned())
+                .collect();
+            for p in called {
+                if !processes.contains(&p) {
+                    processes.push(p);
+                    grew = true;
+                }
+            }
             // Signal start events of processes whose signal is thrown by an active process.
             let thrown: Vec<&str> = project
                 .nodes()
@@ -567,6 +588,35 @@ impl Scenario {
                     }
                 }
             }
+            if n.kind == NodeKind::CallActivity {
+                match n
+                    .called_element
+                    .as_ref()
+                    .and_then(|c| project.processes.get(c))
+                {
+                    None => errors.push(format!(
+                        "{} ({}): called process {} is not defined in any loaded file",
+                        n.id,
+                        n.label(),
+                        n.called_element.as_deref().unwrap_or("(none)")
+                    )),
+                    Some(p) => {
+                        if !project.nodes().any(|c| {
+                            c.process == *p
+                                && c.parent.is_none()
+                                && c.kind == NodeKind::StartEvent
+                                && c.event_defs.iter().all(|d| matches!(d, EventDef::None))
+                        }) {
+                            errors.push(format!(
+                                "{} ({}): called process '{}' has no none start event",
+                                n.id,
+                                n.label(),
+                                p.id
+                            ));
+                        }
+                    }
+                }
+            }
             if n.kind == NodeKind::SubProcess
                 && !nodes.iter().any(|c| {
                     c.parent.as_ref() == Some(&n.id)
@@ -579,6 +629,35 @@ impl Scenario {
                     n.id,
                     n.label()
                 ));
+            }
+        }
+
+        // Call activities must not (indirectly) call their own process.
+        for start in &processes {
+            let mut seen: Vec<QId> = Vec::new();
+            let mut stack = vec![start.clone()];
+            while let Some(p) = stack.pop() {
+                for n in project
+                    .nodes()
+                    .filter(|n| n.process == p && n.kind == NodeKind::CallActivity)
+                {
+                    let Some(next) = n
+                        .called_element
+                        .as_ref()
+                        .and_then(|c| project.processes.get(c))
+                    else {
+                        continue;
+                    };
+                    if next == start {
+                        errors.push(format!(
+                            "{}: recursive call, process '{}' (indirectly) calls itself",
+                            n.id, start.id
+                        ));
+                    } else if !seen.contains(next) {
+                        seen.push(next.clone());
+                        stack.push(next.clone());
+                    }
+                }
             }
         }
 
@@ -632,10 +711,10 @@ impl Scenario {
             let host = n.attached_to.as_ref().and_then(|a| project.node(a));
             if !matches!(
                 host.map(|h| &h.kind),
-                Some(NodeKind::Task(_) | NodeKind::SubProcess)
+                Some(NodeKind::Task(_) | NodeKind::SubProcess | NodeKind::CallActivity)
             ) {
                 errors.push(format!(
-                    "{name}: boundary events are only supported on tasks and embedded subprocesses"
+                    "{name}: boundary events are only supported on tasks, call activities and embedded subprocesses"
                 ));
             }
             let spec = boundary_specs.get(&n.id);
@@ -967,7 +1046,7 @@ fn unsupported(n: &FlowNode) -> Option<String> {
         | NodeKind::IntermediateThrowEvent
         | NodeKind::IntermediateCatchEvent
         | NodeKind::BoundaryEvent => todo("event with this event definition", "not planned"),
-        NodeKind::CallActivity => todo("call activity", "M4b"),
+        NodeKind::CallActivity => None,
         NodeKind::InclusiveGateway | NodeKind::EventBasedGateway => {
             todo("inclusive/event-based gateway", "M6")
         }

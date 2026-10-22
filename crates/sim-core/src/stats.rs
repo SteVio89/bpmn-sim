@@ -109,6 +109,13 @@ pub struct ResourceStats {
     pub cost: f64,
 }
 
+/// Completed instances of one process (a call activity or message start creates its own).
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct ProcessStats {
+    pub instances: usize,
+    pub cycle_time: Summary,
+}
+
 /// A token still alive when the run ended (spec §5.8).
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct StuckToken {
@@ -183,6 +190,7 @@ pub struct ReplicationResult {
     pub signals: Vec<SignalRecord>,
     /// How often each boundary event fired.
     pub boundary_fired: BTreeMap<QId, u64>,
+    pub processes: BTreeMap<QId, ProcessStats>,
     pub cases: Vec<CaseRecord>,
     pub records: Vec<ActivityRecord>,
 }

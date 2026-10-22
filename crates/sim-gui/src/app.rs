@@ -241,12 +241,54 @@ mod tests {
     }
 
     #[test]
+    fn opening_a_main_file_loads_referenced_files() {
+        let ctx = egui::Context::default();
+        let mut app = App::default();
+        app.ws.open(&fixtures().join("multi-file/main.bpmn"));
+        assert!(app.ws.load_error.is_none(), "{:?}", app.ws.load_error);
+        assert_eq!(app.ws.project.files.len(), 3);
+        assert_eq!(app.ws.project.dmn.len(), 2);
+        app.regenerate_skeleton();
+        app.scenario.simulation.cases = Some(5);
+        for tab in [Tab::Model, Tab::Scenario] {
+            app.tab = tab;
+            frames(&mut app, &ctx, 2);
+        }
+        app.start_run(&ctx);
+        let deadline = Instant::now() + Duration::from_secs(20);
+        while app.results.is_none() {
+            assert!(
+                Instant::now() < deadline && app.run_error.is_none(),
+                "{:?}",
+                app.run_error
+            );
+            std::thread::sleep(Duration::from_millis(10));
+            frames(&mut app, &ctx, 1);
+        }
+        for t in [
+            ResultsTab::Summary,
+            ResultsTab::Activities,
+            ResultsTab::Problems,
+        ] {
+            app.results_tab = t;
+            frames(&mut app, &ctx, 2);
+        }
+    }
+
+    #[test]
     fn folder_open_remove_and_errors() {
         let mut app = App::default();
         app.ws.open(&fixtures().join("multi-file"));
+        assert_eq!(app.ws.project.files.len(), 4);
+        assert_eq!(app.ws.project.dmn.len(), 3);
+        let unrelated = app
+            .ws
+            .paths
+            .iter()
+            .position(|p| p.ends_with("unrelated.bpmn"))
+            .unwrap();
+        app.ws.remove(unrelated);
         assert_eq!(app.ws.project.files.len(), 3);
-        app.ws.remove(0);
-        assert_eq!(app.ws.project.files.len(), 2);
         // Two files defining the same process id: loading stops with an error naming both.
         app.ws.open(&fixtures().join("dup-process"));
         let e = app.ws.load_error.clone().unwrap();

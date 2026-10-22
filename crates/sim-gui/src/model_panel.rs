@@ -23,7 +23,7 @@ pub fn show(app: &mut App, ui: &mut Ui) {
         }
         if ui.button("Add file…").clicked()
             && let Some(f) = rfd::FileDialog::new()
-                .add_filter("BPMN", &["bpmn"])
+                .add_filter("BPMN", &["bpmn", "dmn"])
                 .pick_file()
         {
             app.ws.add(f);
@@ -136,6 +136,18 @@ pub fn show(app: &mut App, ui: &mut Ui) {
                                     let mut text = format!("{:?}  {}", n.kind, n.id.id);
                                     if let Some(name) = &n.name {
                                         text += &format!("  \"{name}\"");
+                                    }
+                                    if let Some(d) = &n.called_decision {
+                                        match project.decisions.get(d) {
+                                            Some(file) => {
+                                                text += &format!(
+                                                    "  → decision {d} ({file}, not evaluated yet)"
+                                                )
+                                            }
+                                            None => {
+                                                text += &format!("  → decision {d} (NOT FOUND)")
+                                            }
+                                        }
                                     }
                                     if n.kind == NodeKind::CallActivity
                                         && let Some(c) = &n.called_element

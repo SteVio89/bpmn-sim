@@ -92,7 +92,8 @@ fn rejects_non_bpmn_and_bad_xml() {
 #[test]
 fn multi_file_keeps_reused_ids_apart() {
     let p = Project::load_dir(&fixture("multi-file")).unwrap();
-    assert_eq!(p.files.len(), 3);
+    assert_eq!(p.files.len(), 4, "main, two subprocesses, unrelated");
+    assert_eq!(p.dmn.len(), 3);
     let a = p
         .node(&QId::new("subprocess-a.bpmn", "Task_Analyse"))
         .unwrap();
@@ -100,7 +101,7 @@ fn multi_file_keeps_reused_ids_apart() {
         .node(&QId::new("subprocess-b.bpmn", "Task_Analyse"))
         .unwrap();
     assert_ne!(a.id, b.id);
-    assert_eq!(a.lane.as_deref(), Some("Team A"));
+    assert_eq!(a.lane.as_deref(), Some("Ops"));
     assert_eq!(a.process.id, "Process_SubA");
     assert_eq!(b.process.id, "Process_SubB");
     // Message flow to a black-box pool stays inside its own file.
@@ -116,6 +117,12 @@ fn multi_file_keeps_reused_ids_apart() {
     let call_b = p.node(&QId::new("main.bpmn", "Call_B")).unwrap();
     assert_eq!(call_a.called_element.as_deref(), Some("Process_SubA"));
     assert_eq!(call_b.called_element.as_deref(), Some("Process_SubB"));
+    // zeebe:calledDecision is read and resolved against the DMN files.
+    let rule = p
+        .node(&QId::new("subprocess-b.bpmn", "Task_Review"))
+        .unwrap();
+    assert_eq!(rule.called_decision.as_deref(), Some("decision-risk"));
+    assert_eq!(p.decisions["decision-risk"], "decision-risk.dmn");
     assert!(validate(&p).is_empty(), "{:?}", messages(&validate(&p)));
 }
 

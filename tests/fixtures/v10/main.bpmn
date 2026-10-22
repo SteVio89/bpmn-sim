@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL" id="D1">
+  <bpmn:process id="Process_Parent">
+    <bpmn:laneSet id="LS"><bpmn:lane id="L" name="Dev"><bpmn:flowNodeRef>Task_Pre</bpmn:flowNodeRef><bpmn:flowNodeRef>Task_Post</bpmn:flowNodeRef></bpmn:lane></bpmn:laneSet>
+    <bpmn:startEvent id="Start"/>
+    <bpmn:task id="Task_Pre"/>
+    <bpmn:callActivity id="Call" calledElement="Process_Child"/>
+    <bpmn:task id="Task_Post"/>
+    <bpmn:endEvent id="End"/>
+    <bpmn:sequenceFlow id="F1" sourceRef="Start" targetRef="Task_Pre"/>
+    <bpmn:sequenceFlow id="F2" sourceRef="Task_Pre" targetRef="Call"/>
+    <bpmn:sequenceFlow id="F3" sourceRef="Call" targetRef="Task_Post"/>
+    <bpmn:sequenceFlow id="F4" sourceRef="Task_Post" targetRef="End"/>
+  </bpmn:process>
+</bpmn:definitions>

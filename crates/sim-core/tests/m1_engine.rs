@@ -252,7 +252,7 @@ fn unsupported_elements_fail_binding() {
     .unwrap();
     let e = s.bind(&project).unwrap_err().to_string();
     assert!(e.contains("'complexGateway' is not supported"), "{e}");
-    assert!(e.contains("call activity"), "{e}");
+    assert!(e.contains("called process Process_Nope"), "{e}");
 }
 
 #[test]

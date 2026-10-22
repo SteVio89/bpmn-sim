@@ -1,0 +1,52 @@
+[model]
+main = "main.bpmn"
+
+[simulation]
+seed = 1
+cases = 10
+time_unit = "minutes"
+
+[[arrivals]]
+label = "New quarter"
+inter_arrival = { dist = "fixed", value = "600m" }
+triggers = ["TimerStart"]
+
+[resources.Customer]
+count = 1
+[resources.Ops]
+count = 2
+cost_per_hour = 60.0
+[resources.Billing]
+count = 1
+[resources.Reviewers]
+count = 1
+cost_per_hour = 120.0
+
+[activities.Task_PlaceOrder]
+duration = { dist = "fixed", value = "5m" }
+[activities.Task_PlaceRush]
+duration = { dist = "fixed", value = "5m" }
+[activities.Task_Prepare]
+duration = { dist = "fixed", value = "10m" }
+[activities.Task_Rush2]
+duration = { dist = "fixed", value = "60m" }
+[activities.Task_Invoice]
+duration = { dist = "fixed", value = "5m" }
+
+[activities."subprocess-a.bpmn#Task_Analyse"]
+duration = { dist = "fixed", value = "10m" }
+[activities."subprocess-a.bpmn#Task_Review"]
+duration = { dist = "fixed", value = "30m" }
+[activities."subprocess-a.bpmn#Task_Check"]
+duration = { dist = "fixed", value = "5m" }
+[activities."subprocess-b.bpmn#Task_Analyse"]
+duration = { dist = "fixed", value = "20m" }
+[activities."subprocess-b.bpmn#Task_Review"]
+duration = { dist = "fixed", value = "40m" }
+[activities."subprocess-b.bpmn#Task_Check"]
+duration = { dist = "fixed", value = "6m" }
+
+[gateways."subprocess-a.bpmn#Gateway_Check"]
+probabilities = { Flow_ok = 1.0, Flow_retry = 0.0 }
+[gateways."subprocess-b.bpmn#Gateway_Check"]
+probabilities = { Flow_ok = 1.0, Flow_retry = 0.0 }

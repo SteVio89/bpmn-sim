@@ -1,12 +1,58 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL" xmlns:zeebe="http://camunda.org/schema/zeebe/1.0" id="Defs_Main">
-  <bpmn:process id="Process_Main">
-    <bpmn:startEvent id="Start_1"/>
+<bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL" xmlns:zeebe="http://camunda.org/schema/zeebe/1.0" xmlns:modeler="http://camunda.org/schema/modeler/1.0" modeler:executionPlatform="Camunda Cloud" id="Defs_Main">
+  <bpmn:message id="Msg_Order" name="Order"/>
+  <bpmn:message id="Msg_Rush" name="Rush"/>
+  <bpmn:message id="Msg_Bill" name="Bill"/>
+  <bpmn:message id="Msg_Invoice" name="Invoice"/>
+  <bpmn:signal id="Sig_Prepared" name="Prepared"/>
+  <bpmn:dataStore id="DS_Main" name="Orders"/>
+  <bpmn:collaboration id="Collab_Main">
+    <bpmn:participant id="Part_Customer" name="Customer" processRef="Process_Customer"/>
+    <bpmn:participant id="Part_Ops" name="Ops" processRef="Process_Ops"/>
+    <bpmn:participant id="Part_Billing" name="Billing" processRef="Process_Billing"/>
+    <bpmn:messageFlow id="MF_Order" sourceRef="Task_PlaceOrder" targetRef="MStart_Order"/>
+    <bpmn:messageFlow id="MF_Rush" sourceRef="Task_PlaceRush" targetRef="MStart_Rush"/>
+    <bpmn:messageFlow id="MF_Bill" sourceRef="End_Ops_Bill" targetRef="MStart_Bill"/>
+    <bpmn:messageFlow id="MF_Invoice" sourceRef="Task_Invoice" targetRef="Wait_Invoice"/>
+  </bpmn:collaboration>
+  <bpmn:process id="Process_Customer">
+    <bpmn:startEvent id="TimerStart" name="New quarter"><bpmn:timerEventDefinition/></bpmn:startEvent>
+    <bpmn:sendTask id="Task_PlaceOrder" name="Place order"><bpmn:extensionElements><zeebe:taskDefinition type="work"/><zeebe:ioMapping><zeebe:input source="=x" target="y"/></zeebe:ioMapping></bpmn:extensionElements></bpmn:sendTask>
+    <bpmn:sendTask id="Task_PlaceRush" name="Place rush order"/>
+    <bpmn:receiveTask id="Wait_Invoice" name="Wait for invoice"/>
+    <bpmn:endEvent id="End_Customer"/>
+    <bpmn:sequenceFlow id="C1" sourceRef="TimerStart" targetRef="Task_PlaceOrder"/>
+    <bpmn:sequenceFlow id="C2" sourceRef="Task_PlaceOrder" targetRef="Task_PlaceRush"/>
+    <bpmn:sequenceFlow id="C3" sourceRef="Task_PlaceRush" targetRef="Wait_Invoice"/>
+    <bpmn:sequenceFlow id="C4" sourceRef="Wait_Invoice" targetRef="End_Customer"/>
+  </bpmn:process>
+  <bpmn:process id="Process_Ops">
+    <bpmn:dataStoreReference id="DSRef_Main" dataStoreRef="DS_Main"/>
+    <bpmn:startEvent id="MStart_Order"><bpmn:messageEventDefinition messageRef="Msg_Order"/></bpmn:startEvent>
+    <bpmn:task id="Task_Prepare" name="Prepare"><bpmn:dataInputAssociation id="DIA_1"><bpmn:sourceRef>DSRef_Main</bpmn:sourceRef></bpmn:dataInputAssociation></bpmn:task>
     <bpmn:callActivity id="Call_A" name="Call A"><bpmn:extensionElements><zeebe:calledElement processId="Process_SubA" propagateAllChildVariables="false"/></bpmn:extensionElements></bpmn:callActivity>
+    <bpmn:intermediateThrowEvent id="Throw_Prepared"><bpmn:signalEventDefinition signalRef="Sig_Prepared"/></bpmn:intermediateThrowEvent>
+    <bpmn:endEvent id="End_Ops_Bill"><bpmn:messageEventDefinition messageRef="Msg_Bill"/></bpmn:endEvent>
+    <bpmn:startEvent id="MStart_Rush"><bpmn:messageEventDefinition messageRef="Msg_Rush"/></bpmn:startEvent>
+    <bpmn:task id="Task_Rush2" name="Rush work"/>
+    <bpmn:boundaryEvent id="Sig_Boundary" attachedToRef="Task_Rush2"><bpmn:signalEventDefinition signalRef="Sig_Prepared"/></bpmn:boundaryEvent>
+    <bpmn:endEvent id="End_Rush"/>
+    <bpmn:endEvent id="End_Rush_Short"/>
+    <bpmn:sequenceFlow id="O1" sourceRef="MStart_Order" targetRef="Task_Prepare"/>
+    <bpmn:sequenceFlow id="O2" sourceRef="Task_Prepare" targetRef="Call_A"/>
+    <bpmn:sequenceFlow id="O3" sourceRef="Call_A" targetRef="Throw_Prepared"/>
+    <bpmn:sequenceFlow id="O4" sourceRef="Throw_Prepared" targetRef="End_Ops_Bill"/>
+    <bpmn:sequenceFlow id="R1" sourceRef="MStart_Rush" targetRef="Task_Rush2"/>
+    <bpmn:sequenceFlow id="R2" sourceRef="Task_Rush2" targetRef="End_Rush"/>
+    <bpmn:sequenceFlow id="R3" sourceRef="Sig_Boundary" targetRef="End_Rush_Short"/>
+  </bpmn:process>
+  <bpmn:process id="Process_Billing">
+    <bpmn:startEvent id="MStart_Bill"><bpmn:messageEventDefinition messageRef="Msg_Bill"/></bpmn:startEvent>
     <bpmn:callActivity id="Call_B" name="Call B" calledElement="Process_SubB"/>
-    <bpmn:endEvent id="End_1"/>
-    <bpmn:sequenceFlow id="Flow_1" sourceRef="Start_1" targetRef="Call_A"/>
-    <bpmn:sequenceFlow id="Flow_2" sourceRef="Call_A" targetRef="Call_B"/>
-    <bpmn:sequenceFlow id="Flow_3" sourceRef="Call_B" targetRef="End_1"/>
+    <bpmn:sendTask id="Task_Invoice" name="Send invoice"/>
+    <bpmn:endEvent id="End_Billing"/>
+    <bpmn:sequenceFlow id="B1" sourceRef="MStart_Bill" targetRef="Call_B"/>
+    <bpmn:sequenceFlow id="B2" sourceRef="Call_B" targetRef="Task_Invoice"/>
+    <bpmn:sequenceFlow id="B3" sourceRef="Task_Invoice" targetRef="End_Billing"/>
   </bpmn:process>
 </bpmn:definitions>

@@ -126,6 +126,16 @@ pub fn validate(project: &Project) -> Vec<Issue> {
             );
         }
 
+        if let Some(d) = &n.called_decision
+            && !project.decisions.contains_key(d)
+        {
+            push(
+                Severity::Warning,
+                n,
+                format!("decision '{d}' is not defined in any loaded DMN file"),
+            );
+        }
+
         if let NodeKind::Unsupported(kind) = &n.kind {
             push(
                 Severity::Warning,

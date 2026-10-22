@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<definitions xmlns="https://www.omg.org/spec/DMN/20191111/MODEL/" id="Defs_decision-limit" name="Limit" namespace="http://camunda.org/schema/1.0/dmn">
+  <decision id="decision-limit" name="Limit">
+    <decisionTable id="DT_decision-limit" hitPolicy="UNIQUE">
+      <input id="In_1" label="amount"><inputExpression id="IE_1" typeRef="number"><text>amount</text></inputExpression></input>
+      <output id="Out_1" label="result" name="result" typeRef="string"/>
+      <rule id="Rule_1"><inputEntry id="IEn_1"><text>&lt; 1000</text></inputEntry><outputEntry id="OEn_1"><text>"low"</text></outputEntry></rule>
+      <rule id="Rule_2"><inputEntry id="IEn_2"><text>&gt;= 1000</text></inputEntry><outputEntry id="OEn_2"><text>"high"</text></outputEntry></rule>
+    </decisionTable>
+  </decision>
+</definitions>

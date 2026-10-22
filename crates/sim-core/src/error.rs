@@ -19,6 +19,14 @@ pub enum ParseError {
         first: String,
         second: String,
     },
+    #[error("{file}: not a DMN document (root element is not dmn:definitions)")]
+    NotDmn { file: String },
+    #[error("decision id '{decision}' is defined in both '{first}' and '{second}'")]
+    DuplicateDecision {
+        decision: String,
+        first: String,
+        second: String,
+    },
     #[error("file '{file}' was loaded twice")]
     DuplicateFile { file: String },
     #[error("{path}: {message}")]

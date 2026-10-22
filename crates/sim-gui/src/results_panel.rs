@@ -84,6 +84,27 @@ pub fn show(app: &mut App, ui: &mut Ui) {
                 row("mean case cost", format!("{:.2}", r.case_cost.mean));
                 row("stuck tokens", r.stuck.len().to_string());
             });
+            if !r.processes.is_empty() {
+                ui.heading("Process instances");
+                egui::Grid::new("procs").striped(true).show(ui, |ui| {
+                    for h in [
+                        "process",
+                        "instances",
+                        &format!("mean cycle time ({uname})"),
+                        &format!("p90 ({uname})"),
+                    ] {
+                        ui.label(RichText::new(h).strong());
+                    }
+                    ui.end_row();
+                    for (id, p) in &r.processes {
+                        ui.label(id.to_string());
+                        ui.label(p.instances.to_string());
+                        ui.label(t(p.cycle_time.mean));
+                        ui.label(t(p.cycle_time.p90));
+                        ui.end_row();
+                    }
+                });
+            }
             ui.heading("End events");
             for (id, n) in &r.end_events {
                 ui.label(format!("{id}: {n}"));

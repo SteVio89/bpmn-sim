@@ -1,16 +1,36 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL" xmlns:zeebe="http://camunda.org/schema/zeebe/1.0" id="Defs_Process_SubA">
-  <bpmn:collaboration id="Collab_1">
-    <bpmn:participant id="Part_Sub" name="Sub" processRef="Process_SubA"/>
-    <bpmn:participant id="Part_Ext" name="External A"/>
-    <bpmn:messageFlow id="MF_1" sourceRef="Task_Analyse" targetRef="Part_Ext"/>
+<bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL" xmlns:zeebe="http://camunda.org/schema/zeebe/1.0" xmlns:modeler="http://camunda.org/schema/modeler/1.0" modeler:executionPlatform="Camunda Cloud" id="Defs_A">
+  <bpmn:dataStore id="DS_A" name="Archive"/>
+  <bpmn:collaboration id="Collab_A">
+    <bpmn:participant id="Part_Sub" name="Sub A" processRef="Process_SubA"/>
+    <bpmn:participant id="Part_Ext" name="Supplier A"/>
+    <bpmn:messageFlow id="MF_Req" sourceRef="Task_Analyse" targetRef="Part_Ext"/>
   </bpmn:collaboration>
-  <bpmn:process id="Process_SubA">
-    <bpmn:laneSet id="LS_1"><bpmn:lane id="Lane_1" name="Team A"><bpmn:flowNodeRef>Task_Analyse</bpmn:flowNodeRef></bpmn:lane></bpmn:laneSet>
+  <bpmn:process id="Process_SubA" isExecutable="true">
+    <bpmn:laneSet id="LS_1">
+      <bpmn:lane id="Lane_1" name="Ops"><bpmn:flowNodeRef>Task_Analyse</bpmn:flowNodeRef><bpmn:flowNodeRef>Task_Check</bpmn:flowNodeRef></bpmn:lane>
+      <bpmn:lane id="Lane_2" name="Reviewers"><bpmn:flowNodeRef>Task_Review</bpmn:flowNodeRef></bpmn:lane>
+    </bpmn:laneSet>
+    <bpmn:dataStoreReference id="DSRef_1" dataStoreRef="DS_A"/>
     <bpmn:startEvent id="Start_1"/>
-    <bpmn:sendTask id="Task_Analyse" name="Analyse"><bpmn:extensionElements><zeebe:taskDefinition type="x"/></bpmn:extensionElements></bpmn:sendTask>
+    <bpmn:sendTask id="Task_Analyse" name="Analyse"><bpmn:extensionElements><zeebe:taskDefinition type="work"/><zeebe:ioMapping><zeebe:input source="=x" target="y"/></zeebe:ioMapping></bpmn:extensionElements><bpmn:dataOutputAssociation id="DOA_1"><bpmn:targetRef>DSRef_1</bpmn:targetRef></bpmn:dataOutputAssociation></bpmn:sendTask>
+    <bpmn:exclusiveGateway id="Gateway_Check" name="OK?" default="Flow_ok"/>
+    <bpmn:intermediateThrowEvent id="Throw_Retry"><bpmn:linkEventDefinition name="Retry"/></bpmn:intermediateThrowEvent>
+    <bpmn:intermediateCatchEvent id="Catch_Retry"><bpmn:linkEventDefinition name="Retry"/></bpmn:intermediateCatchEvent>
+    <bpmn:parallelGateway id="Split"/>
+    <bpmn:userTask id="Task_Review" name="Review"><bpmn:extensionElements><zeebe:taskDefinition type="work"/><zeebe:ioMapping><zeebe:input source="=x" target="y"/></zeebe:ioMapping></bpmn:extensionElements></bpmn:userTask>
+    <bpmn:task id="Task_Check" name="Check"/>
+    <bpmn:parallelGateway id="Join"/>
     <bpmn:endEvent id="End_1"/>
     <bpmn:sequenceFlow id="Flow_1" sourceRef="Start_1" targetRef="Task_Analyse"/>
-    <bpmn:sequenceFlow id="Flow_2" sourceRef="Task_Analyse" targetRef="End_1"/>
+    <bpmn:sequenceFlow id="Flow_2" sourceRef="Task_Analyse" targetRef="Gateway_Check"/>
+    <bpmn:sequenceFlow id="Flow_ok" name="ok" sourceRef="Gateway_Check" targetRef="Split"/>
+    <bpmn:sequenceFlow id="Flow_retry" name="retry" sourceRef="Gateway_Check" targetRef="Throw_Retry"/>
+    <bpmn:sequenceFlow id="Flow_loop" sourceRef="Catch_Retry" targetRef="Task_Analyse"/>
+    <bpmn:sequenceFlow id="Flow_3" sourceRef="Split" targetRef="Task_Review"/>
+    <bpmn:sequenceFlow id="Flow_4" sourceRef="Split" targetRef="Task_Check"/>
+    <bpmn:sequenceFlow id="Flow_5" sourceRef="Task_Review" targetRef="Join"/>
+    <bpmn:sequenceFlow id="Flow_6" sourceRef="Task_Check" targetRef="Join"/>
+    <bpmn:sequenceFlow id="Flow_7" sourceRef="Join" targetRef="End_1"/>
   </bpmn:process>
 </bpmn:definitions>

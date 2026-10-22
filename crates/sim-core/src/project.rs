@@ -1,8 +1,9 @@
 //! A project is a set of BPMN files that reference each other (spec §3.2).
 
 use std::collections::BTreeMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
+use crate::dmn::{DmnFile, parse_dmn};
 use crate::error::ParseError;
 use crate::model::*;
 use crate::parser::parse_file;
@@ -13,6 +14,10 @@ pub struct Project {
     pub files: BTreeMap<String, BpmnFile>,
     /// Process id (global, unique across files) -> qualified id.
     pub processes: BTreeMap<String, QId>,
+    /// Loaded DMN files.
+    pub dmn: BTreeMap<String, DmnFile>,
+    /// Decision id (global, unique across DMN files) -> file name.
+    pub decisions: BTreeMap<String, String>,
 }
 
 impl Project {
@@ -52,11 +57,36 @@ impl Project {
             .file_name()
             .map(|n| n.to_string_lossy().into_owned())
             .unwrap_or_default();
-        self.add_source(&name, &xml)
+        if path.extension().is_some_and(|x| x == "dmn") {
+            self.add_dmn_source(&name, &xml)
+        } else {
+            self.add_source(&name, &xml)
+        }
     }
 
-    /// Load every `*.bpmn` file in a folder (not recursive), in name order.
-    /// Discovery from a single main file by following call activities comes with M4.
+    /// Add one DMN file. Decision ids must be unique across DMN files.
+    pub fn add_dmn_source(&mut self, name: &str, xml: &str) -> Result<(), ParseError> {
+        if self.dmn.contains_key(name) {
+            return Err(ParseError::DuplicateFile { file: name.into() });
+        }
+        let file = parse_dmn(name, xml)?;
+        for id in file.decisions.keys() {
+            if let Some(existing) = self.decisions.get(id) {
+                return Err(ParseError::DuplicateDecision {
+                    decision: id.clone(),
+                    first: existing.clone(),
+                    second: name.into(),
+                });
+            }
+        }
+        for id in file.decisions.keys() {
+            self.decisions.insert(id.clone(), name.to_string());
+        }
+        self.dmn.insert(name.to_string(), file);
+        Ok(())
+    }
+
+    /// Load every `*.bpmn` and `*.dmn` file in a folder (not recursive), in name order.
     pub fn add_dir(&mut self, dir: &Path) -> Result<(), ParseError> {
         let io = |e: std::io::Error| ParseError::Io {
             path: dir.display().to_string(),
@@ -65,7 +95,7 @@ impl Project {
         let mut paths: Vec<_> = std::fs::read_dir(dir)
             .map_err(io)?
             .filter_map(|e| e.ok().map(|e| e.path()))
-            .filter(|p| p.extension().is_some_and(|x| x == "bpmn"))
+            .filter(|p| p.extension().is_some_and(|x| x == "bpmn" || x == "dmn"))
             .collect();
         paths.sort();
         for p in paths {
@@ -107,5 +137,154 @@ impl Project {
             .values()
             .find(|p| p.process.as_ref() == Some(process))
             .and_then(|p| p.name.as_deref())
+    }
+}
+
+/// Which files a main file needs: itself plus, directly or indirectly, every `*.bpmn` in its
+/// folder that defines a process called by a call activity and every `*.dmn` that defines a
+/// decision used by a business rule task (spec §3.2). Files are not searched recursively.
+/// The main file comes first, the rest in name order. References that nothing in the folder
+/// defines are left for validation to report; unrelated unreadable files are ignored.
+pub fn discover_files(main: &Path) -> Result<Vec<PathBuf>, ParseError> {
+    let io = |e: std::io::Error| ParseError::Io {
+        path: main.display().to_string(),
+        message: e.to_string(),
+    };
+    let dir = main
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .unwrap_or(Path::new("."));
+    let main_name = main
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let text = std::fs::read_to_string(main).map_err(io)?;
+    let main_file = parse_file(&main_name, &text)?;
+
+    // Candidates in the folder (parse failures are skipped: they may be unrelated).
+    let mut bpmn: BTreeMap<String, (PathBuf, BpmnFile)> = BTreeMap::new();
+    let mut dmn: BTreeMap<String, (PathBuf, DmnFile)> = BTreeMap::new();
+    let mut entries: Vec<PathBuf> = std::fs::read_dir(dir)
+        .map_err(io)?
+        .filter_map(|e| e.ok().map(|e| e.path()))
+        .collect();
+    entries.sort();
+    for p in entries {
+        let name = p
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        if name == main_name {
+            continue;
+        }
+        let Ok(text) = std::fs::read_to_string(&p) else {
+            continue;
+        };
+        match p.extension().and_then(|x| x.to_str()) {
+            Some("bpmn") => {
+                if let Ok(f) = parse_file(&name, &text) {
+                    bpmn.insert(name, (p, f));
+                }
+            }
+            Some("dmn") => {
+                if let Ok(f) = parse_dmn(&name, &text) {
+                    dmn.insert(name, (p, f));
+                }
+            }
+            _ => {}
+        }
+    }
+
+    let mut selected: Vec<String> = Vec::new();
+    let mut selected_dmn: Vec<String> = Vec::new();
+    let mut queue: Vec<BpmnFile> = vec![main_file.clone()];
+    let mut defines: BTreeMap<String, Vec<String>> = BTreeMap::new(); // process id -> files
+    for f in std::iter::once(&main_file).chain(bpmn.values().map(|(_, f)| f)) {
+        for pid in f.processes.keys() {
+            defines
+                .entry(pid.id.clone())
+                .or_default()
+                .push(f.name.clone());
+        }
+    }
+    while let Some(file) = queue.pop() {
+        for n in file.nodes.values() {
+            if let Some(called) = &n.called_element
+                && let Some(files) = defines.get(called)
+            {
+                if files.len() > 1 {
+                    return Err(ParseError::DuplicateProcess {
+                        process: called.clone(),
+                        first: files[0].clone(),
+                        second: files[1].clone(),
+                    });
+                }
+                for f in files {
+                    if *f != main_name && !selected.contains(f) {
+                        selected.push(f.clone());
+                        if let Some((_, parsed)) = bpmn.get(f) {
+                            queue.push(parsed.clone());
+                        }
+                    }
+                }
+            }
+            if let Some(decision) = &n.called_decision {
+                let owners: Vec<&String> = dmn
+                    .iter()
+                    .filter(|(_, (_, d))| d.decisions.contains_key(decision))
+                    .map(|(name, _)| name)
+                    .collect();
+                if owners.len() > 1 {
+                    return Err(ParseError::DuplicateDecision {
+                        decision: decision.clone(),
+                        first: owners[0].clone(),
+                        second: owners[1].clone(),
+                    });
+                }
+                if let Some(o) = owners.first()
+                    && !selected_dmn.contains(o)
+                {
+                    selected_dmn.push((*o).clone());
+                }
+            }
+        }
+    }
+    selected.sort();
+    selected_dmn.sort();
+    let mut out = vec![main.to_path_buf()];
+    out.extend(
+        selected
+            .iter()
+            .filter_map(|n| bpmn.get(n).map(|(p, _)| p.clone())),
+    );
+    out.extend(
+        selected_dmn
+            .iter()
+            .filter_map(|n| dmn.get(n).map(|(p, _)| p.clone())),
+    );
+    Ok(out)
+}
+
+impl Project {
+    /// Add a main file together with everything it references (see `discover_files`); files
+    /// that are already loaded are skipped.
+    pub fn add_main(&mut self, main: &Path) -> Result<(), ParseError> {
+        for p in discover_files(main)? {
+            let name = p
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_default();
+            if !self.files.contains_key(&name) && !self.dmn.contains_key(&name) {
+                self.add_path(&p)?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Open a main file together with everything it references.
+    pub fn open_main(main: &Path) -> Result<Self, ParseError> {
+        let mut project = Self::new();
+        project.add_main(main)?;
+        Ok(project)
     }
 }

@@ -34,9 +34,9 @@ impl Ord for Time {
 enum Ev {
     Arrival(usize),
     TaskDone(usize),
-    /// A black box replies: deliver message flow `flow` (index into `Engine::msg_flows`) in `case`.
+    /// A black box replies: deliver message flow `flow` (index into `Engine::msg_flows`) in `group`.
     Reply {
-        case: usize,
+        group: usize,
         flow: usize,
     },
     /// A timer subscription fires.
@@ -58,6 +58,8 @@ struct Token {
     /// Scope started by this token while it sits at an embedded subprocess.
     child_scope: Option<usize>,
     run: Option<usize>,
+    /// Instance started by this token while it sits at a call activity.
+    child_instance: Option<usize>,
     subs: Vec<usize>,
 }
 
@@ -86,6 +88,13 @@ struct Sub {
 
 struct Instance {
     case: usize,
+    /// Messages are matched within a group: the top-level instances of a case form one, every
+    /// call activity starts a new one for the called process and what it starts by messages.
+    group: usize,
+    /// Call activity token (instance, token) waiting for this instance to complete.
+    parent: Option<(usize, u64)>,
+    started: f64,
+    finished: Option<f64>,
     process: QId,
     tokens: BTreeMap<u64, Token>,
     /// AND join node -> incoming flow -> waiting tokens (FIFO).
@@ -142,11 +151,13 @@ pub struct Engine<'a> {
     end_events: BTreeMap<QId, u64>,
     boundary_fired: BTreeMap<QId, u64>,
     msg_flows: Vec<&'a MessageFlow>,
-    /// (case, receiving element) -> subscriptions, FIFO.
+    /// group -> case
+    groups: Vec<usize>,
+    /// (group, receiving element) -> subscriptions, FIFO.
     waiting_msg: BTreeMap<(usize, QId), VecDeque<usize>>,
     /// signal name -> (case, subscription).
     waiting_sig: BTreeMap<String, BTreeSet<(usize, usize)>>,
-    /// (case, receiving element) -> buffered message count.
+    /// (group, receiving element) -> buffered message count.
     buffer: BTreeMap<(usize, QId), usize>,
     messages: Vec<MessageRecord>,
     signals: Vec<SignalRecord>,
@@ -240,6 +251,7 @@ impl<'a> Engine<'a> {
                 .values()
                 .flat_map(|f| f.message_flows.values())
                 .collect(),
+            groups: Vec::new(),
             waiting_msg: BTreeMap::new(),
             waiting_sig: BTreeMap::new(),
             buffer: BTreeMap::new(),
@@ -267,7 +279,7 @@ impl<'a> Engine<'a> {
             match ev {
                 Ev::Arrival(g) => self.on_arrival(g),
                 Ev::TaskDone(run) => self.on_task_done(run),
-                Ev::Reply { case, flow } => self.deliver(case, flow),
+                Ev::Reply { group, flow } => self.deliver(group, flow),
                 Ev::Timer(sub) => self.fire_sub(sub),
             }
         }
@@ -281,6 +293,8 @@ impl<'a> Engine<'a> {
             return;
         }
         let case = self.cases.len();
+        let group = self.groups.len();
+        self.groups.push(case);
         self.cases.push(Case {
             arrival: self.now,
             open_instances: 0,
@@ -304,7 +318,7 @@ impl<'a> Engine<'a> {
         // while a later pool's instance has not been created yet. Instances then run in trigger order.
         let created: Vec<(usize, Vec<QId>)> = per_process
             .into_iter()
-            .map(|(process, starts)| (self.create_instance(case, process), starts))
+            .map(|(process, starts)| (self.create_instance(case, group, process, None), starts))
             .collect();
         for (inst, starts) in created {
             self.start_instance(inst, starts);
@@ -314,10 +328,20 @@ impl<'a> Engine<'a> {
         self.schedule(self.now + gap, Ev::Arrival(g));
     }
 
-    fn create_instance(&mut self, case: usize, process: QId) -> usize {
+    fn create_instance(
+        &mut self,
+        case: usize,
+        group: usize,
+        process: QId,
+        parent: Option<(usize, u64)>,
+    ) -> usize {
         let inst = self.instances.len();
         self.instances.push(Instance {
             case,
+            group,
+            parent,
+            started: self.now,
+            finished: None,
             process,
             tokens: BTreeMap::new(),
             joins: BTreeMap::new(),
@@ -347,6 +371,7 @@ impl<'a> Engine<'a> {
                 scope,
                 child_scope: None,
                 run: None,
+                child_instance: None,
                 subs: Vec::new(),
             },
         );
@@ -394,6 +419,7 @@ impl<'a> Engine<'a> {
                 }
                 NodeKind::Task(_) => self.request_task(inst, tok, node),
                 NodeKind::SubProcess => self.enter_scope(inst, tok, node, &mut work),
+                NodeKind::CallActivity => self.call(inst, tok, node),
                 NodeKind::IntermediateCatchEvent => match first_def {
                     Some(EventDef::Signal(name)) => {
                         self.wait_signal(inst, tok, node, name.clone().unwrap_or_default())
@@ -579,10 +605,13 @@ impl<'a> Engine<'a> {
     /// Cancel what a token is doing at its activity (task run, subprocess scope, subscriptions).
     fn cancel_activity(&mut self, inst: usize, tok: u64) {
         self.cancel_subs(inst, tok);
-        let (run, child) = match self.instances[inst].tokens.get_mut(&tok) {
-            Some(t) => (t.run.take(), t.child_scope.take()),
+        let (run, child, callee) = match self.instances[inst].tokens.get_mut(&tok) {
+            Some(t) => (t.run.take(), t.child_scope.take(), t.child_instance.take()),
             None => return,
         };
+        if let Some(c) = callee {
+            self.cancel_instance(c);
+        }
         if let Some(r) = run {
             self.cancel_run(r);
         }
@@ -597,6 +626,61 @@ impl<'a> Engine<'a> {
                 self.cancel_token(inst, t);
             }
         }
+    }
+
+    /// Cancel a called instance (its call activity was interrupted or terminated).
+    fn cancel_instance(&mut self, inst: usize) {
+        if self.instances[inst].done {
+            return;
+        }
+        let toks: Vec<u64> = self.instances[inst].tokens.keys().copied().collect();
+        for t in toks {
+            if self.alive(inst, t) {
+                self.cancel_token(inst, t);
+            }
+        }
+        self.instances[inst].done = true;
+        let case = self.instances[inst].case;
+        self.cases[case].open_instances -= 1;
+    }
+
+    /// A token arrives at a call activity: start the called process as a new instance of the
+    /// same case; the token continues when that instance completes.
+    fn call(&mut self, inst: usize, tok: u64, node: &FlowNode) {
+        let m = self.m;
+        let Some(process) = node
+            .called_element
+            .as_ref()
+            .and_then(|c| m.project.processes.get(c))
+        else {
+            return;
+        };
+        let starts: Vec<QId> = m
+            .project
+            .nodes()
+            .filter(|n| {
+                n.process == *process
+                    && n.parent.is_none()
+                    && n.kind == NodeKind::StartEvent
+                    && n.event_defs.iter().all(|d| matches!(d, EventDef::None))
+            })
+            .map(|n| n.id.clone())
+            .collect();
+        let case = self.instances[inst].case;
+        let group = self.groups.len();
+        self.groups.push(case);
+        self.set_token(
+            inst,
+            tok,
+            &node.id,
+            &format!("waiting for called process '{}'", process.id),
+        );
+        self.arm_boundaries(inst, tok, node);
+        let child = self.create_instance(case, group, process.clone(), Some((inst, tok)));
+        if let Some(t) = self.instances[inst].tokens.get_mut(&tok) {
+            t.child_instance = Some(child);
+        }
+        self.start_instance(child, starts);
     }
 
     fn cancel_token(&mut self, inst: usize, tok: u64) {
@@ -621,10 +705,11 @@ impl<'a> Engine<'a> {
     ) -> usize {
         let id = self.subs.len();
         let case = self.instances[inst].case;
+        let group = self.instances[inst].group;
         match &kind {
             SubKind::Message => self
                 .waiting_msg
-                .entry((case, node.clone()))
+                .entry((group, node.clone()))
                 .or_default()
                 .push_back(id),
             SubKind::Signal(name) => {
@@ -956,6 +1041,7 @@ impl<'a> Engine<'a> {
     /// A throwing element sends its messages and signals (take no time, spec §5.3).
     fn throw(&mut self, inst: usize, node: &FlowNode) {
         let case = self.instances[inst].case;
+        let group = self.instances[inst].group;
         let is_message = node.kind == NodeKind::Task(TaskKind::Send)
             || node
                 .event_defs
@@ -970,20 +1056,21 @@ impl<'a> Engine<'a> {
                 .map(|(i, _)| i)
                 .collect();
             for f in flows {
-                self.deliver(case, f);
+                self.deliver(group, f);
             }
         }
         for d in &node.event_defs {
             if let EventDef::Signal(name) = d {
-                self.broadcast(case, name.clone().unwrap_or_default());
+                self.broadcast(case, group, name.clone().unwrap_or_default());
             }
         }
     }
 
-    /// Deliver message flow `flow` within `case` (spec §5.3).
-    fn deliver(&mut self, case: usize, flow: usize) {
+    /// Deliver message flow `flow` within `group` (spec §5.3).
+    fn deliver(&mut self, group: usize, flow: usize) {
+        let case = self.groups[group];
         let f = self.msg_flows[flow];
-        let key = (case, f.target.clone());
+        let key = (group, f.target.clone());
         let mut outcome = MessageOutcome::Lost;
         if let Some(target) = self.m.project.node(&f.target) {
             let mut waiting = None;
@@ -996,7 +1083,7 @@ impl<'a> Engine<'a> {
                 }
             }
             if let Some(s) = waiting {
-                self.log_message(case, f, MessageOutcome::Delivered);
+                self.log_message(group, f, MessageOutcome::Delivered);
                 self.fire_sub(s);
                 if self.subs[s].active {
                     // Non-interrupting message boundary event: stays armed.
@@ -1005,8 +1092,8 @@ impl<'a> Engine<'a> {
                 return;
             } else if target.kind == NodeKind::StartEvent {
                 if self.cases[case].completion.is_none() {
-                    self.log_message(case, f, MessageOutcome::StartedInstance);
-                    let inst = self.create_instance(case, target.process.clone());
+                    self.log_message(group, f, MessageOutcome::StartedInstance);
+                    let inst = self.create_instance(case, group, target.process.clone(), None);
                     self.start_instance(inst, vec![target.id.clone()]);
                     return;
                 }
@@ -1028,17 +1115,17 @@ impl<'a> Engine<'a> {
                     .map(|(i, _)| i)
                     .collect();
                 for r in replies {
-                    self.schedule(self.now + delay, Ev::Reply { case, flow: r });
+                    self.schedule(self.now + delay, Ev::Reply { group, flow: r });
                 }
             }
         }
-        self.log_message(case, f, outcome);
+        self.log_message(group, f, outcome);
     }
 
-    fn log_message(&mut self, case: usize, f: &MessageFlow, outcome: MessageOutcome) {
+    fn log_message(&mut self, group: usize, f: &MessageFlow, outcome: MessageOutcome) {
         self.messages.push(MessageRecord {
             time: self.now,
-            case: case as u64,
+            case: self.groups[group] as u64,
             flow: f.id.clone(),
             source: f.source.clone(),
             target: f.target.clone(),
@@ -1061,8 +1148,7 @@ impl<'a> Engine<'a> {
 
     /// A token arrives at a receive task / message catch event: take a buffered message or wait.
     fn wait_message(&mut self, inst: usize, tok: u64, node: &FlowNode, work: &mut Vec<Work>) {
-        let case = self.instances[inst].case;
-        let key = (case, node.id.clone());
+        let key = (self.instances[inst].group, node.id.clone());
         match self.buffer.get_mut(&key) {
             Some(n) if *n > 0 => {
                 *n -= 1;
@@ -1085,7 +1171,7 @@ impl<'a> Engine<'a> {
     }
 
     /// Signals are not stored: only subscriptions waiting right now receive them (spec §5.4).
-    fn broadcast(&mut self, case: usize, name: String) {
+    fn broadcast(&mut self, case: usize, group: usize, name: String) {
         let global = self.m.signal_scope == SignalScope::Global;
         let woken: Vec<(usize, usize)> = self
             .waiting_sig
@@ -1126,7 +1212,7 @@ impl<'a> Engine<'a> {
             let Some(node) = self.m.project.node(&start) else {
                 continue;
             };
-            let inst = self.create_instance(case, node.process.clone());
+            let inst = self.create_instance(case, group, node.process.clone(), None);
             self.start_instance(inst, vec![start]);
             started += 1;
         }
@@ -1145,12 +1231,26 @@ impl<'a> Engine<'a> {
             return;
         }
         i.done = true;
-        let case = i.case;
+        i.finished = Some(self.now);
+        let (case, parent) = (i.case, i.parent);
         let c = &mut self.cases[case];
         c.open_instances -= 1;
         if c.open_instances == 0 {
             c.completion = Some(self.now);
             self.completion_order.push(case);
+        }
+        // A called instance completing releases the call activity token that waits for it.
+        if let Some((pi, pt)) = parent
+            && self.alive(pi, pt)
+        {
+            self.cancel_subs(pi, pt);
+            if let Some(t) = self.instances[pi].tokens.get_mut(&pt) {
+                t.child_instance = None;
+                let node = t.node.clone();
+                if let Some(n) = self.m.project.node(&node) {
+                    self.resume(pi, pt, n);
+                }
+            }
         }
     }
 
@@ -1212,6 +1312,28 @@ impl<'a> Engine<'a> {
             })
             .collect();
 
+        let mut by_process: BTreeMap<&QId, Vec<f64>> = BTreeMap::new();
+        for i in &self.instances {
+            if let (Some(end), false) = (i.finished, cases[i.case].warm_up) {
+                by_process
+                    .entry(&i.process)
+                    .or_default()
+                    .push(end - i.started);
+            }
+        }
+        let processes = by_process
+            .into_iter()
+            .map(|(p, v)| {
+                (
+                    p.clone(),
+                    ProcessStats {
+                        instances: v.len(),
+                        cycle_time: Summary::of(&v),
+                    },
+                )
+            })
+            .collect();
+
         // The observation window is the whole run; utilisation includes warm-up cases.
         let end_time = self.now;
         let resources = self
@@ -1244,7 +1366,7 @@ impl<'a> Engine<'a> {
             .flat_map(|inst| {
                 inst.tokens
                     .values()
-                    .filter(|t| t.child_scope.is_none())
+                    .filter(|t| t.child_scope.is_none() && t.child_instance.is_none())
                     .map(move |t| StuckToken {
                         case: inst.case as u64,
                         process: inst.process.clone(),
@@ -1275,8 +1397,8 @@ impl<'a> Engine<'a> {
                 .buffer
                 .iter()
                 .filter(|(_, n)| **n > 0)
-                .map(|((case, target), n)| UndeliveredMessage {
-                    case: *case as u64,
+                .map(|((group, target), n)| UndeliveredMessage {
+                    case: self.groups[*group] as u64,
                     target: target.clone(),
                     count: *n,
                 })
@@ -1284,6 +1406,7 @@ impl<'a> Engine<'a> {
             messages: self.messages,
             signals: self.signals,
             boundary_fired: self.boundary_fired,
+            processes,
             cases,
             records: self.records,
         }

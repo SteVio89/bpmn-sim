@@ -38,7 +38,7 @@ fn load(paths: &[String]) -> Result<Project> {
                 .add_dir(path)
                 .with_context(|| format!("loading folder {p}"))?;
         } else {
-            project.add_path(path)?;
+            project.add_main(path)?;
         }
     }
     Ok(project)
@@ -132,9 +132,21 @@ fn print_result(r: &ReplicationResult, unit: f64, unit_name: &str) {
         t(c.max)
     );
     println!("case cost: mean {:.2}", r.case_cost.mean);
-    for (id, a) in &r.activities {
+    for (id, p) in &r.processes {
         println!(
-            "  activity {id}: {} runs, wait {:.2}, processing {:.2}, cost {:.2}",
+            "  process {id}: {} instances, cycle time mean {:.2}",
+            p.instances,
+            t(p.cycle_time.mean)
+        );
+    }
+    for (id, a) in &r.activities {
+        let cancelled = if a.cancelled > 0 {
+            format!(" ({} cancelled)", a.cancelled)
+        } else {
+            String::new()
+        };
+        println!(
+            "  activity {id}: {} runs{cancelled}, wait {:.2}, processing {:.2}, cost {:.2}",
             a.runs,
             t(a.waiting.mean),
             t(a.processing.mean),
