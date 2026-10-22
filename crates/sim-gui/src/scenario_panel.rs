@@ -238,6 +238,31 @@ pub fn show(app: &mut App, ui: &mut Ui) {
             },
         );
 
+        if !s.events.is_empty() || !s.boundary.is_empty() {
+            egui::CollapsingHeader::new("Timer events and boundary events")
+                .default_open(true)
+                .show(ui, |ui| {
+                    for (key, e) in s.events.iter_mut() {
+                        ui.horizontal(|ui| {
+                            ui.label(format!("{}  delay:", display(&project, key, &e.label)));
+                            dist_edit(ui, Id::unique(("event", key)), &mut e.delay);
+                        });
+                    }
+                    for (key, b) in s.boundary.iter_mut() {
+                        ui.horizontal(|ui| {
+                            ui.label(display(&project, key, &b.label));
+                            if let Some(p) = b.probability.as_mut() {
+                                ui.add(egui::Slider::new(p, 0.0..=1.0).text("probability"));
+                            }
+                            if let Some(d) = b.delay.as_mut() {
+                                ui.label("delay:");
+                                dist_edit(ui, Id::unique(("boundary", key)), d);
+                            }
+                        });
+                    }
+                });
+        }
+
         egui::CollapsingHeader::new(format!("XOR gateways ({})", s.gateways.len())).show(
             ui,
             |ui| {

@@ -65,6 +65,9 @@ pub struct ActivityRecord {
     pub start: f64,
     pub end: f64,
     pub cost: f64,
+    /// Cut short by an interrupting boundary event or a terminate end event; `start` equals
+    /// `end` if the task never got its resource.
+    pub cancelled: bool,
 }
 
 impl ActivityRecord {
@@ -88,7 +91,9 @@ pub struct CaseRecord {
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct ActivityStats {
+    /// Completed runs; `waiting` and `processing` only cover these.
     pub runs: usize,
+    pub cancelled: usize,
     pub waiting: Summary,
     pub processing: Summary,
     pub total_cost: f64,
@@ -146,6 +151,8 @@ pub struct SignalRecord {
     pub name: String,
     /// Number of waiting tokens that received it; 0 means the signal was missed (not stored).
     pub receivers: usize,
+    /// Instances created by signal start events.
+    pub started: usize,
 }
 
 /// Buffered messages nobody ever picked up.
@@ -174,6 +181,8 @@ pub struct ReplicationResult {
     pub messages_lost: u64,
     pub undelivered: Vec<UndeliveredMessage>,
     pub signals: Vec<SignalRecord>,
+    /// How often each boundary event fired.
+    pub boundary_fired: BTreeMap<QId, u64>,
     pub cases: Vec<CaseRecord>,
     pub records: Vec<ActivityRecord>,
 }

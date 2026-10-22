@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL" id="D">
+  <bpmn:signal id="S" name="Wake"/>
+  <bpmn:collaboration id="C">
+    <bpmn:participant id="PA" name="A" processRef="Process_A"/>
+    <bpmn:participant id="PB" name="B" processRef="Process_B"/>
+  </bpmn:collaboration>
+  <bpmn:process id="Process_A">
+    <bpmn:startEvent id="Start_A"/>
+    <bpmn:task id="Task_A"/>
+    <bpmn:endEvent id="End_A"><bpmn:signalEventDefinition signalRef="S"/></bpmn:endEvent>
+    <bpmn:sequenceFlow id="F1" sourceRef="Start_A" targetRef="Task_A"/>
+    <bpmn:sequenceFlow id="F2" sourceRef="Task_A" targetRef="End_A"/>
+  </bpmn:process>
+  <bpmn:process id="Process_B">
+    <bpmn:startEvent id="SStart"><bpmn:signalEventDefinition signalRef="S"/></bpmn:startEvent>
+    <bpmn:task id="Task_B"/>
+    <bpmn:endEvent id="End_B"/>
+    <bpmn:sequenceFlow id="G1" sourceRef="SStart" targetRef="Task_B"/>
+    <bpmn:sequenceFlow id="G2" sourceRef="Task_B" targetRef="End_B"/>
+  </bpmn:process>
+</bpmn:definitions>

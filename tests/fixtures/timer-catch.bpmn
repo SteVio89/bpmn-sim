@@ -1,0 +1,4 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL" id="D">
+<bpmn:process id="Process_Timer"><bpmn:startEvent id="Start"/><bpmn:intermediateCatchEvent id="Wait" name="Wait"><bpmn:timerEventDefinition/></bpmn:intermediateCatchEvent><bpmn:task id="Task_A"/><bpmn:endEvent id="End"/><bpmn:sequenceFlow id="F1" sourceRef="Start" targetRef="Wait"/><bpmn:sequenceFlow id="F2" sourceRef="Wait" targetRef="Task_A"/><bpmn:sequenceFlow id="F3" sourceRef="Task_A" targetRef="End"/></bpmn:process>
+</bpmn:definitions>

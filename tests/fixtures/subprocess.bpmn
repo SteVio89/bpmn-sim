@@ -1,0 +1,4 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL" id="D">
+<bpmn:process id="Process_Sub"><bpmn:startEvent id="Start"/><bpmn:subProcess id="Sub" name="Inner"><bpmn:startEvent id="S_Start"/><bpmn:task id="Task_In"/><bpmn:task id="Task_In2"/><bpmn:endEvent id="S_End"/><bpmn:sequenceFlow id="SF1" sourceRef="S_Start" targetRef="Task_In"/><bpmn:sequenceFlow id="SF2" sourceRef="Task_In" targetRef="Task_In2"/><bpmn:sequenceFlow id="SF3" sourceRef="Task_In2" targetRef="S_End"/></bpmn:subProcess><bpmn:task id="Task_After"/><bpmn:endEvent id="End"/><bpmn:sequenceFlow id="F1" sourceRef="Start" targetRef="Sub"/><bpmn:sequenceFlow id="F2" sourceRef="Sub" targetRef="Task_After"/><bpmn:sequenceFlow id="F3" sourceRef="Task_After" targetRef="End"/></bpmn:process>
+</bpmn:definitions>

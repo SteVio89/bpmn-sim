@@ -213,6 +213,34 @@ mod tests {
     }
 
     #[test]
+    fn boundary_and_timer_sections_draw_and_run() {
+        for fixture in ["v9-boundary-timer.bpmn", "timer-catch.bpmn"] {
+            let ctx = egui::Context::default();
+            let mut app = App::default();
+            app.ws.open(&fixtures().join(fixture));
+            app.regenerate_skeleton();
+            assert!(!app.scenario.events.is_empty() || !app.scenario.boundary.is_empty());
+            app.tab = Tab::Scenario;
+            frames(&mut app, &ctx, 2);
+            app.start_run(&ctx);
+            let deadline = Instant::now() + Duration::from_secs(20);
+            while app.results.is_none() {
+                assert!(
+                    Instant::now() < deadline && app.run_error.is_none(),
+                    "{:?}",
+                    app.run_error
+                );
+                std::thread::sleep(Duration::from_millis(10));
+                frames(&mut app, &ctx, 1);
+            }
+            for t in [ResultsTab::Activities, ResultsTab::Problems] {
+                app.results_tab = t;
+                frames(&mut app, &ctx, 2);
+            }
+        }
+    }
+
+    #[test]
     fn folder_open_remove_and_errors() {
         let mut app = App::default();
         app.ws.open(&fixtures().join("multi-file"));

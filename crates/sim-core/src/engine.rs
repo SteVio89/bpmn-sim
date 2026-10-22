@@ -2,6 +2,9 @@
 //!
 //! Determinism: events are ordered by `(time, sequence number)`, all maps are `BTreeMap`s and
 //! all randomness comes from one seeded ChaCha generator.
+//!
+//! Tokens wait through *subscriptions*: a catch event, receive task or boundary event subscribes
+//! to a message, a signal or a timer. Cancelling an activity deactivates its subscriptions.
 
 use std::cmp::{Ordering, Reverse};
 use std::collections::{BTreeMap, BTreeSet, BinaryHeap, VecDeque};
@@ -36,6 +39,8 @@ enum Ev {
         case: usize,
         flow: usize,
     },
+    /// A timer subscription fires.
+    Timer(usize),
 }
 
 struct Case {
@@ -48,6 +53,35 @@ struct Case {
 struct Token {
     node: QId,
     state: String,
+    /// Embedded subprocess scope this token lives in.
+    scope: Option<usize>,
+    /// Scope started by this token while it sits at an embedded subprocess.
+    child_scope: Option<usize>,
+    run: Option<usize>,
+    subs: Vec<usize>,
+}
+
+/// An embedded subprocess activation; `parent` is the token waiting at the subprocess node.
+struct Scope {
+    node: QId,
+    parent: u64,
+}
+
+enum SubKind {
+    Message,
+    Signal(String),
+    Timer,
+}
+
+/// A token waiting for something: a catch event / receive task (`boundary == false`), or a
+/// boundary event watching the activity the token sits at.
+struct Sub {
+    inst: usize,
+    owner: u64,
+    node: QId,
+    boundary: bool,
+    kind: SubKind,
+    active: bool,
 }
 
 struct Instance {
@@ -59,6 +93,14 @@ struct Instance {
     done: bool,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum RunState {
+    Queued,
+    Running,
+    Done,
+    Cancelled,
+}
+
 struct TaskRun {
     instance: usize,
     token: u64,
@@ -66,6 +108,7 @@ struct TaskRun {
     queued: f64,
     start: f64,
     duration: f64,
+    state: RunState,
 }
 
 #[derive(Default)]
@@ -90,20 +133,28 @@ pub struct Engine<'a> {
     cases: Vec<Case>,
     completion_order: Vec<usize>,
     instances: Vec<Instance>,
+    scopes: Vec<Scope>,
+    subs: Vec<Sub>,
     next_token: u64,
     runs: Vec<TaskRun>,
     pools: BTreeMap<String, Pool>,
     records: Vec<ActivityRecord>,
     end_events: BTreeMap<QId, u64>,
+    boundary_fired: BTreeMap<QId, u64>,
     msg_flows: Vec<&'a MessageFlow>,
-    /// (case, receiving element) -> waiting (instance, token), FIFO.
-    waiting_msg: BTreeMap<(usize, QId), VecDeque<(usize, u64)>>,
-    /// signal name -> waiting (case, instance, token).
-    waiting_sig: BTreeMap<String, BTreeSet<(usize, usize, u64)>>,
+    /// (case, receiving element) -> subscriptions, FIFO.
+    waiting_msg: BTreeMap<(usize, QId), VecDeque<usize>>,
+    /// signal name -> (case, subscription).
+    waiting_sig: BTreeMap<String, BTreeSet<(usize, usize)>>,
     /// (case, receiving element) -> buffered message count.
     buffer: BTreeMap<(usize, QId), usize>,
     messages: Vec<MessageRecord>,
     signals: Vec<SignalRecord>,
+    // Static lookups derived from the model.
+    boundaries_of: BTreeMap<QId, Vec<QId>>,
+    sub_starts: BTreeMap<QId, Vec<QId>>,
+    link_catch: BTreeMap<(QId, String), QId>,
+    signal_starts: BTreeMap<String, Vec<QId>>,
 }
 
 /// Run all replications; replication `i` uses seed `seed + i`.
@@ -128,6 +179,38 @@ pub fn run_replications_with(
 
 impl<'a> Engine<'a> {
     pub fn new(m: &'a BoundModel<'a>, seed: u64) -> Self {
+        let mut boundaries_of: BTreeMap<QId, Vec<QId>> = BTreeMap::new();
+        let mut sub_starts: BTreeMap<QId, Vec<QId>> = BTreeMap::new();
+        let mut link_catch = BTreeMap::new();
+        let mut signal_starts: BTreeMap<String, Vec<QId>> = BTreeMap::new();
+        for n in m.project.nodes().filter(|n| m.active.contains(&n.process)) {
+            if let Some(a) = &n.attached_to {
+                boundaries_of
+                    .entry(a.clone())
+                    .or_default()
+                    .push(n.id.clone());
+            }
+            if n.kind == NodeKind::StartEvent {
+                if let Some(p) = &n.parent {
+                    sub_starts.entry(p.clone()).or_default().push(n.id.clone());
+                }
+                for d in &n.event_defs {
+                    if let EventDef::Signal(name) = d {
+                        signal_starts
+                            .entry(name.clone().unwrap_or_default())
+                            .or_default()
+                            .push(n.id.clone());
+                    }
+                }
+            }
+            if n.kind == NodeKind::IntermediateCatchEvent {
+                for d in &n.event_defs {
+                    if let EventDef::Link(name) = d {
+                        link_catch.insert((n.process.clone(), name.clone()), n.id.clone());
+                    }
+                }
+            }
+        }
         Self {
             m,
             seed,
@@ -139,6 +222,8 @@ impl<'a> Engine<'a> {
             cases: Vec::new(),
             completion_order: Vec::new(),
             instances: Vec::new(),
+            scopes: Vec::new(),
+            subs: Vec::new(),
             next_token: 0,
             runs: Vec::new(),
             pools: m
@@ -148,6 +233,7 @@ impl<'a> Engine<'a> {
                 .collect(),
             records: Vec::new(),
             end_events: BTreeMap::new(),
+            boundary_fired: BTreeMap::new(),
             msg_flows: m
                 .project
                 .files
@@ -159,6 +245,10 @@ impl<'a> Engine<'a> {
             buffer: BTreeMap::new(),
             messages: Vec::new(),
             signals: Vec::new(),
+            boundaries_of,
+            sub_starts,
+            link_catch,
+            signal_starts,
         }
     }
 
@@ -178,6 +268,7 @@ impl<'a> Engine<'a> {
                 Ev::Arrival(g) => self.on_arrival(g),
                 Ev::TaskDone(run) => self.on_task_done(run),
                 Ev::Reply { case, flow } => self.deliver(case, flow),
+                Ev::Timer(sub) => self.fire_sub(sub),
             }
         }
         self.finish()
@@ -239,13 +330,13 @@ impl<'a> Engine<'a> {
     fn start_instance(&mut self, inst: usize, starts: Vec<QId>) {
         let mut work = Vec::new();
         for s in starts.into_iter().rev() {
-            let tok = self.new_token(inst, &s, "starting");
+            let tok = self.new_token(inst, &s, "starting", None);
             work.push((tok, s, None));
         }
         self.process(inst, work);
     }
 
-    fn new_token(&mut self, inst: usize, node: &QId, state: &str) -> u64 {
+    fn new_token(&mut self, inst: usize, node: &QId, state: &str, scope: Option<usize>) -> u64 {
         let id = self.next_token;
         self.next_token += 1;
         self.instances[inst].tokens.insert(
@@ -253,6 +344,10 @@ impl<'a> Engine<'a> {
             Token {
                 node: node.clone(),
                 state: state.into(),
+                scope,
+                child_scope: None,
+                run: None,
+                subs: Vec::new(),
             },
         );
         id
@@ -265,42 +360,65 @@ impl<'a> Engine<'a> {
         }
     }
 
+    fn alive(&self, inst: usize, tok: u64) -> bool {
+        self.instances[inst].tokens.contains_key(&tok)
+    }
+
     /// Move tokens through zero-time elements until they wait or end.
     fn process(&mut self, inst: usize, mut work: Vec<Work>) {
         while let Some((tok, node_id, via)) = work.pop() {
+            // The token may have been cancelled (terminate, interrupting boundary) meanwhile.
+            if !self.alive(inst, tok) {
+                continue;
+            }
             let m = self.m;
             let Some(node) = m.project.node(&node_id) else {
                 continue;
             };
+            let first_def = node.event_defs.first();
             match &node.kind {
                 NodeKind::EndEvent => {
                     self.throw(inst, node);
-                    self.instances[inst].tokens.remove(&tok);
+                    if !self.alive(inst, tok) {
+                        continue;
+                    }
+                    if matches!(first_def, Some(EventDef::Terminate)) {
+                        self.terminate(inst, tok);
+                    }
                     *self.end_events.entry(node_id.clone()).or_default() += 1;
+                    self.consume(inst, tok, &mut work);
                 }
-                NodeKind::Task(TaskKind::Receive) => self.wait_message(inst, tok, node, &mut work),
+                NodeKind::Task(TaskKind::Receive) => {
+                    self.arm_boundaries(inst, tok, node);
+                    self.wait_message(inst, tok, node, &mut work);
+                }
                 NodeKind::Task(_) => self.request_task(inst, tok, node),
-                NodeKind::IntermediateCatchEvent => match node.event_defs.first() {
+                NodeKind::SubProcess => self.enter_scope(inst, tok, node, &mut work),
+                NodeKind::IntermediateCatchEvent => match first_def {
                     Some(EventDef::Signal(name)) => {
-                        let name = name.clone().unwrap_or_default();
-                        let case = self.instances[inst].case;
-                        self.set_token(
-                            inst,
-                            tok,
-                            &node_id,
-                            &format!("waiting for signal '{name}'"),
-                        );
-                        self.waiting_sig
-                            .entry(name)
-                            .or_default()
-                            .insert((case, inst, tok));
+                        self.wait_signal(inst, tok, node, name.clone().unwrap_or_default())
+                    }
+                    Some(EventDef::Timer) => self.wait_timer(inst, tok, node),
+                    Some(EventDef::Link(_)) => {
+                        self.set_token(inst, tok, &node_id, "passing");
+                        self.route(inst, tok, node, &mut work);
                     }
                     _ => self.wait_message(inst, tok, node, &mut work),
                 },
                 NodeKind::IntermediateThrowEvent => {
                     self.set_token(inst, tok, &node_id, "passing");
-                    self.throw(inst, node);
-                    self.route(inst, tok, node, &mut work);
+                    if let Some(EventDef::Link(name)) = first_def {
+                        // Immediate jump to the link catch event with the same name (V11).
+                        match self.link_catch.get(&(node.process.clone(), name.clone())) {
+                            Some(c) => work.push((tok, c.clone(), None)),
+                            None => self.consume(inst, tok, &mut work),
+                        }
+                    } else {
+                        self.throw(inst, node);
+                        if self.alive(inst, tok) {
+                            self.route(inst, tok, node, &mut work);
+                        }
+                    }
                 }
                 NodeKind::ParallelGateway if node.incoming.len() > 1 => {
                     self.and_join(inst, tok, node, via, &mut work)
@@ -371,9 +489,10 @@ impl<'a> Engine<'a> {
         };
         if flows.is_empty() {
             // Implicit end (validation warns about it).
-            self.instances[inst].tokens.remove(&tok);
+            self.consume(inst, tok, work);
             return;
         }
+        let scope = self.instances[inst].tokens.get(&tok).and_then(|t| t.scope);
         let mut next = Vec::new();
         for (i, f) in flows.iter().enumerate() {
             let Some(target) = self.m.project.flow(f).map(|fl| fl.target.clone()) else {
@@ -382,13 +501,278 @@ impl<'a> Engine<'a> {
             let t = if i == 0 {
                 tok
             } else {
-                self.new_token(inst, &node.id, "passing")
+                self.new_token(inst, &node.id, "passing", scope)
             };
             next.push((t, target, Some(f.clone())));
         }
         // Reverse so the first flow is processed first (work is a stack).
         work.extend(next.into_iter().rev());
     }
+
+    // ------------------------------------------------------------ scopes
+
+    /// Remove a token that reached an end; the enclosing subprocess completes with its last token.
+    fn consume(&mut self, inst: usize, tok: u64, work: &mut Vec<Work>) {
+        let Some(t) = self.instances[inst].tokens.remove(&tok) else {
+            return;
+        };
+        for s in t.subs {
+            self.deactivate_sub(s);
+        }
+        if let Some(sc) = t.scope
+            && !self.instances[inst]
+                .tokens
+                .values()
+                .any(|x| x.scope == Some(sc))
+        {
+            let (parent, node_id) = (self.scopes[sc].parent, self.scopes[sc].node.clone());
+            if self.alive(inst, parent)
+                && let Some(node) = self.m.project.node(&node_id)
+            {
+                self.cancel_subs(inst, parent);
+                if let Some(p) = self.instances[inst].tokens.get_mut(&parent) {
+                    p.child_scope = None;
+                }
+                self.set_token(inst, parent, &node_id, "passing");
+                self.route(inst, parent, node, work);
+            }
+        }
+    }
+
+    fn enter_scope(&mut self, inst: usize, tok: u64, node: &FlowNode, work: &mut Vec<Work>) {
+        let sc = self.scopes.len();
+        self.scopes.push(Scope {
+            node: node.id.clone(),
+            parent: tok,
+        });
+        self.set_token(inst, tok, &node.id, "inside embedded subprocess");
+        if let Some(t) = self.instances[inst].tokens.get_mut(&tok) {
+            t.child_scope = Some(sc);
+        }
+        self.arm_boundaries(inst, tok, node);
+        let starts = self.sub_starts.get(&node.id).cloned().unwrap_or_default();
+        let mut items = Vec::new();
+        for s in starts {
+            let t = self.new_token(inst, &s, "starting", Some(sc));
+            items.push((t, s, None));
+        }
+        work.extend(items.into_iter().rev());
+    }
+
+    /// Terminate end event: cancel everything else in the enclosing subprocess, or in the whole
+    /// instance at top level.
+    fn terminate(&mut self, inst: usize, tok: u64) {
+        let scope = self.instances[inst].tokens.get(&tok).and_then(|t| t.scope);
+        let victims: Vec<u64> = self.instances[inst]
+            .tokens
+            .iter()
+            .filter(|(id, t)| **id != tok && (scope.is_none() || t.scope == scope))
+            .map(|(id, _)| *id)
+            .collect();
+        for v in victims {
+            if self.alive(inst, v) {
+                self.cancel_token(inst, v);
+            }
+        }
+    }
+
+    /// Cancel what a token is doing at its activity (task run, subprocess scope, subscriptions).
+    fn cancel_activity(&mut self, inst: usize, tok: u64) {
+        self.cancel_subs(inst, tok);
+        let (run, child) = match self.instances[inst].tokens.get_mut(&tok) {
+            Some(t) => (t.run.take(), t.child_scope.take()),
+            None => return,
+        };
+        if let Some(r) = run {
+            self.cancel_run(r);
+        }
+        if let Some(sc) = child {
+            let inner: Vec<u64> = self.instances[inst]
+                .tokens
+                .iter()
+                .filter(|(_, t)| t.scope == Some(sc))
+                .map(|(id, _)| *id)
+                .collect();
+            for t in inner {
+                self.cancel_token(inst, t);
+            }
+        }
+    }
+
+    fn cancel_token(&mut self, inst: usize, tok: u64) {
+        self.cancel_activity(inst, tok);
+        for flows in self.instances[inst].joins.values_mut() {
+            for q in flows.values_mut() {
+                q.retain(|t| *t != tok);
+            }
+        }
+        self.instances[inst].tokens.remove(&tok);
+    }
+
+    // ------------------------------------------------------------ subscriptions
+
+    fn add_sub(
+        &mut self,
+        inst: usize,
+        owner: u64,
+        node: &QId,
+        boundary: bool,
+        kind: SubKind,
+    ) -> usize {
+        let id = self.subs.len();
+        let case = self.instances[inst].case;
+        match &kind {
+            SubKind::Message => self
+                .waiting_msg
+                .entry((case, node.clone()))
+                .or_default()
+                .push_back(id),
+            SubKind::Signal(name) => {
+                self.waiting_sig
+                    .entry(name.clone())
+                    .or_default()
+                    .insert((case, id));
+            }
+            SubKind::Timer => {}
+        }
+        self.subs.push(Sub {
+            inst,
+            owner,
+            node: node.clone(),
+            boundary,
+            kind,
+            active: true,
+        });
+        if let Some(t) = self.instances[inst].tokens.get_mut(&owner) {
+            t.subs.push(id);
+        }
+        id
+    }
+
+    fn timer_sub(&mut self, inst: usize, owner: u64, node: &QId, boundary: bool, delay: f64) {
+        let s = self.add_sub(inst, owner, node, boundary, SubKind::Timer);
+        self.schedule(self.now + delay, Ev::Timer(s));
+    }
+
+    fn deactivate_sub(&mut self, s: usize) {
+        let sub = &mut self.subs[s];
+        if !sub.active {
+            return;
+        }
+        sub.active = false;
+        if let SubKind::Signal(name) = &sub.kind {
+            let case = self.instances[sub.inst].case;
+            if let Some(set) = self.waiting_sig.get_mut(name) {
+                set.remove(&(case, s));
+            }
+        }
+    }
+
+    fn cancel_subs(&mut self, inst: usize, tok: u64) {
+        let subs = match self.instances[inst].tokens.get_mut(&tok) {
+            Some(t) => std::mem::take(&mut t.subs),
+            None => return,
+        };
+        for s in subs {
+            self.deactivate_sub(s);
+        }
+    }
+
+    /// Start the boundary events attached to an activity the token has just entered.
+    fn arm_boundaries(&mut self, inst: usize, tok: u64, activity: &FlowNode) {
+        let boundaries = self
+            .boundaries_of
+            .get(&activity.id)
+            .cloned()
+            .unwrap_or_default();
+        for b in boundaries {
+            let m = self.m;
+            let Some(node) = m.project.node(&b) else {
+                continue;
+            };
+            match node.event_defs.first() {
+                Some(EventDef::Timer | EventDef::Error | EventDef::Escalation) => {
+                    let Some(cfg) = m.boundaries.get(&b) else {
+                        continue;
+                    };
+                    if cfg.probability < 1.0 && self.rng.random::<f64>() >= cfg.probability {
+                        continue;
+                    }
+                    let Some(delay) = cfg.delay.as_ref().map(|d| d.sample(&mut self.rng)) else {
+                        continue;
+                    };
+                    self.timer_sub(inst, tok, &b, true, delay);
+                }
+                Some(EventDef::Message(_)) => {
+                    self.add_sub(inst, tok, &b, true, SubKind::Message);
+                }
+                Some(EventDef::Signal(name)) => {
+                    self.add_sub(
+                        inst,
+                        tok,
+                        &b,
+                        true,
+                        SubKind::Signal(name.clone().unwrap_or_default()),
+                    );
+                }
+                _ => {}
+            }
+        }
+    }
+
+    /// A subscription's trigger happened.
+    fn fire_sub(&mut self, s: usize) {
+        if !self.subs[s].active {
+            return;
+        }
+        let (inst, owner, node_id, boundary) = {
+            let sub = &self.subs[s];
+            (sub.inst, sub.owner, sub.node.clone(), sub.boundary)
+        };
+        let m = self.m;
+        let Some(node) = m.project.node(&node_id) else {
+            return;
+        };
+        if !self.alive(inst, owner) {
+            self.deactivate_sub(s);
+            return;
+        }
+        if !boundary {
+            self.cancel_subs(inst, owner);
+            self.resume(inst, owner, node);
+            return;
+        }
+        *self.boundary_fired.entry(node_id.clone()).or_default() += 1;
+        let mut work = Vec::new();
+        if node.cancel_activity {
+            // Interrupting: the activity is cancelled and its token continues on the boundary flow.
+            self.cancel_activity(inst, owner);
+            self.set_token(inst, owner, &node_id, "passing");
+            work.push((owner, node_id, None));
+        } else {
+            // Non-interrupting: a timer fires once; message/signal boundaries stay armed.
+            if matches!(self.subs[s].kind, SubKind::Timer) {
+                self.deactivate_sub(s);
+            }
+            let scope = self.instances[inst]
+                .tokens
+                .get(&owner)
+                .and_then(|t| t.scope);
+            let t = self.new_token(inst, &node_id, "passing", scope);
+            work.push((t, node_id, None));
+        }
+        self.process(inst, work);
+    }
+
+    /// Continue a token that was waiting at `node`.
+    fn resume(&mut self, inst: usize, tok: u64, node: &FlowNode) {
+        let mut work = Vec::new();
+        self.set_token(inst, tok, &node.id, "passing");
+        self.route(inst, tok, node, &mut work);
+        self.process(inst, work);
+    }
+
+    // ------------------------------------------------------------ tasks
 
     fn request_task(&mut self, inst: usize, tok: u64, node: &FlowNode) {
         let Some(cfg) = self.m.activities.get(&node.id) else {
@@ -402,7 +786,12 @@ impl<'a> Engine<'a> {
             queued: self.now,
             start: self.now,
             duration: 0.0,
+            state: RunState::Queued,
         });
+        if let Some(t) = self.instances[inst].tokens.get_mut(&tok) {
+            t.run = Some(id);
+        }
+        self.arm_boundaries(inst, tok, node);
         let free = match &cfg.pool {
             None => true,
             Some(p) => {
@@ -429,14 +818,37 @@ impl<'a> Engine<'a> {
         if let Some(pool) = cfg.pool.as_ref().and_then(|p| self.pools.get_mut(p)) {
             pool.busy += 1;
         }
-        self.runs[id].start = self.now;
-        self.runs[id].duration = duration;
-        let (inst, tok) = (self.runs[id].instance, self.runs[id].token);
+        let r = &mut self.runs[id];
+        r.start = self.now;
+        r.duration = duration;
+        r.state = RunState::Running;
+        let (inst, tok) = (r.instance, r.token);
         self.set_token(inst, tok, &node, "working");
         self.schedule(self.now + duration, Ev::TaskDone(id));
     }
 
+    /// Give a freed resource to the next task still waiting for it (FIFO).
+    fn release(&mut self, pool: &str, worked: f64, completed: bool) {
+        if let Some(p) = self.pools.get_mut(pool) {
+            p.busy -= 1;
+            p.busy_time += worked;
+            if completed {
+                p.tasks += 1;
+            }
+        }
+        while let Some(n) = self.pools.get_mut(pool).and_then(|p| p.queue.pop_front()) {
+            if self.runs[n].state == RunState::Queued {
+                self.start_task(n);
+                break;
+            }
+        }
+    }
+
     fn on_task_done(&mut self, id: usize) {
+        if self.runs[id].state != RunState::Running {
+            return; // cancelled while running
+        }
+        self.runs[id].state = RunState::Done;
         let (inst, tok, node_id, queued, start, duration) = {
             let r = &self.runs[id];
             (
@@ -469,19 +881,16 @@ impl<'a> Engine<'a> {
             start,
             end: self.now,
             cost,
+            cancelled: false,
         });
+        if let Some(t) = self.instances[inst].tokens.get_mut(&tok) {
+            t.run = None;
+        }
+        self.cancel_subs(inst, tok);
 
         // Release the resource and hand it to the next waiting task (FIFO) before moving on.
         if let Some(p) = &cfg.pool {
-            let next = self.pools.get_mut(p).and_then(|pool| {
-                pool.busy -= 1;
-                pool.busy_time += duration;
-                pool.tasks += 1;
-                pool.queue.pop_front()
-            });
-            if let Some(n) = next {
-                self.start_task(n);
-            }
+            self.release(p, duration, true);
         }
 
         let Some(node) = m.project.node(&node_id) else {
@@ -491,8 +900,55 @@ impl<'a> Engine<'a> {
             self.throw(inst, node);
         }
         let mut work = Vec::new();
-        self.route(inst, tok, node, &mut work);
+        if self.alive(inst, tok) {
+            self.route(inst, tok, node, &mut work);
+        }
         self.process(inst, work);
+    }
+
+    /// Cut a task short (interrupting boundary event, terminate end event).
+    fn cancel_run(&mut self, id: usize) {
+        let state = self.runs[id].state;
+        if !matches!(state, RunState::Queued | RunState::Running) {
+            return;
+        }
+        self.runs[id].state = RunState::Cancelled;
+        let m = self.m;
+        let (inst, node_id, queued, start) = {
+            let r = &self.runs[id];
+            (r.instance, r.node.clone(), r.queued, r.start)
+        };
+        let Some(cfg) = m.activities.get(&node_id) else {
+            return;
+        };
+        let (worked, begun) = match state {
+            RunState::Running => (self.now - start, start),
+            _ => (0.0, self.now),
+        };
+        let rate = cfg
+            .pool
+            .as_ref()
+            .and_then(|p| m.pools.get(p))
+            .map_or(0.0, |d| d.cost_per_hour);
+        let cost = worked / 3600.0 * rate;
+        let case = self.instances[inst].case;
+        self.cases[case].cost += cost;
+        self.records.push(ActivityRecord {
+            case: case as u64,
+            instance: inst as u64,
+            activity: node_id,
+            resource: cfg.pool.clone(),
+            queued,
+            start: begun,
+            end: self.now,
+            cost,
+            cancelled: true,
+        });
+        if state == RunState::Running
+            && let Some(p) = &cfg.pool
+        {
+            self.release(p, worked, false);
+        }
     }
 
     // ------------------------------------------------------------ messages and signals
@@ -530,10 +986,22 @@ impl<'a> Engine<'a> {
         let key = (case, f.target.clone());
         let mut outcome = MessageOutcome::Lost;
         if let Some(target) = self.m.project.node(&f.target) {
-            let waiting = self.waiting_msg.get_mut(&key).and_then(VecDeque::pop_front);
-            if let Some((inst, tok)) = waiting {
+            let mut waiting = None;
+            if let Some(q) = self.waiting_msg.get_mut(&key) {
+                while let Some(s) = q.pop_front() {
+                    if self.subs[s].active {
+                        waiting = Some(s);
+                        break;
+                    }
+                }
+            }
+            if let Some(s) = waiting {
                 self.log_message(case, f, MessageOutcome::Delivered);
-                self.resume(inst, tok, target);
+                self.fire_sub(s);
+                if self.subs[s].active {
+                    // Non-interrupting message boundary event: stays armed.
+                    self.waiting_msg.entry(key).or_default().push_back(s);
+                }
                 return;
             } else if target.kind == NodeKind::StartEvent {
                 if self.cases[case].completion.is_none() {
@@ -542,7 +1010,8 @@ impl<'a> Engine<'a> {
                     self.start_instance(inst, vec![target.id.clone()]);
                     return;
                 }
-            } else if self.m.buffer_unconsumed {
+            } else if self.m.buffer_unconsumed && target.kind != NodeKind::BoundaryEvent {
+                // (A boundary event only listens while its activity runs: never buffered.)
                 outcome = MessageOutcome::Buffered;
                 *self.buffer.entry(key).or_default() += 1;
             }
@@ -577,6 +1046,19 @@ impl<'a> Engine<'a> {
         });
     }
 
+    /// Externally triggered catch events (`[events]`) can also fire after a delay.
+    fn external_timer(&mut self, inst: usize, tok: u64, node: &FlowNode) {
+        if let Some(d) = self.m.events.get(&node.id) {
+            let delay = d.sample(&mut self.rng);
+            self.timer_sub(inst, tok, &node.id, false, delay);
+        }
+    }
+
+    fn wait_timer(&mut self, inst: usize, tok: u64, node: &FlowNode) {
+        self.set_token(inst, tok, &node.id, "waiting for timer");
+        self.external_timer(inst, tok, node);
+    }
+
     /// A token arrives at a receive task / message catch event: take a buffered message or wait.
     fn wait_message(&mut self, inst: usize, tok: u64, node: &FlowNode, work: &mut Vec<Work>) {
         let case = self.instances[inst].case;
@@ -584,28 +1066,33 @@ impl<'a> Engine<'a> {
         match self.buffer.get_mut(&key) {
             Some(n) if *n > 0 => {
                 *n -= 1;
+                self.cancel_subs(inst, tok);
                 self.set_token(inst, tok, &node.id, "passing");
                 self.route(inst, tok, node, work);
             }
             _ => {
                 self.set_token(inst, tok, &node.id, "waiting for message");
-                self.waiting_msg
-                    .entry(key)
-                    .or_default()
-                    .push_back((inst, tok));
+                self.add_sub(inst, tok, &node.id, false, SubKind::Message);
+                self.external_timer(inst, tok, node);
             }
         }
     }
 
-    /// Signals are not stored: only tokens waiting right now receive them (spec §5.4).
+    fn wait_signal(&mut self, inst: usize, tok: u64, node: &FlowNode, name: String) {
+        self.set_token(inst, tok, &node.id, &format!("waiting for signal '{name}'"));
+        self.add_sub(inst, tok, &node.id, false, SubKind::Signal(name));
+        self.external_timer(inst, tok, node);
+    }
+
+    /// Signals are not stored: only subscriptions waiting right now receive them (spec §5.4).
     fn broadcast(&mut self, case: usize, name: String) {
         let global = self.m.signal_scope == SignalScope::Global;
-        let woken: Vec<(usize, usize, u64)> = self
+        let woken: Vec<(usize, usize)> = self
             .waiting_sig
             .get(&name)
             .map(|set| {
                 set.iter()
-                    .filter(|(c, _, _)| global || *c == case)
+                    .filter(|(c, _)| global || *c == case)
                     .copied()
                     .collect()
             })
@@ -615,29 +1102,41 @@ impl<'a> Engine<'a> {
                 set.remove(w);
             }
         }
+        let mut receivers = 0;
+        for (c, s) in woken {
+            if !self.subs[s].active {
+                continue;
+            }
+            receivers += 1;
+            self.fire_sub(s);
+            if self.subs[s].active {
+                // Non-interrupting signal boundary event: stays armed.
+                self.waiting_sig
+                    .entry(name.clone())
+                    .or_default()
+                    .insert((c, s));
+            }
+        }
+        // Signal start events create instances in the sender's case.
+        let mut started = 0;
+        for start in self.signal_starts.get(&name).cloned().unwrap_or_default() {
+            if self.cases[case].completion.is_some() {
+                break;
+            }
+            let Some(node) = self.m.project.node(&start) else {
+                continue;
+            };
+            let inst = self.create_instance(case, node.process.clone());
+            self.start_instance(inst, vec![start]);
+            started += 1;
+        }
         self.signals.push(SignalRecord {
             time: self.now,
             case: case as u64,
             name,
-            receivers: woken.len(),
+            receivers,
+            started,
         });
-        for (_, inst, tok) in woken {
-            let node = self.instances[inst]
-                .tokens
-                .get(&tok)
-                .map(|t| t.node.clone());
-            if let Some(node) = node.and_then(|n| self.m.project.node(&n)) {
-                self.resume(inst, tok, node);
-            }
-        }
-    }
-
-    /// Continue a token that was waiting at `node`.
-    fn resume(&mut self, inst: usize, tok: u64, node: &FlowNode) {
-        let mut work = Vec::new();
-        self.set_token(inst, tok, &node.id, "passing");
-        self.route(inst, tok, node, &mut work);
-        self.process(inst, work);
     }
 
     fn check_completion(&mut self, inst: usize) {
@@ -697,12 +1196,14 @@ impl<'a> Engine<'a> {
         let activities = by_activity
             .into_iter()
             .map(|(id, rs)| {
-                let waits: Vec<f64> = rs.iter().map(|r| r.waiting()).collect();
-                let procs: Vec<f64> = rs.iter().map(|r| r.processing()).collect();
+                let done: Vec<&&ActivityRecord> = rs.iter().filter(|r| !r.cancelled).collect();
+                let waits: Vec<f64> = done.iter().map(|r| r.waiting()).collect();
+                let procs: Vec<f64> = done.iter().map(|r| r.processing()).collect();
                 (
                     id.clone(),
                     ActivityStats {
-                        runs: rs.len(),
+                        runs: done.len(),
+                        cancelled: rs.len() - done.len(),
                         waiting: Summary::of(&waits),
                         processing: Summary::of(&procs),
                         total_cost: rs.iter().map(|r| r.cost).sum(),
@@ -736,17 +1237,21 @@ impl<'a> Engine<'a> {
             })
             .collect();
 
+        // A token sitting at an embedded subprocess is not reported itself: its inner tokens are.
         let stuck = self
             .instances
             .iter()
             .flat_map(|inst| {
-                inst.tokens.values().map(move |t| StuckToken {
-                    case: inst.case as u64,
-                    process: inst.process.clone(),
-                    element: t.node.clone(),
-                    name: self.m.project.node(&t.node).and_then(|n| n.name.clone()),
-                    state: t.state.clone(),
-                })
+                inst.tokens
+                    .values()
+                    .filter(|t| t.child_scope.is_none())
+                    .map(move |t| StuckToken {
+                        case: inst.case as u64,
+                        process: inst.process.clone(),
+                        element: t.node.clone(),
+                        name: self.m.project.node(&t.node).and_then(|n| n.name.clone()),
+                        state: t.state.clone(),
+                    })
             })
             .collect();
 
@@ -778,6 +1283,7 @@ impl<'a> Engine<'a> {
                 .collect(),
             messages: self.messages,
             signals: self.signals,
+            boundary_fired: self.boundary_fired,
             cases,
             records: self.records,
         }

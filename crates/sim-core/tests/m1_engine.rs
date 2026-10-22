@@ -245,13 +245,14 @@ fn scenario_errors_are_reported_with_element_ids() {
 
 #[test]
 fn unsupported_elements_fail_binding() {
-    let project = load("v11-link.bpmn");
+    let project = load("bad-model.bpmn");
     let s = Scenario::from_toml(
-        "[simulation]\ncases=1\n[[arrivals]]\ninter_arrival={dist=\"fixed\",value=\"1m\"}\ntriggers=[\"Start\"]\n[activities.Task_A]\nduration={dist=\"fixed\",value=\"1m\"}\n",
+        "[simulation]\ncases=1\n[[arrivals]]\ninter_arrival={dist=\"fixed\",value=\"1m\"}\ntriggers=[\"Start\"]\n",
     )
     .unwrap();
     let e = s.bind(&project).unwrap_err().to_string();
-    assert!(e.contains("intermediate catch event"), "{e}");
+    assert!(e.contains("'complexGateway' is not supported"), "{e}");
+    assert!(e.contains("call activity"), "{e}");
 }
 
 #[test]
@@ -337,7 +338,19 @@ duration = { dist = "exponential", mean = "8m" }
 
 #[test]
 fn skeleton_round_trips_through_toml_and_runs() {
-    for fixture in ["v1-single-task.bpmn", "v4-xor.bpmn", "v5-and.bpmn"] {
+    for fixture in [
+        "v1-single-task.bpmn",
+        "v4-xor.bpmn",
+        "v5-and.bpmn",
+        "v11-link.bpmn",
+        "timer-catch.bpmn",
+        "terminate.bpmn",
+        "subprocess.bpmn",
+        "subprocess-boundary.bpmn",
+        "v9-boundary-timer.bpmn",
+        "boundary-error.bpmn",
+        "v8-signal-ok.bpmn",
+    ] {
         let project = load(fixture);
         let sk = Scenario::skeleton(&project, None);
         let text = sk.to_toml().unwrap();

@@ -1,0 +1,4 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL" id="D">
+<bpmn:process id="Process_V9"><bpmn:laneSet id="LS"><bpmn:lane id="L" name="Dev"><bpmn:flowNodeRef>Task_Long</bpmn:flowNodeRef><bpmn:flowNodeRef>Task_A</bpmn:flowNodeRef></bpmn:lane></bpmn:laneSet><bpmn:startEvent id="Start"/><bpmn:task id="Task_Long" name="Long"/><bpmn:task id="Task_Handle" name="Handle"/><bpmn:endEvent id="End_Ok"/><bpmn:endEvent id="End_Alt"/><bpmn:boundaryEvent id="B" attachedToRef="Task_Long" cancelActivity="false"><bpmn:timerEventDefinition/></bpmn:boundaryEvent><bpmn:sequenceFlow id="F1" sourceRef="Start" targetRef="Task_Long"/><bpmn:sequenceFlow id="F2" sourceRef="Task_Long" targetRef="End_Ok"/><bpmn:sequenceFlow id="F3" sourceRef="B" targetRef="Task_Handle"/><bpmn:sequenceFlow id="F4" sourceRef="Task_Handle" targetRef="End_Alt"/></bpmn:process>
+</bpmn:definitions>

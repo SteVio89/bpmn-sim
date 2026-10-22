@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL" id="D">
+  <bpmn:message id="M" name="Cancel"/>
+  <bpmn:collaboration id="C">
+    <bpmn:participant id="PA" name="A" processRef="Process_A"/>
+    <bpmn:participant id="PB" name="B" processRef="Process_B"/>
+    <bpmn:messageFlow id="MF" sourceRef="Throw" targetRef="B"/>
+  </bpmn:collaboration>
+  <bpmn:process id="Process_A">
+    <bpmn:startEvent id="Start_A"/>
+    <bpmn:task id="Task_Long"/>
+    <bpmn:task id="Task_Handle"/>
+    <bpmn:endEvent id="End_Ok"/>
+    <bpmn:endEvent id="End_Alt"/>
+    <bpmn:boundaryEvent id="B" attachedToRef="Task_Long"><bpmn:messageEventDefinition messageRef="M"/></bpmn:boundaryEvent>
+    <bpmn:sequenceFlow id="F1" sourceRef="Start_A" targetRef="Task_Long"/>
+    <bpmn:sequenceFlow id="F2" sourceRef="Task_Long" targetRef="End_Ok"/>
+    <bpmn:sequenceFlow id="F3" sourceRef="B" targetRef="Task_Handle"/>
+    <bpmn:sequenceFlow id="F4" sourceRef="Task_Handle" targetRef="End_Alt"/>
+  </bpmn:process>
+  <bpmn:process id="Process_B">
+    <bpmn:startEvent id="Start_B"/>
+    <bpmn:task id="Task_B"/>
+    <bpmn:intermediateThrowEvent id="Throw"><bpmn:messageEventDefinition messageRef="M"/></bpmn:intermediateThrowEvent>
+    <bpmn:endEvent id="End_B"/>
+    <bpmn:sequenceFlow id="G1" sourceRef="Start_B" targetRef="Task_B"/>
+    <bpmn:sequenceFlow id="G2" sourceRef="Task_B" targetRef="Throw"/>
+    <bpmn:sequenceFlow id="G3" sourceRef="Throw" targetRef="End_B"/>
+  </bpmn:process>
+</bpmn:definitions>

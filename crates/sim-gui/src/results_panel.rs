@@ -103,6 +103,7 @@ pub fn show(app: &mut App, ui: &mut Ui) {
                 for h in [
                     "activity",
                     "runs",
+                    "cancelled",
                     &format!("wait ({uname})"),
                     &format!("processing ({uname})"),
                     "cost",
@@ -118,6 +119,7 @@ pub fn show(app: &mut App, ui: &mut Ui) {
                         .unwrap_or_default();
                     ui.label(format!("{id}  {name}"));
                     ui.label(a.runs.to_string());
+                    ui.label(a.cancelled.to_string());
                     ui.label(t(a.waiting.mean));
                     ui.label(t(a.processing.mean));
                     ui.label(format!("{:.2}", a.total_cost));
@@ -232,6 +234,12 @@ pub fn show(app: &mut App, ui: &mut Ui) {
                 ui.label(format!(
                     "{missed} signal broadcast(s) reached nobody (signals are not stored)."
                 ));
+            }
+            if !r.boundary_fired.is_empty() {
+                ui.heading("Boundary events fired");
+                for (id, n) in &r.boundary_fired {
+                    ui.label(format!("{id}: {n}"));
+                }
             }
             let incomplete = r.cases_started - r.cases_completed;
             if incomplete > 0 {

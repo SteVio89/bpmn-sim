@@ -40,12 +40,30 @@ pub struct Scenario {
     // Sections of later milestones: accepted, reported as "not supported yet".
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub calendars: Option<toml::Value>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub events: Option<toml::Value>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub boundary: Option<toml::Value>,
+    /// Catch events whose trigger comes from outside the model (delay until they fire).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub events: BTreeMap<String, EventSpec>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub boundary: BTreeMap<String, BoundarySpec>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub messages: Option<MessagesSection>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct EventSpec {
+    pub label: Option<String>,
+    pub delay: DistSpec,
+}
+
+/// Timer boundary: `delay` (+ optional `probability`, default 1). Error/escalation boundary:
+/// `probability` and `delay` (time after the activity was activated). Message/signal boundary: none.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BoundarySpec {
+    pub label: Option<String>,
+    pub probability: Option<f64>,
+    pub delay: Option<DistSpec>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -257,7 +275,18 @@ pub struct BoundModel<'p> {
     pub signal_scope: SignalScope,
     /// Black-box participant -> reply delay.
     pub black_box_reply: BTreeMap<QId, Dist>,
+    /// Delay of externally triggered catch events (timer events, optionally message/signal).
+    pub events: BTreeMap<QId, Dist>,
+    pub boundaries: BTreeMap<QId, BoundaryCfg>,
+    /// Processes that take part in the run (triggered, or reached by messages/signals).
+    pub active: Vec<QId>,
     pub warnings: Vec<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct BoundaryCfg {
+    pub probability: f64,
+    pub delay: Option<Dist>,
 }
 
 /// Resolve a scenario key to an element: bare ids must be unique across files (spec §4).
@@ -292,8 +321,6 @@ impl Scenario {
 
         for (name, present) in [
             ("[calendars]", self.calendars.is_some()),
-            ("[events]", self.events.is_some()),
-            ("[boundary]", self.boundary.is_some()),
             ("simulation.horizon", self.simulation.horizon.is_some()),
         ] {
             if present {
@@ -427,6 +454,32 @@ impl Scenario {
                     grew = true;
                 }
             }
+            // Signal start events of processes whose signal is thrown by an active process.
+            let thrown: Vec<&str> = project
+                .nodes()
+                .filter(|n| processes.contains(&n.process))
+                .flat_map(|n| n.event_defs.iter())
+                .filter_map(|d| match d {
+                    EventDef::Signal(name) => Some(name.as_deref().unwrap_or_default()),
+                    _ => None,
+                })
+                .collect();
+            let to_add: Vec<QId> = project
+                .nodes()
+                .filter(|n| n.kind == NodeKind::StartEvent && !processes.contains(&n.process))
+                .filter(|n| {
+                    n.event_defs.iter().any(|d| {
+                        matches!(d, EventDef::Signal(name) if thrown.contains(&name.as_deref().unwrap_or_default()))
+                    })
+                })
+                .map(|n| n.process.clone())
+                .collect();
+            for p in to_add {
+                if !processes.contains(&p) {
+                    processes.push(p);
+                    grew = true;
+                }
+            }
             if !grew {
                 break;
             }
@@ -491,6 +544,137 @@ impl Scenario {
             if let Some(why) = unsupported(n) {
                 errors.push(format!("{} ({}): {why}", n.id, n.label()));
             }
+        }
+
+        // Link events, subprocess starts, catch-event delays and boundary events.
+        for n in &nodes {
+            if n.kind == NodeKind::IntermediateThrowEvent {
+                for d in &n.event_defs {
+                    if let EventDef::Link(name) = d
+                        && !nodes.iter().any(|c| {
+                            c.process == n.process
+                                && c.kind == NodeKind::IntermediateCatchEvent
+                                && c.event_defs
+                                    .iter()
+                                    .any(|d| matches!(d, EventDef::Link(l) if l == name))
+                        })
+                    {
+                        errors.push(format!(
+                            "{} ({}): no link catch event named '{name}' in this process",
+                            n.id,
+                            n.label()
+                        ));
+                    }
+                }
+            }
+            if n.kind == NodeKind::SubProcess
+                && !nodes.iter().any(|c| {
+                    c.parent.as_ref() == Some(&n.id)
+                        && c.kind == NodeKind::StartEvent
+                        && c.event_defs.iter().all(|d| matches!(d, EventDef::None))
+                })
+            {
+                errors.push(format!(
+                    "{} ({}): embedded subprocess has no none start event",
+                    n.id,
+                    n.label()
+                ));
+            }
+        }
+
+        let mut events = BTreeMap::new();
+        let mut event_specs: BTreeMap<QId, &EventSpec> = BTreeMap::new();
+        for (key, spec) in &self.events {
+            match resolve(project, key, "event") {
+                Ok(q) => match project.node(&q).map(|n| &n.kind) {
+                    Some(NodeKind::IntermediateCatchEvent | NodeKind::Task(TaskKind::Receive)) => {
+                        event_specs.insert(q, spec);
+                    }
+                    _ => errors.push(format!(
+                        "[events.{key}]: '{q}' is not an intermediate catch event or receive task"
+                    )),
+                },
+                Err(e) => errors.push(format!("[events]: {e}")),
+            }
+        }
+        for n in &nodes {
+            let is_timer = n.kind == NodeKind::IntermediateCatchEvent
+                && n.event_defs.iter().any(|d| matches!(d, EventDef::Timer));
+            match event_specs.get(&n.id) {
+                Some(spec) => match Dist::new(&spec.delay) {
+                    Ok(d) => {
+                        events.insert(n.id.clone(), d);
+                    }
+                    Err(e) => errors.push(format!("[events] {}: delay: {e}", n.id)),
+                },
+                None if is_timer => errors.push(format!(
+                    "{} ({}): timer event needs an [events] entry with a delay",
+                    n.id,
+                    n.label()
+                )),
+                None => {}
+            }
+        }
+
+        let mut boundary_specs: BTreeMap<QId, &BoundarySpec> = BTreeMap::new();
+        for (key, spec) in &self.boundary {
+            match resolve(project, key, "boundary event") {
+                Ok(q) if project.node(&q).map(|n| &n.kind) == Some(&NodeKind::BoundaryEvent) => {
+                    boundary_specs.insert(q, spec);
+                }
+                Ok(q) => errors.push(format!("[boundary.{key}]: '{q}' is not a boundary event")),
+                Err(e) => errors.push(format!("[boundary]: {e}")),
+            }
+        }
+        let mut boundaries = BTreeMap::new();
+        for n in nodes.iter().filter(|n| n.kind == NodeKind::BoundaryEvent) {
+            let name = format!("{} ({})", n.id, n.label());
+            let host = n.attached_to.as_ref().and_then(|a| project.node(a));
+            if !matches!(
+                host.map(|h| &h.kind),
+                Some(NodeKind::Task(_) | NodeKind::SubProcess)
+            ) {
+                errors.push(format!(
+                    "{name}: boundary events are only supported on tasks and embedded subprocesses"
+                ));
+            }
+            let spec = boundary_specs.get(&n.id);
+            let Some(def) = n.event_defs.first() else {
+                continue;
+            };
+            let (needs_prob, needs_delay) = match def {
+                EventDef::Timer => (false, true),
+                EventDef::Error | EventDef::Escalation => (true, true),
+                _ => (false, false),
+            };
+            if (needs_prob || needs_delay) && spec.is_none() {
+                errors.push(format!("{name}: needs a [boundary] entry"));
+                continue;
+            }
+            if needs_prob && spec.is_some_and(|s| s.probability.is_none()) {
+                errors.push(format!("{name}: [boundary] entry needs a probability"));
+            }
+            if needs_delay && spec.is_some_and(|s| s.delay.is_none()) {
+                errors.push(format!("{name}: [boundary] entry needs a delay"));
+            }
+            if !(needs_prob || needs_delay) && spec.is_some() {
+                warnings.push(format!("{name}: message/signal boundary events take no [boundary] parameters, the entry is ignored"));
+            }
+            let probability = spec.and_then(|s| s.probability).unwrap_or(1.0);
+            if !(0.0..=1.0).contains(&probability) {
+                errors.push(format!("{name}: probability must be between 0 and 1"));
+            }
+            let delay = match spec.and_then(|s| s.delay.as_ref()).filter(|_| needs_delay) {
+                Some(d) => match Dist::new(d) {
+                    Ok(d) => Some(d),
+                    Err(e) => {
+                        errors.push(format!("{name}: delay: {e}"));
+                        None
+                    }
+                },
+                None => None,
+            };
+            boundaries.insert(n.id.clone(), BoundaryCfg { probability, delay });
         }
 
         let mut configured: BTreeMap<QId, &ActivitySpec> = BTreeMap::new();
@@ -640,6 +824,9 @@ impl Scenario {
             buffer_unconsumed: messages.buffer_unconsumed,
             signal_scope: sim.signal_scope,
             black_box_reply,
+            events,
+            boundaries,
+            active: processes,
             warnings,
         })
     }
@@ -661,7 +848,7 @@ pub fn sends_messages(n: &FlowNode) -> bool {
 pub fn receives_messages(n: &FlowNode) -> bool {
     match &n.kind {
         NodeKind::Task(TaskKind::Receive) => true,
-        NodeKind::IntermediateCatchEvent | NodeKind::StartEvent => n
+        NodeKind::IntermediateCatchEvent | NodeKind::StartEvent | NodeKind::BoundaryEvent => n
             .event_defs
             .iter()
             .any(|d| matches!(d, EventDef::Message(_))),
@@ -702,37 +889,85 @@ fn unsupported(n: &FlowNode) -> Option<String> {
     let todo = |what: &str, m: &str| Some(format!("{what} is not supported yet ({m})"));
     let single = |ok: fn(&EventDef) -> bool| n.event_defs.len() == 1 && ok(&n.event_defs[0]);
     match &n.kind {
-        NodeKind::Task(_) | NodeKind::ExclusiveGateway | NodeKind::ParallelGateway => None,
+        NodeKind::Task(_)
+        | NodeKind::ExclusiveGateway
+        | NodeKind::ParallelGateway
+        | NodeKind::SubProcess => None,
         NodeKind::StartEvent
-            if n.event_defs
-                .iter()
-                .all(|d| matches!(d, EventDef::None | EventDef::Timer))
-                || single(|d| matches!(d, EventDef::Message(_))) =>
+            if n.parent.is_none()
+                && (n
+                    .event_defs
+                    .iter()
+                    .all(|d| matches!(d, EventDef::None | EventDef::Timer))
+                    || single(|d| matches!(d, EventDef::Message(_) | EventDef::Signal(_)))) =>
         {
             None
         }
-        NodeKind::EndEvent | NodeKind::IntermediateThrowEvent
+        NodeKind::StartEvent if n.parent.is_some() && single(|d| matches!(d, EventDef::None)) => {
+            None
+        }
+        NodeKind::EndEvent
             if single(|d| {
                 matches!(
                     d,
-                    EventDef::None | EventDef::Message(_) | EventDef::Signal(_)
+                    EventDef::None
+                        | EventDef::Message(_)
+                        | EventDef::Signal(_)
+                        | EventDef::Terminate
+                        | EventDef::Error
+                        | EventDef::Escalation
+                )
+            }) =>
+        {
+            None
+        }
+        NodeKind::IntermediateThrowEvent
+            if single(|d| {
+                matches!(
+                    d,
+                    EventDef::None
+                        | EventDef::Message(_)
+                        | EventDef::Signal(_)
+                        | EventDef::Link(_)
+                        | EventDef::Escalation
                 )
             }) =>
         {
             None
         }
         NodeKind::IntermediateCatchEvent
-            if single(|d| matches!(d, EventDef::Message(_) | EventDef::Signal(_))) =>
+            if single(|d| {
+                matches!(
+                    d,
+                    EventDef::Message(_)
+                        | EventDef::Signal(_)
+                        | EventDef::Timer
+                        | EventDef::Link(_)
+                )
+            }) =>
         {
             None
         }
-        NodeKind::StartEvent | NodeKind::EndEvent | NodeKind::IntermediateThrowEvent => {
-            todo("event with this event definition", "M4")
+        NodeKind::BoundaryEvent
+            if single(|d| {
+                matches!(
+                    d,
+                    EventDef::Timer
+                        | EventDef::Error
+                        | EventDef::Escalation
+                        | EventDef::Message(_)
+                        | EventDef::Signal(_)
+                )
+            }) =>
+        {
+            None
         }
-        NodeKind::IntermediateCatchEvent => todo("timer/link intermediate catch event", "M4"),
-        NodeKind::BoundaryEvent => todo("boundary event", "M4"),
-        NodeKind::SubProcess => todo("embedded subprocess", "M4"),
-        NodeKind::CallActivity => todo("call activity", "M4"),
+        NodeKind::StartEvent
+        | NodeKind::EndEvent
+        | NodeKind::IntermediateThrowEvent
+        | NodeKind::IntermediateCatchEvent
+        | NodeKind::BoundaryEvent => todo("event with this event definition", "not planned"),
+        NodeKind::CallActivity => todo("call activity", "M4b"),
         NodeKind::InclusiveGateway | NodeKind::EventBasedGateway => {
             todo("inclusive/event-based gateway", "M6")
         }
@@ -766,6 +1001,8 @@ impl Scenario {
         let mut resources = BTreeMap::new();
         let mut activities = BTreeMap::new();
         let mut gateways = BTreeMap::new();
+        let mut events = BTreeMap::new();
+        let mut boundary = BTreeMap::new();
         for n in project.nodes() {
             match &n.kind {
                 NodeKind::Task(TaskKind::Receive) => {}
@@ -790,6 +1027,35 @@ impl Scenario {
                             resource: None,
                         },
                     );
+                }
+                NodeKind::IntermediateCatchEvent
+                    if n.event_defs.iter().any(|d| matches!(d, EventDef::Timer)) =>
+                {
+                    events.insert(
+                        n.id.to_string(),
+                        EventSpec {
+                            label: n.name.clone(),
+                            delay: fixed(3600.0),
+                        },
+                    );
+                }
+                NodeKind::BoundaryEvent => {
+                    let spec = match n.event_defs.first() {
+                        Some(EventDef::Timer) => Some(BoundarySpec {
+                            label: n.name.clone(),
+                            probability: None,
+                            delay: Some(fixed(3600.0)),
+                        }),
+                        Some(EventDef::Error | EventDef::Escalation) => Some(BoundarySpec {
+                            label: n.name.clone(),
+                            probability: Some(0.1),
+                            delay: Some(fixed(600.0)),
+                        }),
+                        _ => None,
+                    };
+                    if let Some(spec) = spec {
+                        boundary.insert(n.id.to_string(), spec);
+                    }
                 }
                 NodeKind::ExclusiveGateway if n.outgoing.len() > 1 => {
                     let p = 1.0 / n.outgoing.len() as f64;
@@ -822,8 +1088,8 @@ impl Scenario {
             activities,
             gateways,
             calendars: None,
-            events: None,
-            boundary: None,
+            events,
+            boundary,
             messages: None,
         }
     }
