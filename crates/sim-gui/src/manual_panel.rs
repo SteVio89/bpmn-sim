@@ -8,7 +8,14 @@ use eframe::egui::{self, Color32, RichText, Ui};
 use sim_core::manual::{Action, Game, Pending};
 use sim_core::{Project, QId};
 
-pub const ACCENT: Color32 = Color32::from_rgb(90, 210, 130);
+/// Highlight of what the player can click: a green that reads on dark and light backgrounds.
+pub fn accent(visuals: &egui::Visuals) -> Color32 {
+    if visuals.dark_mode {
+        Color32::from_rgb(90, 210, 130)
+    } else {
+        Color32::from_rgb(20, 140, 70)
+    }
+}
 
 pub struct ManualState {
     pub project: Arc<Project>,
@@ -192,7 +199,7 @@ impl ManualState {
             }
         });
         if let Some(e) = &self.error {
-            ui.colored_label(Color32::LIGHT_RED, e);
+            ui.colored_label(ui.visuals().error_fg_color, e);
         }
         let pending = self.game.pending();
         if pending.is_empty() {
@@ -220,7 +227,8 @@ impl ManualState {
                             multiple,
                         } => {
                             ui.label(
-                                RichText::new(format!("{}:", self.label(&gateway))).color(ACCENT),
+                                RichText::new(format!("{}:", self.label(&gateway)))
+                                    .color(accent(ui.visuals())),
                             );
                             if multiple {
                                 for f in &flows {
@@ -272,7 +280,8 @@ impl ManualState {
                         }
                         Pending::Fire { token, at, events } => {
                             ui.label(
-                                RichText::new(format!("at {}:", self.label(&at))).color(ACCENT),
+                                RichText::new(format!("at {}:", self.label(&at)))
+                                    .color(accent(ui.visuals())),
                             );
                             for e in events {
                                 if ui.button(format!("{} happens", self.label(&e))).clicked() {

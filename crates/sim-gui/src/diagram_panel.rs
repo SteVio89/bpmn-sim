@@ -22,7 +22,7 @@ use sim_core::{
 
 use crate::app::App;
 use crate::diagram_icons::{self, Icon};
-use crate::manual_panel::{ACCENT, ManualState, Marks};
+use crate::manual_panel::{ManualState, Marks, accent};
 
 pub struct DiagramView {
     pub file: Option<String>,
@@ -517,6 +517,7 @@ fn draw(
     let painter = painter.with_clip_rect(area);
     let ink = ui.visuals().text_color();
     let paper = ui.visuals().extreme_bg_color;
+    let accent = accent(ui.visuals());
     let thin = Stroke::new(1.0, ink);
     let font = FontId::proportional((11.0 * zoom).clamp(6.0, 28.0));
     let max_heat = heat_values.values().cloned().fold(0.0, f64::max);
@@ -583,11 +584,11 @@ fn draw(
             };
             painter.add(Shape::line(
                 pts.clone(),
-                Stroke::new(w, ACCENT.gamma_multiply(0.8)),
+                Stroke::new(w, accent.gamma_multiply(0.8)),
             ));
             if pointer.is_some_and(|p| distance_to_polyline(&pts, p) < 7.0) {
                 hovered_flow = Some(id.clone());
-                painter.add(Shape::line(pts.clone(), Stroke::new(w + 2.0, ACCENT)));
+                painter.add(Shape::line(pts.clone(), Stroke::new(w + 2.0, accent)));
             }
         }
         let (Some(first), Some(last)) = (pts.first(), pts.last()) else {
@@ -791,7 +792,7 @@ fn draw(
         let icon = icon_of(n);
         if marks.nodes.contains(id) {
             // Something the player can click here: a halo around the element.
-            let halo = Stroke::new(3.0, ACCENT);
+            let halo = Stroke::new(3.0, accent);
             if n.kind.is_event() {
                 painter.circle_stroke(r.center(), r.width().min(r.height()) / 2.0 + 4.0, halo);
             } else {
@@ -1245,7 +1246,7 @@ fn replay_controls(ui: &mut Ui, v: &mut DiagramView, r: &ReplicationResult) {
             }
             if v.case >= traced {
                 ui.colored_label(
-                    Color32::YELLOW,
+                    ui.visuals().warn_fg_color,
                     format!("only the first {traced} cases are traced (simulation.trace_cases); showing queues"),
                 );
             } else {

@@ -425,7 +425,7 @@ fn gateway_editor(ui: &mut Ui, project: &Project, key: &str, g: &mut GatewaySpec
                 ui.label(if ok {
                     text
                 } else {
-                    text.color(egui::Color32::LIGHT_RED)
+                    text.color(ui.visuals().error_fg_color)
                 });
                 if !ok && ui.button("Normalise").clicked() && sum > 0.0 {
                     g.probabilities.values_mut().for_each(|p| *p /= sum);
@@ -491,11 +491,11 @@ fn problems(app: &App, ui: &mut Ui) {
     match app.scenario.bind(&app.ws.project) {
         Ok(b) => {
             for w in &b.warnings {
-                ui.colored_label(egui::Color32::YELLOW, format!("warning: {w}"));
+                ui.colored_label(ui.visuals().warn_fg_color, format!("warning: {w}"));
             }
         }
         Err(e) => {
-            ui.colored_label(egui::Color32::LIGHT_RED, e.to_string());
+            ui.colored_label(ui.visuals().error_fg_color, e.to_string());
         }
     }
 }
@@ -506,7 +506,7 @@ pub fn show_run(app: &mut App, ui: &mut Ui) {
     let bound_ok = app.scenario.bind(&app.ws.project).is_ok();
     problems(app, ui);
     if let Some(e) = &app.run_error {
-        ui.colored_label(egui::Color32::LIGHT_RED, e);
+        ui.colored_label(ui.visuals().error_fg_color, e);
     }
     let running = app.job.is_some();
     ui.horizontal(|ui| {

@@ -144,6 +144,22 @@ impl App {
                 } else {
                     ui.label(&self.status);
                 }
+                // Theme switcher, right-aligned; the choice is remembered between starts.
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    let mut pref = ui.ctx().options(|o| o.theme_preference);
+                    let before = pref;
+                    for (p, name) in [
+                        (egui::ThemePreference::Dark, "Dark"),
+                        (egui::ThemePreference::Light, "Light"),
+                        (egui::ThemePreference::System, "System"),
+                    ] {
+                        ui.selectable_value(&mut pref, p, name);
+                    }
+                    ui.label("Theme:");
+                    if pref != before {
+                        ui.ctx().set_theme(pref);
+                    }
+                });
             });
         });
         egui::CentralPanel::default().show(ui, |ui| match self.tab {
@@ -482,6 +498,37 @@ mod tests {
             return;
         };
         let dir = std::path::PathBuf::from(dir);
+        // Light theme: diagram, manual game highlights, validation colours.
+        for (name, fixture, tab) in [
+            (
+                "light-diagram",
+                "multi-file/subprocess-b.bpmn",
+                Tab::Diagram,
+            ),
+            ("light-manual", "v13-model.bpmn", Tab::Diagram),
+            ("light-model", "bad-model.bpmn", Tab::Model),
+        ] {
+            let ctx = egui::Context::default();
+            ctx.set_theme(egui::ThemePreference::Light);
+            let mut r = crate::snapshot::Renderer::new(1400, 800);
+            let mut app = App::default();
+            app.ws.open(&fixtures().join(fixture));
+            app.tab = tab;
+            if name == "light-manual" {
+                let mut m = crate::manual_panel::ManualState::new(app.ws.project.clone());
+                m.apply(sim_core::manual::Action::Start {
+                    event: QId::new("v13-model.bpmn", "Start"),
+                });
+                let token = m.game.tokens()[0].id;
+                m.apply(sim_core::manual::Action::Complete { token });
+                app.diagram.manual = Some(m);
+            }
+            let mut out = None;
+            for _ in 0..4 {
+                out = Some(r.frame(&ctx, r.input(), |ui| app.draw(ui)));
+            }
+            r.save(&ctx, out.unwrap(), &dir.join(format!("{name}.png")));
+        }
         {
             // Which characters the default fonts can draw.
             let ctx = egui::Context::default();

@@ -248,7 +248,7 @@ pub fn show(app: &mut App, ui: &mut Ui) {
                 ui.label("No stuck instances: every token reached an end event.");
             } else {
                 ui.colored_label(
-                    egui::Color32::LIGHT_RED,
+                    ui.visuals().error_fg_color,
                     format!(
                         "{} token(s) were still waiting when the run ended:",
                         r.stuck.len()
@@ -266,7 +266,7 @@ pub fn show(app: &mut App, ui: &mut Ui) {
             }
             if r.messages_lost > 0 {
                 ui.colored_label(
-                    egui::Color32::LIGHT_RED,
+                    ui.visuals().error_fg_color,
                     format!(
                         "{} lost message(s) (nobody was waiting and buffering is off):",
                         r.messages_lost
@@ -287,7 +287,7 @@ pub fn show(app: &mut App, ui: &mut Ui) {
                 }
             }
             if !r.undelivered.is_empty() {
-                ui.colored_label(egui::Color32::YELLOW, "Buffered messages nobody picked up:");
+                ui.colored_label(ui.visuals().warn_fg_color, "Buffered messages nobody picked up:");
                 for u in &r.undelivered {
                     ui.label(format!("case {}: {} × {}", u.case, u.count, u.target));
                 }
@@ -306,7 +306,7 @@ pub fn show(app: &mut App, ui: &mut Ui) {
             }
             for (id, d) in r.decisions.iter().filter(|(_, d)| d.no_match > 0 || d.violations > 0) {
                 ui.colored_label(
-                    egui::Color32::YELLOW,
+                    ui.visuals().warn_fg_color,
                     format!(
                         "decision {id}: {} evaluation(s) matched no rule, {} violated the hit policy",
                         d.no_match, d.violations

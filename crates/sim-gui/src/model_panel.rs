@@ -31,7 +31,7 @@ pub fn show(app: &mut App, ui: &mut Ui) {
         }
     });
     if let Some(e) = &app.ws.load_error {
-        ui.colored_label(egui::Color32::LIGHT_RED, e);
+        ui.colored_label(ui.visuals().error_fg_color, e);
     }
 
     egui::ScrollArea::vertical().show(ui, |ui| {
@@ -62,8 +62,8 @@ pub fn show(app: &mut App, ui: &mut Ui) {
         }
         for issue in &issues {
             let color = match issue.severity {
-                Severity::Error => egui::Color32::LIGHT_RED,
-                Severity::Warning => egui::Color32::YELLOW,
+                Severity::Error => ui.visuals().error_fg_color,
+                Severity::Warning => ui.visuals().warn_fg_color,
             };
             if ui
                 .selectable_label(
