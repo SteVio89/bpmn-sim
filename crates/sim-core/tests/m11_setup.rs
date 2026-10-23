@@ -98,3 +98,28 @@ fn check_ties_problems_to_elements() {
         "{text}"
     );
 }
+
+#[test]
+fn pilot_estimates_load_and_counts_flows() {
+    let p = load("v13-model.bpmn");
+    let s =
+        Scenario::from_toml(&std::fs::read_to_string(fixture("v13-model.toml")).unwrap()).unwrap();
+    let pilot = sim_core::pilot::pilot(&p, &s).unwrap();
+    assert_eq!(pilot.cases, sim_core::pilot::PILOT_CASES);
+    // V13 is a stable system: both pools have a load well below 1.
+    let clerks = pilot.pools["Clerks"].load;
+    let experts = pilot.pools["Experts"].load;
+    assert!((0.55..0.85).contains(&clerks), "{clerks}");
+    assert!((0.2..0.45).contains(&experts), "{experts}");
+    assert_eq!(pilot.overloaded().count(), 0);
+    let simple = pilot.flows[&QId::new("v13-model.bpmn", "Flow_simple")] as f64;
+    assert!((simple / 300.0 - 0.6).abs() < 0.1, "{simple}");
+
+    // One expert for 40 % of the cases at 10 min each, but a case every 2 minutes: overloaded.
+    let mut busy = s.clone();
+    busy.arrivals[0].inter_arrival = sim_core::dist::DistSpec::Exponential {
+        mean: sim_core::dist::Seconds(120.0),
+    };
+    let pilot = sim_core::pilot::pilot(&p, &busy).unwrap();
+    assert!(pilot.overloaded().any(|(name, _)| name == "Experts"));
+}

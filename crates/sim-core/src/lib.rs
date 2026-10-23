@@ -14,6 +14,7 @@ pub mod manual;
 pub mod model;
 pub mod needs;
 pub mod parser;
+pub mod pilot;
 pub mod project;
 pub mod scenario;
 pub mod stats;
