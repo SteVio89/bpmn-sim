@@ -330,8 +330,10 @@ fn draw(
             painter.rect_filled(r, 0.0, c.gamma_multiply(0.35));
         }
         painter.rect_stroke(r, 0.0, thin, StrokeKind::Inside);
-        // A pool with lanes has its band left of the lanes; draw the band border for pools.
-        if pool.is_some() {
+        // A black-box pool (no process) is a plain box with its name in the middle; a pool with
+        // a process has a header band on the left with the name reading upwards, as lanes do.
+        let black_box = pool.is_some_and(|p| p.process.is_none());
+        if pool.is_some() && !black_box {
             painter.line_segment(
                 [
                     Pos2::new(r.left() + header, r.top()),
@@ -342,8 +344,12 @@ fn draw(
         }
         let name = pool.and_then(|p| p.name.clone()).or_else(|| lane.cloned());
         if let Some(n) = name {
-            let c = Pos2::new(r.left() + header / 2.0, r.center().y);
-            vertical_text(&painter, c, n, font.clone(), ink);
+            if black_box {
+                painter.text(r.center(), Align2::CENTER_CENTER, n, font.clone(), ink);
+            } else {
+                let c = Pos2::new(r.left() + header / 2.0, r.center().y);
+                vertical_text(&painter, c, n, font.clone(), ink);
+            }
         }
     }
 
