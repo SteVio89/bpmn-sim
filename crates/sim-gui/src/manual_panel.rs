@@ -94,6 +94,9 @@ impl ManualState {
                     m.nodes.insert(task);
                 }
                 Pending::Fire { events, .. } => m.nodes.extend(events),
+                Pending::Continue { at, .. } => {
+                    m.nodes.insert(at);
+                }
             }
         }
         m
@@ -145,6 +148,10 @@ impl ManualState {
                     });
                     return true;
                 }
+                Pending::Continue { token, at } if at == n => {
+                    self.apply(Action::Continue { token: *token });
+                    return true;
+                }
                 _ => {}
             }
         }
@@ -155,6 +162,10 @@ impl ManualState {
     pub fn controls(&mut self, ui: &mut Ui) {
         ui.horizontal(|ui| {
             ui.checkbox(&mut self.game.stop_at_tasks, "stop at tasks");
+            ui.checkbox(
+                &mut self.game.stop_at_events,
+                "stop at message / signal events",
+            );
             if ui
                 .add_enabled(!self.undo.is_empty(), egui::Button::new("Undo"))
                 .clicked()
@@ -166,9 +177,10 @@ impl ManualState {
                 self.moved = true;
             }
             if ui.button("Reset").clicked() {
-                let stop = self.game.stop_at_tasks;
+                let (tasks, events) = (self.game.stop_at_tasks, self.game.stop_at_events);
                 *self = ManualState::new(self.project.clone());
-                self.game.stop_at_tasks = stop;
+                self.game.stop_at_tasks = tasks;
+                self.game.stop_at_events = events;
             }
             ui.separator();
             ui.label("Start:");
@@ -269,6 +281,19 @@ impl ManualState {
                                 if ui.button(format!("{} happens", self.label(&e))).clicked() {
                                     self.apply(Action::Fire { token, event: e });
                                 }
+                            }
+                        }
+                        Pending::Continue { token, at } => {
+                            let sending = matches!(
+                                self.project.node(&at).map(|n| &n.kind),
+                                Some(
+                                    sim_core::NodeKind::IntermediateThrowEvent
+                                        | sim_core::NodeKind::EndEvent
+                                )
+                            );
+                            let what = if sending { "Send from" } else { "Go on from" };
+                            if ui.button(format!("{what} {}", self.label(&at))).clicked() {
+                                self.apply(Action::Continue { token });
                             }
                         }
                     });

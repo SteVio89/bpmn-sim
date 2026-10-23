@@ -2,7 +2,8 @@
 //! needs no decision happens immediately; the player starts cases at start events, chooses the
 //! outgoing flows of XOR / inclusive splits, decides which event of an event-based gateway
 //! happens, fires catch events that nothing in the model triggers (timers, unsent messages,
-//! signals) and boundary events, and completes tasks (unless `stop_at_tasks` is switched off).
+//! signals) and boundary events, completes tasks and goes on from message and signal events
+//! (sending and receiving), unless `stop_at_tasks` / `stop_at_events` are switched off.
 //!
 //! The semantics follow the timed engine (scopes, call activities, message groups, joins).
 
@@ -31,6 +32,9 @@ pub enum TokenState {
     /// At an embedded subprocess / call activity while its content runs.
     InSubprocess,
     InCall,
+    /// At an event whose moment has come (a message or signal arrived, or a throw event about
+    /// to send): waits for the player to go on (with `stop_at_events`, the default).
+    Ready,
     /// Stuck: an inclusive split or condition-less element without a way on.
     Passing,
 }
@@ -82,6 +86,9 @@ pub enum Pending {
         at: QId,
         events: Vec<QId>,
     },
+    /// Go on from an event that is ready (send its message / signal, or continue after a
+    /// received one).
+    Continue { token: u64, at: QId },
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -90,6 +97,7 @@ pub enum Action {
     Choose { token: u64, flows: Vec<QId> },
     Complete { token: u64 },
     Fire { token: u64, event: QId },
+    Continue { token: u64 },
 }
 
 type Work = (u64, QId, Option<QId>);
@@ -99,6 +107,8 @@ pub struct Game {
     project: Arc<Project>,
     /// Stop at every task until the player completes it.
     pub stop_at_tasks: bool,
+    /// Stop at message / signal events (sending and receiving) until the player goes on.
+    pub stop_at_events: bool,
     insts: Vec<Inst>,
     tokens: BTreeMap<u64, Token>,
     next_token: u64,
@@ -125,6 +135,7 @@ impl Game {
         Self {
             project,
             stop_at_tasks: true,
+            stop_at_events: true,
             insts: Vec::new(),
             tokens: BTreeMap::new(),
             next_token: 0,
@@ -251,6 +262,10 @@ impl Game {
                         });
                     }
                 }
+                TokenState::Ready => out.push(Pending::Continue {
+                    token: *id,
+                    at: t.node.clone(),
+                }),
                 TokenState::InSubprocess | TokenState::InCall if !boundaries.is_empty() => out
                     .push(Pending::Fire {
                         token: *id,
@@ -346,6 +361,34 @@ impl Game {
                 let n = self.project.node(&t.node).cloned().ok_or("unknown task")?;
                 self.log.push(format!("complete '{}'", n.label()));
                 self.leave_task(token, &n, t.inst);
+                Ok(())
+            }
+            Action::Continue { token } => {
+                let t = self.tokens.get(&token).ok_or("no such token")?.clone();
+                if t.state != TokenState::Ready {
+                    return Err("this token is not waiting at an event".into());
+                }
+                let n = self.project.node(&t.node).cloned().ok_or("unknown event")?;
+                self.log.push(format!("go on from '{}'", n.label()));
+                let mut work = Vec::new();
+                match n.kind {
+                    NodeKind::IntermediateThrowEvent => {
+                        self.throw(t.inst, &n);
+                        if self.tokens.contains_key(&token) {
+                            self.route(token, &n, None, &mut work);
+                        }
+                    }
+                    NodeKind::EndEvent => {
+                        self.throw(t.inst, &n);
+                        if matches!(n.event_defs.first(), Some(EventDef::Terminate)) {
+                            self.terminate(token);
+                            self.log.push(format!("terminate at '{}'", n.label()));
+                        }
+                        self.consume(token, &mut work);
+                    }
+                    _ => self.route(token, &n, None, &mut work),
+                }
+                self.process(t.inst, work);
                 Ok(())
             }
             Action::Fire { token, event } => {
@@ -487,7 +530,8 @@ impl Game {
             .map(|p| match p {
                 Pending::Choose { token, .. }
                 | Pending::Complete { token, .. }
-                | Pending::Fire { token, .. } => token,
+                | Pending::Fire { token, .. }
+                | Pending::Continue { token, .. } => token,
             })
             .collect();
         waiting
@@ -515,6 +559,18 @@ impl Game {
                 self.set(tok, &node_id, TokenState::Passing);
                 let def = n.event_defs.first().cloned();
                 match &n.kind {
+                    NodeKind::EndEvent if self.stop_at_events && Self::throws(&n) => {
+                        self.set(tok, &node_id, TokenState::Ready);
+                    }
+                    NodeKind::StartEvent
+                        if self.stop_at_events
+                            && n.event_defs.iter().any(|d| {
+                                matches!(d, EventDef::Message(_) | EventDef::Signal(_))
+                            }) =>
+                    {
+                        // Started by a message or signal: show where it arrived.
+                        self.set(tok, &node_id, TokenState::Ready);
+                    }
                     NodeKind::EndEvent => {
                         self.throw(inst, &n);
                         if matches!(def, Some(EventDef::Terminate)) {
@@ -584,7 +640,7 @@ impl Game {
                                 }
                                 if let Some(tn) = self.project.node(&t).cloned() {
                                     self.set(tok, &t, TokenState::Passing);
-                                    self.route(tok, &tn, None, &mut work);
+                                    self.arrived(tok, &tn, &mut work);
                                 }
                             }
                             None => self.set(tok, &node_id, TokenState::WaitEventGateway),
@@ -613,6 +669,9 @@ impl Game {
                                 Some(c) => work.push((tok, c.id.clone(), None)),
                                 None => self.consume(tok, &mut work),
                             }
+                        } else if self.stop_at_events && Self::throws(&n) {
+                            // About to send: wait for the player.
+                            self.set(tok, &node_id, TokenState::Ready);
                         } else {
                             self.throw(inst, &n);
                             if self.tokens.contains_key(&tok) {
@@ -690,6 +749,34 @@ impl Game {
         self.check_instances();
     }
 
+    /// Does this throw / end event send a message or signal (or end with a result)?
+    fn throws(n: &FlowNode) -> bool {
+        n.event_defs.iter().any(|d| {
+            matches!(
+                d,
+                EventDef::Message(_)
+                    | EventDef::Signal(_)
+                    | EventDef::Escalation
+                    | EventDef::Error
+                    | EventDef::Terminate
+            )
+        })
+    }
+
+    /// The model triggered a waiting receive task or catch event (its message or signal
+    /// arrived): with the stop options on, the token stops there for the player.
+    fn arrived(&mut self, tok: u64, n: &FlowNode, work: &mut Vec<Work>) {
+        let stop = if n.kind == NodeKind::Task(TaskKind::Receive) {
+            self.stop_at_tasks.then_some(TokenState::AtTask)
+        } else {
+            self.stop_at_events.then_some(TokenState::Ready)
+        };
+        match stop {
+            Some(state) => self.set(tok, &n.id, state),
+            None => self.route(tok, n, None, work),
+        }
+    }
+
     fn wait_message(&mut self, tok: u64, n: &FlowNode, work: &mut Vec<Work>) {
         let group = self
             .tokens
@@ -698,7 +785,7 @@ impl Game {
         match self.buffer.get_mut(&(group, n.id.clone())) {
             Some(c) if *c > 0 => {
                 *c -= 1;
-                self.route(tok, n, None, work);
+                self.arrived(tok, n, work);
             }
             _ => self.set(tok, &n.id, TokenState::WaitMessage),
         }
@@ -987,7 +1074,7 @@ impl Game {
                 .push(format!("message reaches '{}'", target.label()));
             let mut work = Vec::new();
             self.set(tok, &target.id, TokenState::Passing);
-            self.route(tok, &target, None, &mut work);
+            self.arrived(tok, &target, &mut work);
             self.process(inst, work);
         } else if target.kind == NodeKind::StartEvent {
             self.log
@@ -1028,7 +1115,7 @@ impl Game {
             };
             let mut work = Vec::new();
             self.set(tok, &node, TokenState::Passing);
-            self.route(tok, &n, None, &mut work);
+            self.arrived(tok, &n, &mut work);
             self.process(t.inst, work);
         }
         let starts: Vec<FlowNode> = self

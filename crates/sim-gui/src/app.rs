@@ -814,6 +814,9 @@ mod tests {
                     token,
                     flows: vec![flows[0].clone()],
                 }),
+                sim_core::manual::Pending::Continue { token, at } if at == f => {
+                    Some(sim_core::manual::Action::Continue { token })
+                }
                 _ => None,
             });
             if let Some(a) = action {
@@ -821,19 +824,22 @@ mod tests {
             }
         }
         let files: Vec<&str> = seen.iter().map(|(f, _)| f.as_str()).collect();
+        // Into A, back to the main file (signal and message events wait there), into B, back.
         assert_eq!(
             files,
             [
                 "main.bpmn",
                 "subprocess-a.bpmn",
+                "main.bpmn",
                 "subprocess-b.bpmn",
                 "main.bpmn"
             ]
         );
         // While inside a called file, "Back" leads to its caller's file.
         assert_eq!(seen[1].1, ["main.bpmn"]);
-        assert_eq!(seen[2].1, ["main.bpmn"]);
-        assert!(seen[3].1.is_empty());
+        assert!(seen[2].1.is_empty());
+        assert_eq!(seen[3].1, ["main.bpmn"]);
+        assert!(seen[4].1.is_empty());
     }
 
     #[test]

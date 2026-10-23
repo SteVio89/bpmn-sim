@@ -16,6 +16,7 @@ fn fixture(name: &str) -> PathBuf {
 fn game(name: &str) -> Game {
     let mut g = Game::new(Arc::new(Project::open_main(&fixture(name)).unwrap()));
     g.stop_at_tasks = false;
+    g.stop_at_events = false;
     g
 }
 
@@ -333,6 +334,7 @@ fn focus_follows_the_token_into_called_processes_and_back() {
                     token,
                     event: events[0].clone(),
                 }),
+                Pending::Continue { token, at } if at == f => Some(Action::Continue { token }),
                 _ => None,
             })
             .expect("the focus is something to act on");
@@ -344,17 +346,105 @@ fn focus_follows_the_token_into_called_processes_and_back() {
             files.push(f.file);
         }
     }
-    // Into subprocess A when Call A is reached; when A ends the case runs on by itself through
-    // the main file into subprocess B (called by Call B); then back to the main file.
+    // Into subprocess A when Call A is reached; when A ends the token continues in the main file
+    // (it stops at the signal and message events there), then into subprocess B (called by
+    // Call B), then back to the main file.
     assert_eq!(
         files,
         [
             "main.bpmn",
             "subprocess-a.bpmn",
+            "main.bpmn",
             "subprocess-b.bpmn",
             "main.bpmn"
         ]
     );
-    let expected: Vec<Vec<String>> = vec![vec!["Call_A".into()], vec!["Call_B".into()], vec![]];
+    let expected: Vec<Vec<String>> =
+        vec![vec!["Call_A".into()], vec![], vec!["Call_B".into()], vec![]];
     assert_eq!(calls_seen, expected);
+}
+
+fn continue_at(g: &mut Game, file: &str, id: &str) {
+    let token = g
+        .pending()
+        .into_iter()
+        .find_map(|p| match p {
+            Pending::Continue { token, at } if at == q(file, id) => Some(token),
+            _ => None,
+        })
+        .unwrap_or_else(|| panic!("nothing to go on from at {id}: {:?}", g.pending()));
+    g.apply(Action::Continue { token }).unwrap();
+}
+
+fn complete(g: &mut Game, file: &str, id: &str) {
+    let token = g
+        .pending()
+        .into_iter()
+        .find_map(|p| match p {
+            Pending::Complete { token, task } if task == q(file, id) => Some(token),
+            _ => None,
+        })
+        .unwrap_or_else(|| panic!("{id} is not waiting: {:?}", g.pending()));
+    g.apply(Action::Complete { token }).unwrap();
+}
+
+#[test]
+fn message_events_wait_for_the_player_when_sending_and_receiving() {
+    let f = "v7-early.bpmn";
+    let mut g = Game::new(Arc::new(Project::open_main(&fixture(f)).unwrap()));
+    assert!(g.stop_at_events);
+    start(&mut g, f, "Start_A");
+    // The throw event waits before it sends.
+    assert_eq!(at(&g), ["Throw"]);
+    assert!(g.log.iter().all(|l| !l.contains("message")));
+    start(&mut g, f, "Start_B");
+    complete(&mut g, f, "Task_Pre");
+    // B's receive task waits for the message, which is not sent yet.
+    assert_eq!(at(&g), ["Catch", "Throw"]);
+    continue_at(&mut g, f, "Throw");
+    // Now the message has arrived: the receive task waits for the player to complete it.
+    assert_eq!(at(&g), ["Catch"]);
+    assert_eq!(g.tokens()[0].state, TokenState::AtTask);
+    complete(&mut g, f, "Catch");
+    assert!(g.tokens().is_empty());
+
+    // A message catch event stops when its message arrives.
+    let f = "v7-message.bpmn";
+    let mut g = Game::new(Arc::new(Project::open_main(&fixture(f)).unwrap()));
+    start(&mut g, f, "Start_B");
+    start(&mut g, f, "Start_A");
+    complete(&mut g, f, "Task_Send");
+    let catch = g
+        .tokens()
+        .into_iter()
+        .find(|t| t.node.id == "Catch")
+        .unwrap();
+    assert_eq!(catch.state, TokenState::Ready);
+    continue_at(&mut g, f, "Catch");
+    assert_eq!(at(&g), ["Task_B"]);
+}
+
+#[test]
+fn message_start_and_signal_events_wait_too() {
+    let f = "v7-start.bpmn";
+    let mut g = Game::new(Arc::new(Project::open_main(&fixture(f)).unwrap()));
+    start(&mut g, f, "Start_A");
+    complete(&mut g, f, "Task_Send");
+    // The message started B: its token waits at the message start event.
+    assert!(at(&g).contains(&"MStart".to_string()), "{:?}", at(&g));
+    continue_at(&mut g, f, "MStart");
+    assert!(at(&g).contains(&"Task_B".to_string()));
+
+    let f = "v8-signal-ok.bpmn";
+    let mut g = Game::new(Arc::new(Project::open_main(&fixture(f)).unwrap()));
+    start(&mut g, f, "Start_B");
+    start(&mut g, f, "Start_A");
+    complete(&mut g, f, "Task_A");
+    // A's signal end event waits before it signals; B still waits at its catch event.
+    assert_eq!(at(&g), ["Catch", "End_A"]);
+    continue_at(&mut g, f, "End_A");
+    assert_eq!(at(&g), ["Catch"]);
+    assert_eq!(g.tokens()[0].state, TokenState::Ready);
+    continue_at(&mut g, f, "Catch");
+    assert!(g.tokens().is_empty());
 }
