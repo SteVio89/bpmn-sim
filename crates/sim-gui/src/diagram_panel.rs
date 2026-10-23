@@ -8,7 +8,13 @@ use eframe::egui::{
     self, Align2, Color32, CursorIcon, FontId, Pos2, Rect, Sense, Shape, Stroke, StrokeKind, Ui,
     Vec2, epaint::TextShape,
 };
-use sim_core::diagram::{HeatMetric, Occupancy, heat, snapshot};
+use std::collections::BTreeSet;
+
+use sim_core::calendar::SimClock;
+use sim_core::diagram::{
+    HeatMetric, Occupancy, TokenPlace, TokenView, heat, messages_in_flight, snapshot,
+    token_positions,
+};
 use sim_core::{BpmnFile, EventDef, FlowNode, NodeKind, Project, QId, ReplicationResult, TaskKind};
 
 use crate::app::App;
@@ -25,8 +31,149 @@ pub struct DiagramView {
     pub replay: bool,
     pub playing: bool,
     pub time: f64,
+    /// Playback speed in simulated seconds per real second; `None` = automatic.
+    pub speed: Option<f64>,
+    /// Follow individual (traced) cases instead of showing queues of all cases.
+    pub follow: bool,
+    pub case: u64,
+    pub cases_shown: u64,
     /// Screen area of the last drawn diagram.
     pub area: Rect,
+}
+
+/// What the replay draws on top of the diagram.
+pub enum Overlay {
+    None,
+    /// All cases: waiting (queue bar) and working counts per task.
+    Queues(BTreeMap<QId, Occupancy>),
+    /// Followed cases: individual tokens and messages in flight.
+    Tokens {
+        tokens: Vec<TokenView>,
+        messages: Vec<(QId, f64)>,
+    },
+}
+
+const SPEEDS: [(f64, &str); 7] = [
+    (60.0, "1 min/s"),
+    (600.0, "10 min/s"),
+    (3600.0, "1 h/s"),
+    (8.0 * 3600.0, "8 h/s"),
+    (86_400.0, "1 day/s"),
+    (7.0 * 86_400.0, "1 week/s"),
+    (30.0 * 86_400.0, "30 days/s"),
+];
+
+/// Colour of a case's tokens.
+pub fn case_color(case: u64) -> Color32 {
+    const P: [Color32; 8] = [
+        Color32::from_rgb(66, 135, 245),
+        Color32::from_rgb(240, 120, 40),
+        Color32::from_rgb(60, 180, 90),
+        Color32::from_rgb(220, 60, 120),
+        Color32::from_rgb(150, 100, 230),
+        Color32::from_rgb(200, 180, 40),
+        Color32::from_rgb(40, 190, 200),
+        Color32::from_rgb(230, 80, 60),
+    ];
+    P[(case % P.len() as u64) as usize]
+}
+
+/// Default speed: a typical task takes about 1.5 s on screen.
+fn auto_speed(r: &ReplicationResult) -> f64 {
+    let mut d: Vec<f64> = r
+        .activities
+        .values()
+        .map(|a| a.processing.mean)
+        .filter(|x| *x > 0.0)
+        .collect();
+    d.sort_by(f64::total_cmp);
+    d.get(d.len() / 2).map_or(60.0, |m| (m / 1.5).max(1.0))
+}
+
+fn format_span(seconds: f64) -> String {
+    let s = seconds.max(0.0);
+    let (d, h, m) = (
+        (s / 86_400.0).floor(),
+        ((s % 86_400.0) / 3600.0).floor(),
+        ((s % 3600.0) / 60.0).floor(),
+    );
+    if d > 0.0 {
+        format!("{d}d {h:02}:{m:02}")
+    } else {
+        format!("{h:02}:{m:02}:{:02}", (s % 60.0).floor())
+    }
+}
+
+impl DiagramView {
+    fn followed(&self) -> BTreeSet<u64> {
+        (self.case..self.case + self.cases_shown.max(1)).collect()
+    }
+
+    /// Start and end of the followed cases (arrival of the first, completion of the last).
+    fn follow_window(&self, r: &ReplicationResult) -> (f64, f64) {
+        let cases: Vec<_> = self
+            .followed()
+            .into_iter()
+            .filter_map(|c| r.cases.get(c as usize))
+            .collect();
+        let start = cases.iter().map(|c| c.arrival).fold(f64::MAX, f64::min);
+        let end = cases
+            .iter()
+            .map(|c| c.completion.unwrap_or(r.end_time))
+            .fold(0.0, f64::max);
+        (if start == f64::MAX { 0.0 } else { start }, end)
+    }
+
+    pub fn speed_of(&self, r: &ReplicationResult) -> f64 {
+        self.speed.unwrap_or_else(|| auto_speed(r))
+    }
+
+    /// Simulated time a token is shown travelling along a flow (0.6 s on screen).
+    pub fn travel(&self, r: &ReplicationResult) -> f64 {
+        self.speed_of(r) * 0.6
+    }
+
+    /// Move the replay clock by `dt` real seconds.
+    pub fn advance(&mut self, r: &ReplicationResult, dt: f64) {
+        let end = if self.follow {
+            self.follow_window(r).1 + self.travel(r)
+        } else {
+            r.end_time
+        };
+        self.time += self.speed_of(r) * dt;
+        if self.time >= end {
+            self.time = end;
+            self.playing = false;
+        }
+    }
+
+    fn jump_to_case(&mut self, r: &ReplicationResult, case: u64) {
+        self.case = case.min(r.cases.len().saturating_sub(1) as u64);
+        self.time = self.follow_window(r).0;
+    }
+
+    /// Jump to the next moment something happens (for the followed cases, or any task).
+    fn next_event(&mut self, r: &ReplicationResult) {
+        let t = self.time;
+        let travel = self.travel(r);
+        let next = if self.follow {
+            let cases = self.followed();
+            r.trace
+                .iter()
+                .filter(|e| cases.contains(&e.case))
+                .map(|e| e.time + travel)
+                .find(|x| *x > t + 1e-9)
+        } else {
+            r.records
+                .iter()
+                .flat_map(|x| [x.queued, x.start, x.end])
+                .filter(|x| *x > t + 1e-9)
+                .min_by(f64::total_cmp)
+        };
+        if let Some(n) = next {
+            self.time = n;
+        }
+    }
 }
 
 impl Default for DiagramView {
@@ -41,6 +188,10 @@ impl Default for DiagramView {
             replay: false,
             playing: false,
             time: 0.0,
+            speed: None,
+            follow: true,
+            case: 0,
+            cases_shown: 1,
             area: Rect::NOTHING,
         }
     }
@@ -110,7 +261,7 @@ pub fn show(app: &mut App, ui: &mut Ui) {
     ui.horizontal(|ui| {
         if let Some(back) = v.history.last().cloned()
             && ui
-                .button(format!("◀ {back}"))
+                .button(format!("Back to {back}"))
                 .on_hover_text("Back to the calling diagram")
                 .clicked()
         {
@@ -152,27 +303,10 @@ pub fn show(app: &mut App, ui: &mut Ui) {
             ui.label("(run a simulation for heat map and replay)");
         }
     });
-    let end = result.map_or(0.0, |r| r.end_time);
-    if v.replay && result.is_some() {
-        ui.horizontal(|ui| {
-            if ui.button(if v.playing { "⏸" } else { "▶" }).clicked() {
-                v.playing = !v.playing;
-            }
-            ui.add(egui::Slider::new(&mut v.time, 0.0..=end.max(1.0)).show_value(false));
-            ui.label(format!(
-                "t = {:.1} {}",
-                v.time / unit,
-                app.results.as_ref().map_or("", |r| r.unit.name())
-            ));
-        });
-        if v.playing {
-            v.time += end / 600.0;
-            if v.time >= end {
-                v.time = end;
-                v.playing = false;
-            }
-            ui.ctx().request_repaint();
-        }
+    if v.replay
+        && let Some(r) = result
+    {
+        replay_controls(ui, v, r);
     }
 
     let Some(file) = v.file.clone().and_then(|f| project.files.get(&f)) else {
@@ -182,12 +316,24 @@ pub fn show(app: &mut App, ui: &mut Ui) {
         (Some(m), Some(r)) => heat(&project, &file.name, r, m),
         _ => BTreeMap::new(),
     };
-    let occupancy = match (v.replay, result) {
-        (true, Some(r)) => snapshot(r, v.time),
-        _ => BTreeMap::new(),
+    let overlay = match (v.replay, result) {
+        (true, Some(r)) => {
+            let cases = v.followed();
+            let traced = v.follow && cases.iter().any(|c| r.trace.iter().any(|e| e.case == *c));
+            if traced {
+                let travel = v.travel(r);
+                Overlay::Tokens {
+                    tokens: token_positions(r, &cases, v.time, travel),
+                    messages: messages_in_flight(r, &cases, v.time, travel),
+                }
+            } else {
+                Overlay::Queues(snapshot(r, v.time))
+            }
+        }
+        _ => Overlay::None,
     };
     let legend = !heat_values.is_empty();
-    let (hovered, clicked) = draw(ui, v, &project, file, &heat_values, &occupancy);
+    let (hovered, clicked) = draw(ui, v, &project, file, &heat_values, &overlay);
     if let Some(id) = &hovered {
         tooltip(ui, &project, result, id, unit);
     }
@@ -257,7 +403,7 @@ fn draw(
     project: &Project,
     file: &BpmnFile,
     heat_values: &BTreeMap<QId, f64>,
-    occupancy: &BTreeMap<QId, Occupancy>,
+    overlay: &Overlay,
 ) -> (Option<QId>, Option<QId>) {
     let size = ui.available_size().max(Vec2::new(200.0, 200.0));
     let (response, painter) = ui.allocate_painter(size, Sense::click_and_drag());
@@ -549,23 +695,100 @@ fn draw(
                 }
             }
         }
-        // Replay: tokens waiting for a resource (orange) and working (blue).
-        if let Some(o) = occupancy.get(id) {
-            let badge = |offset: f32, count: usize, color: Color32| {
-                if count > 0 {
-                    let c = r.right_top() + Vec2::new(-offset * zoom, 0.0);
-                    painter.circle_filled(c, 8.0 * zoom.clamp(0.6, 2.0), color);
-                    painter.text(
-                        c,
-                        Align2::CENTER_CENTER,
-                        count.to_string(),
-                        FontId::proportional((10.0 * zoom).clamp(6.0, 20.0)),
-                        Color32::WHITE,
-                    );
-                }
+        // Replay of all cases: a queue bar in front of each task and the number being worked on.
+        if let Overlay::Queues(occupancy) = overlay
+            && let Some(o) = occupancy.get(id)
+        {
+            let small = FontId::proportional((10.0 * zoom).clamp(6.0, 20.0));
+            if o.waiting > 0 {
+                let h = (r.height() * (o.waiting as f32 / 10.0).min(1.0)).max(4.0 * zoom);
+                let bar = Rect::from_min_max(
+                    Pos2::new(r.left() - 10.0 * zoom, r.bottom() - h),
+                    Pos2::new(r.left() - 3.0 * zoom, r.bottom()),
+                );
+                painter.rect_filled(bar, 1.0, Color32::from_rgb(230, 130, 20));
+                painter.text(
+                    bar.center_top() - Vec2::new(0.0, 2.0),
+                    Align2::CENTER_BOTTOM,
+                    o.waiting.to_string(),
+                    small.clone(),
+                    Color32::from_rgb(230, 130, 20),
+                );
+            }
+            if o.working > 0 {
+                let c = r.right_top() + Vec2::new(-2.0 * zoom, 2.0 * zoom);
+                painter.circle_filled(
+                    c,
+                    8.0 * zoom.clamp(0.6, 2.0),
+                    Color32::from_rgb(40, 110, 220),
+                );
+                painter.text(
+                    c,
+                    Align2::CENTER_CENTER,
+                    o.working.to_string(),
+                    small,
+                    Color32::WHITE,
+                );
+            }
+        }
+    }
+
+    // Replay of followed cases: tokens and messages.
+    if let Overlay::Tokens { tokens, messages } = overlay {
+        let radius = (6.0 * zoom).clamp(3.0, 12.0);
+        let edge = |flow: &QId| {
+            d.edges.get(flow).map(|p| {
+                p.iter()
+                    .map(|(x, y)| to_screen(*x, *y))
+                    .collect::<Vec<Pos2>>()
+            })
+        };
+        for (flow, f) in messages {
+            if let Some(pts) = edge(flow) {
+                let p = point_along(&pts, *f);
+                diagram_icons::draw(
+                    &painter,
+                    Icon::Message { filled: true },
+                    p,
+                    radius * 3.0,
+                    ink,
+                    paper,
+                );
+            }
+        }
+        let mut stacked: BTreeMap<(QId, u8), usize> = BTreeMap::new();
+        for tv in tokens {
+            let mut slot = |node: &QId, kind: u8| {
+                let k = stacked.entry((node.clone(), kind)).or_default();
+                *k += 1;
+                (*k - 1) as f32
             };
-            badge(0.0, o.working, Color32::from_rgb(40, 110, 220));
-            badge(20.0, o.waiting, Color32::from_rgb(230, 130, 20));
+            let pos = match &tv.place {
+                TokenPlace::OnFlow { flow, fraction } => {
+                    edge(flow).map(|pts| point_along(&pts, *fraction))
+                }
+                TokenPlace::Waiting { node } => d.shapes.get(node).map(|b| {
+                    let r = rect_of(b);
+                    let i = slot(node, 0);
+                    Pos2::new(r.left() - (radius + 2.0) * (1.0 + 2.0 * i), r.center().y)
+                }),
+                TokenPlace::Working { node } => d.shapes.get(node).map(|b| {
+                    let r = rect_of(b);
+                    let i = slot(node, 1);
+                    Pos2::new(
+                        r.right() - (radius + 3.0) * (1.0 + 2.0 * i),
+                        r.bottom() - radius - 3.0,
+                    )
+                }),
+                TokenPlace::At { node } => d.shapes.get(node).map(|b| {
+                    let r = rect_of(b);
+                    let i = slot(node, 2);
+                    r.center() + Vec2::new(i * radius * 1.5, -i * radius * 1.5)
+                }),
+            };
+            if let Some(p) = pos {
+                painter.circle(p, radius, case_color(tv.case), Stroke::new(1.0, ink));
+            }
         }
     }
 
@@ -624,4 +847,123 @@ fn tooltip(ui: &Ui, project: &Project, r: Option<&ReplicationResult>, id: &QId, 
             ui.label(format!("fired {f} time(s)"));
         }
     });
+}
+
+/// The point at `fraction` (0..1) of the length of a polyline.
+fn point_along(pts: &[Pos2], fraction: f64) -> Pos2 {
+    let total: f32 = pts.windows(2).map(|w| (w[1] - w[0]).length()).sum();
+    let mut left = total * fraction.clamp(0.0, 1.0) as f32;
+    for w in pts.windows(2) {
+        let len = (w[1] - w[0]).length();
+        if left <= len && len > 0.0 {
+            return w[0] + (w[1] - w[0]) * (left / len);
+        }
+        left -= len;
+    }
+    pts.last().copied().unwrap_or_default()
+}
+
+/// Play/pause, speed, clock, case selection and the time slider.
+fn replay_controls(ui: &mut Ui, v: &mut DiagramView, r: &ReplicationResult) {
+    let traced: u64 = r.trace.iter().map(|e| e.case + 1).max().unwrap_or(0);
+    ui.horizontal(|ui| {
+        if ui
+            .button(if v.playing { "Pause" } else { "Play" })
+            .on_hover_text("play / pause")
+            .clicked()
+        {
+            v.playing = !v.playing;
+        }
+        if ui
+            .button("Restart")
+            .on_hover_text("back to the start")
+            .clicked()
+        {
+            v.time = if v.follow { v.follow_window(r).0 } else { 0.0 };
+        }
+        if ui
+            .button("Next event")
+            .on_hover_text("jump to the next moment something happens")
+            .clicked()
+        {
+            v.playing = false;
+            v.next_event(r);
+        }
+        let auto = auto_speed(r);
+        let shown = match v.speed {
+            None => format!("auto ({})", speed_label(auto)),
+            Some(s) => speed_label(s),
+        };
+        egui::ComboBox::from_id_salt("replay-speed")
+            .selected_text(shown)
+            .show_ui(ui, |ui| {
+                ui.selectable_value(&mut v.speed, None, format!("auto ({})", speed_label(auto)));
+                for (s, l) in SPEEDS {
+                    ui.selectable_value(&mut v.speed, Some(s), l);
+                }
+            });
+        ui.separator();
+        let clock = SimClock {
+            epoch: r.start_epoch,
+        };
+        ui.label(format!(
+            "{}  (+{})",
+            clock.format(v.time).replace('T', " ").trim_end_matches('Z'),
+            format_span(v.time)
+        ));
+    });
+    ui.horizontal(|ui| {
+        ui.radio_value(&mut v.follow, false, "all cases (queues)");
+        ui.radio_value(&mut v.follow, true, "follow cases");
+        if v.follow {
+            let before = (v.case, v.cases_shown);
+            if ui.button("< Prev").on_hover_text("previous case").clicked() && v.case > 0 {
+                v.jump_to_case(r, v.case - 1);
+            }
+            ui.add(egui::DragValue::new(&mut v.case).range(0..=r.cases.len().saturating_sub(1) as u64).prefix("case "));
+            if ui.button("Next >").on_hover_text("next case").clicked() {
+                v.jump_to_case(r, v.case + 1);
+            }
+            ui.add(egui::DragValue::new(&mut v.cases_shown).range(1..=20).prefix("show ").suffix(" case(s)"));
+            if (v.case, v.cases_shown) != before {
+                v.jump_to_case(r, v.case);
+            }
+            if v.case >= traced {
+                ui.colored_label(
+                    Color32::YELLOW,
+                    format!("only the first {traced} cases are traced (simulation.trace_cases); showing queues"),
+                );
+            } else {
+                for c in v.followed().into_iter().take(8) {
+                    ui.colored_label(case_color(c), format!("case {c}"));
+                }
+            }
+        }
+    });
+    let (lo, hi) = if v.follow {
+        let (a, b) = v.follow_window(r);
+        (a, b + v.travel(r))
+    } else {
+        (0.0, r.end_time)
+    };
+    let width = ui.available_width();
+    ui.spacing_mut().slider_width = (width - 20.0).max(100.0);
+    ui.add(egui::Slider::new(&mut v.time, lo..=hi.max(lo + 1.0)).show_value(false));
+    if v.playing {
+        let dt = f64::from(ui.input(|i| i.stable_dt).min(0.1));
+        v.advance(r, dt);
+        ui.ctx().request_repaint();
+    }
+}
+
+fn speed_label(s: f64) -> String {
+    if s >= 86_400.0 {
+        format!("{:.1} days/s", s / 86_400.0)
+    } else if s >= 3600.0 {
+        format!("{:.1} h/s", s / 3600.0)
+    } else if s >= 60.0 {
+        format!("{:.1} min/s", s / 60.0)
+    } else {
+        format!("{s:.0} s/s")
+    }
 }

@@ -40,7 +40,7 @@ pub fn show(app: &mut App, ui: &mut Ui) {
         for (i, p) in app.ws.paths.iter().enumerate() {
             ui.horizontal(|ui| {
                 if ui
-                    .small_button("✕")
+                    .small_button("x")
                     .on_hover_text("Remove from project")
                     .clicked()
                 {
@@ -140,11 +140,12 @@ pub fn show(app: &mut App, ui: &mut Ui) {
                                     if let Some(d) = &n.called_decision {
                                         match project.decisions.get(d) {
                                             Some(file) => {
-                                                text +=
-                                                    &format!("  → decision {d} ({file}, evaluated)")
+                                                text += &format!(
+                                                    "  -> decision {d} ({file}, evaluated)"
+                                                )
                                             }
                                             None => {
-                                                text += &format!("  → decision {d} (NOT FOUND)")
+                                                text += &format!("  -> decision {d} (NOT FOUND)")
                                             }
                                         }
                                     }
@@ -152,8 +153,8 @@ pub fn show(app: &mut App, ui: &mut Ui) {
                                         && let Some(c) = &n.called_element
                                     {
                                         match project.processes.get(c) {
-                                            Some(q) => text += &format!("  → {c} ({})", q.file),
-                                            None => text += &format!("  → {c} (NOT FOUND)"),
+                                            Some(q) => text += &format!("  -> {c} ({})", q.file),
+                                            None => text += &format!("  -> {c} (NOT FOUND)"),
                                         }
                                     }
                                     if ui

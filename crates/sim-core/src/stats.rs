@@ -130,6 +130,26 @@ pub struct ProcessStats {
     pub cycle_time: Summary,
 }
 
+/// One step of a token, recorded for the first `simulation.trace_cases` cases (token replay).
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct TraceEvent {
+    pub time: f64,
+    pub case: u64,
+    pub instance: u64,
+    pub token: u64,
+    pub kind: TraceKind,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TraceKind {
+    /// The token reached `node`, over sequence flow `via` (none for start events, link jumps
+    /// and boundary events).
+    Arrive { node: QId, via: Option<QId> },
+    /// The token was consumed (end event, merged at a join, cancelled).
+    Gone,
+}
+
 /// A token still alive when the run ended (spec §5.8).
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct StuckToken {
@@ -212,6 +232,8 @@ pub struct ReplicationResult {
     pub processes: BTreeMap<QId, ProcessStats>,
     /// Decision id -> evaluation statistics.
     pub decisions: BTreeMap<String, DecisionStats>,
+    /// Token steps of the first `trace_cases` cases.
+    pub trace: Vec<TraceEvent>,
     pub cases: Vec<CaseRecord>,
     pub records: Vec<ActivityRecord>,
 }

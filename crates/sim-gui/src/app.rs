@@ -482,6 +482,18 @@ mod tests {
             return;
         };
         let dir = std::path::PathBuf::from(dir);
+        {
+            // Which characters the default fonts can draw.
+            let ctx = egui::Context::default();
+            let mut r = crate::snapshot::Renderer::new(500, 120);
+            let mut out = None;
+            for _ in 0..3 {
+                out = Some(r.frame(&ctx, r.input(), |ui| {
+                    ui.label(egui::RichText::new("dash — arrow → times × pm ± dots … x ✕ left ◀ right ▶ pause ⏸ dot ● tri ▲ sq ■ ⏵ ⏴ ⏩").size(18.0));
+                }));
+            }
+            r.save(&ctx, out.unwrap(), &dir.join("glyphs.png"));
+        }
         for (name, fixture) in [
             ("v13", "v13-model.bpmn"),
             ("main", "multi-file/main.bpmn"),
@@ -499,6 +511,45 @@ mod tests {
                 out = Some(r.frame(&ctx, r.input(), |ui| app.draw(ui)));
             }
             r.save(&ctx, out.unwrap(), &dir.join(format!("diagram-{name}.png")));
+            if name == "v13" {
+                // Replay: tokens of a few followed cases, then queues of all cases.
+                let mut app = with_results("v13-model.bpmn", "v13-model.toml");
+                app.tab = Tab::Diagram;
+                app.diagram.replay = true;
+                app.diagram.follow = true;
+                app.diagram.case = 40;
+                app.diagram.cases_shown = 6;
+                let r0 = app.results.as_ref().unwrap().data[0].clone();
+                // The busiest moment of cases 40..46.
+                let cases: std::collections::BTreeSet<u64> = (40..46).collect();
+                let travel = app.diagram.travel(&r0);
+                app.diagram.time = r0
+                    .trace
+                    .iter()
+                    .filter(|e| cases.contains(&e.case))
+                    .map(|e| e.time + travel * 0.4)
+                    .max_by_key(|t| {
+                        sim_core::diagram::token_positions(&r0, &cases, *t, travel).len()
+                    })
+                    .unwrap_or(0.0);
+                for _ in 0..3 {
+                    r.frame(&ctx, r.input(), |ui| app.draw(ui));
+                }
+                let out = r.frame(&ctx, r.input(), |ui| app.draw(ui));
+                r.save(&ctx, out, &dir.join("replay-tokens.png"));
+                app.diagram.follow = false;
+                app.diagram.time = (0..400)
+                    .map(|k| r0.end_time * f64::from(k) / 400.0)
+                    .max_by_key(|t| {
+                        sim_core::diagram::snapshot(&r0, *t)
+                            .values()
+                            .map(|o| o.waiting * 10 + o.working)
+                            .sum::<usize>()
+                    })
+                    .unwrap_or(0.0);
+                let out = r.frame(&ctx, r.input(), |ui| app.draw(ui));
+                r.save(&ctx, out, &dir.join("replay-queues.png"));
+            }
             if name == "task-types" {
                 // Close-up of the markers.
                 app.diagram.zoom = 2.6;
@@ -561,6 +612,62 @@ mod tests {
         let p = app.diagram.to_screen(t.x + 10.0, t.y + 10.0);
         click(&mut app, p);
         assert_eq!(app.diagram.file.as_deref(), Some("subprocess-a.bpmn"));
+    }
+
+    /// Load a model and its scenario and put a finished run into the app (no worker thread).
+    fn with_results(fixture: &str, scenario: &str) -> App {
+        let mut app = App::default();
+        app.ws.open(&fixtures().join(fixture));
+        let text = std::fs::read_to_string(fixtures().join(scenario)).unwrap();
+        app.scenario = Scenario::from_toml(&text).unwrap();
+        app.scenario.simulation.replications = 1;
+        let bound = app.scenario.bind(&app.ws.project).unwrap();
+        let data = sim_core::run_replications(&bound);
+        app.results = Some(RunResults {
+            data,
+            project: app.ws.project.clone(),
+            unit: app.scenario.simulation.time_unit,
+        });
+        app
+    }
+
+    #[test]
+    fn replay_runs_in_real_time_and_follows_cases() {
+        let ctx = egui::Context::default();
+        let mut app = with_results("v13-model.bpmn", "v13-model.toml");
+        app.tab = Tab::Diagram;
+        app.diagram.replay = true;
+        app.diagram.speed = Some(3600.0); // one simulated hour per second
+        app.diagram.follow = false;
+        frame_with(&mut app, &ctx, vec![]);
+        app.diagram.playing = true;
+        for _ in 0..60 {
+            frame_with(&mut app, &ctx, vec![]);
+        }
+        // Headless frames are 1/60 s apart: about one simulated hour has passed, not the whole run.
+        let t = app.diagram.time;
+        assert!((3000.0..=4000.0).contains(&t), "{t}");
+
+        // Following case 5: playback is limited to that case and stops after it.
+        let r = app.results.as_ref().unwrap().data[0].clone();
+        let c = &r.cases[5];
+        app.diagram.follow = true;
+        app.diagram.case = 5;
+        app.diagram.time = c.arrival;
+        app.diagram.speed = Some(86_400.0);
+        app.diagram.playing = true;
+        // The case lasts about half an hour; at one day per second (plus 0.6 s for the last
+        // token to travel) 1.5 s of playback are more than enough.
+        for _ in 0..90 {
+            frame_with(&mut app, &ctx, vec![]);
+        }
+        assert!(!app.diagram.playing, "stopped at the end of the case");
+        let end = c.completion.unwrap() + app.diagram.travel(&r);
+        assert!(
+            (app.diagram.time - end).abs() < 1e-6,
+            "{} vs {end}",
+            app.diagram.time
+        );
     }
 
     #[test]

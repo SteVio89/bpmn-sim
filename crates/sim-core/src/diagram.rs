@@ -88,3 +88,113 @@ pub fn snapshot(r: &ReplicationResult, t: f64) -> BTreeMap<QId, Occupancy> {
     }
     out
 }
+
+/// Where a traced token is at a moment of the replay.
+#[derive(Debug, Clone, PartialEq)]
+pub enum TokenPlace {
+    /// Travelling along a sequence flow (`fraction` 0..1 of the way).
+    OnFlow { flow: QId, fraction: f64 },
+    /// At a task, waiting for its resource.
+    Waiting { node: QId },
+    /// At a task, being worked on.
+    Working { node: QId },
+    /// At any other element (event, gateway, call activity, subprocess).
+    At { node: QId },
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct TokenView {
+    pub case: u64,
+    pub instance: u64,
+    pub token: u64,
+    pub place: TokenPlace,
+}
+
+/// Positions of the tokens of `cases` at time `t`, from the token trace. Moving from one element
+/// to the next takes no simulated time; for display a token is shown travelling along the flow
+/// during `travel` seconds after it arrived.
+pub fn token_positions(
+    r: &ReplicationResult,
+    cases: &std::collections::BTreeSet<u64>,
+    t: f64,
+    travel: f64,
+) -> Vec<TokenView> {
+    use crate::stats::TraceKind;
+    // Last arrival and whether the token is gone, per (instance, token).
+    let mut last: BTreeMap<(u64, u64), (&crate::stats::TraceEvent, Option<f64>)> = BTreeMap::new();
+    for e in r.trace.iter().take_while(|e| e.time <= t) {
+        if !cases.contains(&e.case) {
+            continue;
+        }
+        let key = (e.instance, e.token);
+        match &e.kind {
+            TraceKind::Arrive { .. } => {
+                last.insert(key, (e, None));
+            }
+            TraceKind::Gone => {
+                if let Some(entry) = last.get_mut(&key) {
+                    entry.1 = Some(e.time);
+                }
+            }
+        }
+    }
+    let mut out = Vec::new();
+    for ((instance, token), (e, gone)) in last {
+        let TraceKind::Arrive { node, via } = &e.kind else {
+            continue;
+        };
+        let travelling = via.as_ref().filter(|_| t - e.time < travel);
+        let place = match travelling {
+            Some(flow) => TokenPlace::OnFlow {
+                flow: flow.clone(),
+                fraction: if travel > 0.0 {
+                    (t - e.time) / travel
+                } else {
+                    1.0
+                },
+            },
+            None if gone.is_some() => continue,
+            None => {
+                let rec = r
+                    .records
+                    .iter()
+                    .find(|x| x.instance == instance && x.activity == *node && x.queued == e.time);
+                match rec {
+                    Some(x) if t < x.start => TokenPlace::Waiting { node: node.clone() },
+                    Some(x) if t < x.end => TokenPlace::Working { node: node.clone() },
+                    _ => TokenPlace::At { node: node.clone() },
+                }
+            }
+        };
+        out.push(TokenView {
+            case: e.case,
+            instance,
+            token,
+            place,
+        });
+    }
+    out
+}
+
+/// Messages of `cases` shown travelling along their message flow at time `t`: (flow, fraction).
+pub fn messages_in_flight(
+    r: &ReplicationResult,
+    cases: &std::collections::BTreeSet<u64>,
+    t: f64,
+    travel: f64,
+) -> Vec<(QId, f64)> {
+    r.messages
+        .iter()
+        .filter(|m| cases.contains(&m.case) && m.time <= t && t < m.time + travel)
+        .map(|m| {
+            (
+                m.flow.clone(),
+                if travel > 0.0 {
+                    (t - m.time) / travel
+                } else {
+                    1.0
+                },
+            )
+        })
+        .collect()
+}

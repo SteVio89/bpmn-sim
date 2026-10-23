@@ -106,7 +106,7 @@ pub fn show(app: &mut App, ui: &mut Ui) {
                         let mut drop = None;
                         for (t, trig) in a.triggers.iter().enumerate() {
                             ui.horizontal(|ui| {
-                                if ui.small_button("✕").clicked() {
+                                if ui.small_button("x").clicked() {
                                     drop = Some(t);
                                 }
                                 ui.label(trig);
@@ -511,7 +511,7 @@ pub fn show_run(app: &mut App, ui: &mut Ui) {
     let running = app.job.is_some();
     ui.horizontal(|ui| {
         if ui
-            .add_enabled(bound_ok && !running, egui::Button::new("▶ Run simulation"))
+            .add_enabled(bound_ok && !running, egui::Button::new("Run simulation"))
             .clicked()
         {
             let ctx = ui.ctx().clone();

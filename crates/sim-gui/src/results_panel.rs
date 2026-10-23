@@ -278,7 +278,7 @@ pub fn show(app: &mut App, ui: &mut Ui) {
                     .filter(|m| m.outcome == sim_core::MessageOutcome::Lost)
                 {
                     ui.label(format!(
-                        "t={} case {}: {} → {}",
+                        "t={} case {}: {} -> {}",
                         t(m.time),
                         m.case,
                         m.source,

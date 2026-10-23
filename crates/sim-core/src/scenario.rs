@@ -253,6 +253,13 @@ pub struct SimulationSection {
     pub time_unit: TimeUnit,
     #[serde(default, skip_serializing_if = "is_default_scope")]
     pub signal_scope: SignalScope,
+    /// Record every token step of the first N cases (for the animated token replay).
+    #[serde(default = "default_trace_cases")]
+    pub trace_cases: u64,
+}
+
+fn default_trace_cases() -> u64 {
+    100
 }
 
 fn is_default_scope(s: &SignalScope) -> bool {
@@ -280,6 +287,7 @@ impl Default for SimulationSection {
             warm_up_cases: 0,
             time_unit: default_time_unit(),
             signal_scope: SignalScope::Case,
+            trace_cases: default_trace_cases(),
         }
     }
 }
@@ -369,6 +377,7 @@ pub struct SimParams {
     /// Stop at this simulation time.
     pub horizon: Option<f64>,
     pub clock: SimClock,
+    pub trace_cases: u64,
 }
 
 #[derive(Debug, Clone)]
@@ -1263,6 +1272,7 @@ impl Scenario {
                 time_unit: sim.time_unit,
                 horizon,
                 clock,
+                trace_cases: sim.trace_cases,
             },
             arrivals,
             pools,

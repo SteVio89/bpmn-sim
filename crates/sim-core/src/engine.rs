@@ -155,6 +155,7 @@ pub struct Engine<'a> {
     end_events: BTreeMap<QId, u64>,
     boundary_fired: BTreeMap<QId, u64>,
     decision_stats: BTreeMap<String, DecisionStats>,
+    trace: Vec<TraceEvent>,
     horizon_reached: bool,
     msg_flows: Vec<&'a MessageFlow>,
     /// group -> case
@@ -264,6 +265,7 @@ impl<'a> Engine<'a> {
             end_events: BTreeMap::new(),
             boundary_fired: BTreeMap::new(),
             decision_stats: BTreeMap::new(),
+            trace: Vec::new(),
             horizon_reached: false,
             msg_flows: m
                 .project
@@ -409,6 +411,28 @@ impl<'a> Engine<'a> {
         id
     }
 
+    fn trace(&mut self, inst: usize, tok: u64, kind: TraceKind) {
+        let case = self.instances[inst].case;
+        if (case as u64) < self.m.sim.trace_cases {
+            self.trace.push(TraceEvent {
+                time: self.now,
+                case: case as u64,
+                instance: inst as u64,
+                token: tok,
+                kind,
+            });
+        }
+    }
+
+    /// Remove a token from its instance (traced as gone).
+    fn remove_token(&mut self, inst: usize, tok: u64) -> Option<Token> {
+        let t = self.instances[inst].tokens.remove(&tok);
+        if t.is_some() {
+            self.trace(inst, tok, TraceKind::Gone);
+        }
+        t
+    }
+
     fn set_token(&mut self, inst: usize, tok: u64, node: &QId, state: &str) {
         if let Some(t) = self.instances[inst].tokens.get_mut(&tok) {
             t.node = node.clone();
@@ -443,6 +467,14 @@ impl<'a> Engine<'a> {
             let Some(node) = m.project.node(&node_id) else {
                 continue;
             };
+            self.trace(
+                inst,
+                tok,
+                TraceKind::Arrive {
+                    node: node_id.clone(),
+                    via: via.clone(),
+                },
+            );
             let first_def = node.event_defs.first();
             match &node.kind {
                 NodeKind::EndEvent => {
@@ -566,7 +598,7 @@ impl<'a> Engine<'a> {
                     continue;
                 };
                 for t in rest {
-                    self.instances[inst].tokens.remove(t);
+                    self.remove_token(inst, *t);
                 }
                 let m = self.m;
                 if let Some(node) = m.project.node(&j) {
@@ -656,7 +688,7 @@ impl<'a> Engine<'a> {
             }
             let keep = firing[0];
             for t in &firing[1..] {
-                self.instances[inst].tokens.remove(t);
+                self.remove_token(inst, *t);
             }
             self.set_token(inst, keep, &node.id, "passing");
             self.route(inst, keep, node, work);
@@ -771,7 +803,7 @@ impl<'a> Engine<'a> {
 
     /// Remove a token that reached an end; the enclosing subprocess completes with its last token.
     fn consume(&mut self, inst: usize, tok: u64, work: &mut Vec<Work>) {
-        let Some(t) = self.instances[inst].tokens.remove(&tok) else {
+        let Some(t) = self.remove_token(inst, tok) else {
             return;
         };
         for s in t.subs {
@@ -922,7 +954,7 @@ impl<'a> Engine<'a> {
                 q.retain(|t| *t != tok);
             }
         }
-        self.instances[inst].tokens.remove(&tok);
+        self.remove_token(inst, tok);
     }
 
     // ------------------------------------------------------------ subscriptions
@@ -1765,6 +1797,7 @@ impl<'a> Engine<'a> {
             signals: self.signals,
             boundary_fired: self.boundary_fired,
             decisions: self.decision_stats,
+            trace: self.trace,
             processes,
             cases,
             records: self.records,
