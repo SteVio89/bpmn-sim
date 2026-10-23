@@ -239,7 +239,7 @@ impl<'a> Engine<'a> {
                     && n.kind == NodeKind::InclusiveGateway
                     && n.incoming.len() > 1
             })
-            .map(|j| (j.id.clone(), reaching(m, j)))
+            .map(|j| (j.id.clone(), reaching(m.project, j)))
             .collect();
         Self {
             m,
@@ -1808,8 +1808,7 @@ impl<'a> Engine<'a> {
 /// Every element of the same process (and subprocess level) from which `join` is reachable:
 /// backwards over sequence flows, from link catch events to their link throws, and from
 /// boundary events to the activity they are attached to.
-fn reaching(m: &BoundModel, join: &FlowNode) -> BTreeSet<QId> {
-    let project = m.project;
+pub(crate) fn reaching(project: &crate::project::Project, join: &FlowNode) -> BTreeSet<QId> {
     let mut seen = BTreeSet::new();
     let mut stack = vec![join.id.clone()];
     while let Some(id) = stack.pop() {

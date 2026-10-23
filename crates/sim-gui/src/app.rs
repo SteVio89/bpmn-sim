@@ -550,6 +550,42 @@ mod tests {
                 let out = r.frame(&ctx, r.input(), |ui| app.draw(ui));
                 r.save(&ctx, out, &dir.join("replay-queues.png"));
             }
+            if name == "main" {
+                // Manual game: the order is in subprocess A, waiting at its XOR split.
+                let mut app = App::default();
+                app.ws.open(&fixtures().join("multi-file/main.bpmn"));
+                app.tab = Tab::Diagram;
+                let mut m = crate::manual_panel::ManualState::new(app.ws.project.clone());
+                m.game.stop_at_tasks = true;
+                m.apply(sim_core::manual::Action::Start {
+                    event: QId::new("main.bpmn", "TimerStart"),
+                });
+                app.diagram.manual = Some(m);
+                for _ in 0..3 {
+                    r.frame(&ctx, r.input(), |ui| app.draw(ui));
+                }
+                let out = r.frame(&ctx, r.input(), |ui| app.draw(ui));
+                r.save(&ctx, out, &dir.join("manual-start.png"));
+                // Complete tasks until a gateway asks, then show subprocess A.
+                for _ in 0..6 {
+                    let m = app.diagram.manual.as_mut().unwrap();
+                    if let Some(sim_core::manual::Pending::Complete { token, .. }) = m
+                        .game
+                        .pending()
+                        .into_iter()
+                        .find(|p| matches!(p, sim_core::manual::Pending::Complete { .. }))
+                    {
+                        m.apply(sim_core::manual::Action::Complete { token });
+                    }
+                }
+                app.diagram.file = Some("subprocess-a.bpmn".into());
+                app.diagram.fit = true;
+                for _ in 0..3 {
+                    r.frame(&ctx, r.input(), |ui| app.draw(ui));
+                }
+                let out = r.frame(&ctx, r.input(), |ui| app.draw(ui));
+                r.save(&ctx, out, &dir.join("manual-sub-a.png"));
+            }
             if name == "task-types" {
                 // Close-up of the markers.
                 app.diagram.zoom = 2.6;
@@ -668,6 +704,53 @@ mod tests {
             "{} vs {end}",
             app.diagram.time
         );
+    }
+
+    fn click_at(app: &mut App, ctx: &egui::Context, p: egui::Pos2) {
+        let button = |pressed| egui::Event::PointerButton {
+            pos: p,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: egui::Modifiers::NONE,
+        };
+        frame_with(app, ctx, vec![egui::Event::PointerMoved(p)]);
+        frame_with(app, ctx, vec![button(true)]);
+        frame_with(app, ctx, vec![button(false)]);
+        frame_with(app, ctx, vec![]);
+    }
+
+    #[test]
+    fn manual_simulation_is_played_by_clicking() {
+        let ctx = egui::Context::default();
+        let mut app = App::default();
+        app.ws.open(&fixtures().join("v13-model.bpmn"));
+        app.tab = Tab::Diagram;
+        app.diagram.manual = Some(crate::manual_panel::ManualState::new(
+            app.ws.project.clone(),
+        ));
+        for _ in 0..3 {
+            frame_with(&mut app, &ctx, vec![]);
+        }
+        let shapes = app.ws.project.files["v13-model.bpmn"].diagram.clone();
+        let center = |app: &App, id: &str| {
+            let b = shapes.shapes[&QId::new("v13-model.bpmn", id)];
+            app.diagram
+                .to_screen(b.x + b.width / 2.0, b.y + b.height / 2.0)
+        };
+        // Click the start event: the token runs to the XOR split and waits.
+        let p = center(&app, "Start");
+        click_at(&mut app, &ctx, p);
+        let game = &app.diagram.manual.as_ref().unwrap().game;
+        assert_eq!(game.tokens().len(), 1);
+        assert_eq!(game.tokens()[0].node.id, "Split");
+        // Click the middle of the "simple" flow: the case runs to its end.
+        let edge = &shapes.edges[&QId::new("v13-model.bpmn", "Flow_simple")];
+        let (a, b) = (edge[1], edge[2]);
+        let p = app.diagram.to_screen((a.0 + b.0) / 2.0, (a.1 + b.1) / 2.0);
+        click_at(&mut app, &ctx, p);
+        let game = &app.diagram.manual.as_ref().unwrap().game;
+        assert!(game.tokens().is_empty(), "{:?}", game.tokens());
+        assert_eq!(game.finished().len(), 1);
     }
 
     #[test]

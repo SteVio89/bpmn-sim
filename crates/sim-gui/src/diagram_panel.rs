@@ -9,6 +9,7 @@ use eframe::egui::{
     Vec2, epaint::TextShape,
 };
 use std::collections::BTreeSet;
+use std::sync::Arc;
 
 use sim_core::calendar::SimClock;
 use sim_core::diagram::{
@@ -19,6 +20,7 @@ use sim_core::{BpmnFile, EventDef, FlowNode, NodeKind, Project, QId, Replication
 
 use crate::app::App;
 use crate::diagram_icons::{self, Icon};
+use crate::manual_panel::{ACCENT, ManualState, Marks};
 
 pub struct DiagramView {
     pub file: Option<String>,
@@ -37,8 +39,17 @@ pub struct DiagramView {
     pub follow: bool,
     pub case: u64,
     pub cases_shown: u64,
+    /// Manual token game (when switched on).
+    pub manual: Option<ManualState>,
     /// Screen area of the last drawn diagram.
     pub area: Rect,
+}
+
+/// What a frame of the diagram reports back.
+pub struct DrawOut {
+    pub hovered: Option<QId>,
+    pub clicked_node: Option<QId>,
+    pub clicked_flow: Option<QId>,
 }
 
 /// What the replay draws on top of the diagram.
@@ -51,6 +62,8 @@ pub enum Overlay {
         tokens: Vec<TokenView>,
         messages: Vec<(QId, f64)>,
     },
+    /// Manual token game: (node, instance) of every token.
+    Game(Vec<(QId, usize)>),
 }
 
 const SPEEDS: [(f64, &str); 7] = [
@@ -192,6 +205,7 @@ impl Default for DiagramView {
             follow: true,
             case: 0,
             cases_shown: 1,
+            manual: None,
             area: Rect::NOTHING,
         }
     }
@@ -297,8 +311,21 @@ pub fn show(app: &mut App, ui: &mut Ui) {
                         ui.selectable_value(&mut v.metric, m, l);
                     }
                 });
-            ui.checkbox(&mut v.replay, "token replay");
+            if ui.checkbox(&mut v.replay, "token replay").changed() && v.replay {
+                v.manual = None;
+            }
         });
+        let mut manual = v.manual.is_some();
+        if ui
+            .checkbox(&mut manual, "manual simulation")
+            .on_hover_text("play one case by hand: start tokens and decide at every gateway")
+            .changed()
+        {
+            v.manual = manual.then(|| ManualState::new(project.clone()));
+            if manual {
+                v.replay = false;
+            }
+        }
         if result.is_none() {
             ui.label("(run a simulation for heat map and replay)");
         }
@@ -316,7 +343,34 @@ pub fn show(app: &mut App, ui: &mut Ui) {
         (Some(m), Some(r)) => heat(&project, &file.name, r, m),
         _ => BTreeMap::new(),
     };
+    // A manual game belongs to the loaded model; start afresh when the model changes.
+    if v.manual
+        .as_ref()
+        .is_some_and(|m| !Arc::ptr_eq(&m.project, &project))
+    {
+        v.manual = Some(ManualState::new(project.clone()));
+    }
+    if let Some(m) = v.manual.as_mut() {
+        m.controls(ui);
+    }
+    let marks = v
+        .manual
+        .as_ref()
+        .map(ManualState::marks)
+        .unwrap_or_default();
     let overlay = match (v.replay, result) {
+        _ if v.manual.is_some() => Overlay::Game(
+            v.manual
+                .as_ref()
+                .map(|m| {
+                    m.game
+                        .tokens()
+                        .into_iter()
+                        .map(|t| (t.node, t.instance))
+                        .collect()
+                })
+                .unwrap_or_default(),
+        ),
         (true, Some(r)) => {
             let cases = v.followed();
             let traced = v.follow && cases.iter().any(|c| r.trace.iter().any(|e| e.case == *c));
@@ -333,10 +387,21 @@ pub fn show(app: &mut App, ui: &mut Ui) {
         _ => Overlay::None,
     };
     let legend = !heat_values.is_empty();
-    let (hovered, clicked) = draw(ui, v, &project, file, &heat_values, &overlay);
-    if let Some(id) = &hovered {
+    let out = draw(ui, v, &project, file, &heat_values, &overlay, &marks);
+    if let Some(id) = &out.hovered {
         tooltip(ui, &project, result, id, unit);
     }
+    let used = match v.manual.as_mut() {
+        Some(m) if out.clicked_node.is_some() || out.clicked_flow.is_some() => {
+            m.click(out.clicked_node.as_ref(), out.clicked_flow.as_ref())
+        }
+        _ => false,
+    };
+    let clicked = out.clicked_node.filter(|_| !used).filter(|id| {
+        project
+            .node(id)
+            .is_some_and(|n| n.kind == NodeKind::CallActivity)
+    });
     if let Some(n) = clicked.as_ref().and_then(|id| project.node(id)) {
         match called_file(&project, n) {
             Some((_, f)) if !f.diagram.shapes.is_empty() => v.open(f.name.clone()),
@@ -404,7 +469,8 @@ fn draw(
     file: &BpmnFile,
     heat_values: &BTreeMap<QId, f64>,
     overlay: &Overlay,
-) -> (Option<QId>, Option<QId>) {
+    marks: &Marks,
+) -> DrawOut {
     let size = ui.available_size().max(Vec2::new(200.0, 200.0));
     let (response, painter) = ui.allocate_painter(size, Sense::click_and_drag());
     let area = response.rect;
@@ -500,8 +566,26 @@ fn draw(
     }
 
     // Flows.
+    let pointer = response.hover_pos();
+    let mut hovered_flow = None;
     for (id, points) in &d.edges {
         let pts: Vec<Pos2> = points.iter().map(|(x, y)| to_screen(*x, *y)).collect();
+        if marks.flows.contains(id) {
+            // A flow the player can choose: highlighted (thicker when already ticked).
+            let w = if marks.selected.contains(id) {
+                6.0
+            } else {
+                3.5
+            };
+            painter.add(Shape::line(
+                pts.clone(),
+                Stroke::new(w, ACCENT.gamma_multiply(0.8)),
+            ));
+            if pointer.is_some_and(|p| distance_to_polyline(&pts, p) < 7.0) {
+                hovered_flow = Some(id.clone());
+                painter.add(Shape::line(pts.clone(), Stroke::new(w + 2.0, ACCENT)));
+            }
+        }
         let (Some(first), Some(last)) = (pts.first(), pts.last()) else {
             continue;
         };
@@ -522,7 +606,6 @@ fn draw(
     }
 
     // Flow nodes.
-    let pointer = response.hover_pos();
     let mut hovered = None;
     // Boundary events last, so they sit on top of their activity's border.
     let mut order: Vec<(&QId, &sim_core::Bounds, &FlowNode)> = d
@@ -540,6 +623,15 @@ fn draw(
         let fill = heat_of(id).unwrap_or(paper);
         let label = n.name.clone().unwrap_or_default();
         let icon = icon_of(n);
+        if marks.nodes.contains(id) {
+            // Something the player can click here: a halo around the element.
+            let halo = Stroke::new(3.0, ACCENT);
+            if n.kind.is_event() {
+                painter.circle_stroke(r.center(), r.width().min(r.height()) / 2.0 + 4.0, halo);
+            } else {
+                painter.rect_stroke(r.expand(4.0), 10.0 * zoom, halo, StrokeKind::Outside);
+            }
+        }
         match &n.kind {
             k if k.is_event() => {
                 let radius = r.width().min(r.height()) / 2.0;
@@ -733,6 +825,32 @@ fn draw(
         }
     }
 
+    // Manual game: tokens where they wait.
+    if let Overlay::Game(tokens) = overlay {
+        let radius = (7.0 * zoom).clamp(4.0, 14.0);
+        let mut stacked: BTreeMap<QId, usize> = BTreeMap::new();
+        for (node, inst) in tokens {
+            let (Some(b), Some(n)) = (d.shapes.get(node), project.node(node)) else {
+                continue;
+            };
+            let r = rect_of(b);
+            let k = stacked.entry(node.clone()).or_default();
+            let i = *k as f32;
+            *k += 1;
+            let p = match n.kind {
+                NodeKind::SubProcess => {
+                    r.left_top() + Vec2::splat(radius + 2.0) + Vec2::new(i * radius * 2.2, 0.0)
+                }
+                NodeKind::Task(_) | NodeKind::CallActivity => Pos2::new(
+                    r.right() - (radius + 3.0) * (1.0 + 2.0 * i),
+                    r.bottom() - radius - 3.0,
+                ),
+                _ => r.center() + Vec2::new(i * radius * 1.6, -i * radius * 1.6),
+            };
+            painter.circle(p, radius, case_color(*inst as u64), Stroke::new(1.5, ink));
+        }
+    }
+
     // Replay of followed cases: tokens and messages.
     if let Overlay::Tokens { tokens, messages } = overlay {
         let radius = (6.0 * zoom).clamp(3.0, 12.0);
@@ -800,12 +918,34 @@ fn draw(
     if openable.is_some() {
         ui.ctx().set_cursor_icon(CursorIcon::PointingHand);
     }
-    let clicked = if response.clicked() {
-        openable.map(|n| n.id.clone())
-    } else {
-        None
-    };
-    (hovered, clicked)
+    let clickable =
+        hovered_flow.is_some() || hovered.as_ref().is_some_and(|h| marks.nodes.contains(h));
+    if clickable {
+        ui.ctx().set_cursor_icon(CursorIcon::PointingHand);
+    }
+    let clicked = response.clicked();
+    DrawOut {
+        clicked_node: hovered.clone().filter(|h| {
+            clicked && (marks.nodes.contains(h) || openable.is_some_and(|n| n.id == *h))
+        }),
+        clicked_flow: hovered_flow.filter(|_| clicked),
+        hovered,
+    }
+}
+
+fn distance_to_polyline(pts: &[Pos2], p: Pos2) -> f32 {
+    pts.windows(2)
+        .map(|w| {
+            let (a, b) = (w[0], w[1]);
+            let ab = b - a;
+            let t = if ab.length_sq() > 0.0 {
+                ((p - a).dot(ab) / ab.length_sq()).clamp(0.0, 1.0)
+            } else {
+                0.0
+            };
+            (a + ab * t - p).length()
+        })
+        .fold(f32::MAX, f32::min)
 }
 
 fn tooltip(ui: &Ui, project: &Project, r: Option<&ReplicationResult>, id: &QId, unit: f64) {

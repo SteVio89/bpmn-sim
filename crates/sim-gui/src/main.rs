@@ -2,6 +2,7 @@ mod app;
 mod diagram_icons;
 mod diagram_panel;
 mod job;
+mod manual_panel;
 mod model_panel;
 mod results_panel;
 mod scenario_panel;

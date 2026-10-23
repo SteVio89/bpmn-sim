@@ -10,6 +10,7 @@ pub mod engine;
 pub mod error;
 pub mod export;
 pub mod feel;
+pub mod manual;
 pub mod model;
 pub mod parser;
 pub mod project;
