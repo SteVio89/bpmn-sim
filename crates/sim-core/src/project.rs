@@ -138,6 +138,39 @@ impl Project {
             .find(|p| p.process.as_ref() == Some(process))
             .and_then(|p| p.name.as_deref())
     }
+
+    /// The outgoing flows of an activity or event (not a gateway) that has conditional
+    /// outgoing flows: those are taken when their condition holds, the default flow when none
+    /// holds, every other flow always. `None` without a conditional outgoing flow.
+    pub fn activity_split(&self, n: &FlowNode) -> Option<ActivitySplit> {
+        if n.kind.is_gateway() {
+            return None;
+        }
+        let mut split = ActivitySplit::default();
+        for f in &n.outgoing {
+            let condition = self.flow(f).and_then(|fl| fl.condition.clone());
+            if n.default_flow.as_ref() == Some(f) {
+                split.default = Some(f.clone());
+            } else if let Some(c) = condition {
+                split.conditional.push((f.clone(), c));
+            } else {
+                split.always.push(f.clone());
+            }
+        }
+        if split.conditional.is_empty() {
+            return None;
+        }
+        Some(split)
+    }
+}
+
+/// See `Project::activity_split`. Flows are in model order.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ActivitySplit {
+    pub always: Vec<QId>,
+    /// Conditional flows with their condition text.
+    pub conditional: Vec<(QId, String)>,
+    pub default: Option<QId>,
 }
 
 /// Which files a main file needs: itself plus, directly or indirectly, every `*.bpmn` in its

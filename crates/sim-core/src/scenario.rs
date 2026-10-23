@@ -417,6 +417,8 @@ pub struct BoundModel<'p> {
     pub inclusive: BTreeMap<QId, InclusiveCfg>,
     /// Splits whose flows' conditions decide (no `[gateways]` entry, every flow has a condition).
     pub conditions: BTreeMap<QId, ConditionCfg>,
+    /// Activities and events with conditional outgoing flows.
+    pub activity_splits: BTreeMap<QId, ActivitySplitCfg>,
     /// Business rule task -> its evaluable decision.
     pub decisions: BTreeMap<QId, BoundDecision>,
     pub buffer_unconsumed: bool,
@@ -436,6 +438,23 @@ pub struct InclusiveCfg {
     /// Non-default outgoing flows and their probabilities, in model order.
     pub flows: Vec<(QId, f64)>,
     pub default: Option<QId>,
+}
+
+/// Conditional outgoing flows of an activity or event: `always` flows are always taken, the
+/// conditional ones by `rule`, the default flow when no conditional flow is taken.
+#[derive(Debug, Clone)]
+pub struct ActivitySplitCfg {
+    pub always: Vec<QId>,
+    pub rule: SplitRule,
+    pub default: Option<QId>,
+}
+
+#[derive(Debug, Clone)]
+pub enum SplitRule {
+    /// The flows' condition expressions.
+    Conditions(Vec<(QId, crate::feel::Expr)>),
+    /// `[gateways]` probabilities, each flow drawn independently.
+    Probabilities(Vec<(QId, f64)>),
 }
 
 #[derive(Debug, Clone)]
@@ -1111,12 +1130,17 @@ impl Scenario {
         let mut gw_specs: BTreeMap<QId, &GatewaySpec> = BTreeMap::new();
         for (key, spec) in &self.gateways {
             match resolve(project, key, "gateway") {
-                Ok(q) => match project.node(&q).map(|n| &n.kind) {
-                    Some(NodeKind::ExclusiveGateway | NodeKind::InclusiveGateway) => {
+                Ok(q) => match project.node(&q) {
+                    Some(n)
+                        if matches!(
+                            n.kind,
+                            NodeKind::ExclusiveGateway | NodeKind::InclusiveGateway
+                        ) || project.activity_split(n).is_some() =>
+                    {
                         gw_specs.insert(q, spec);
                     }
                     _ => errors.push(format!(
-                        "[gateways.{key}]: '{q}' is not an exclusive or inclusive gateway"
+                        "[gateways.{key}]: '{q}' is not an exclusive or inclusive gateway or an element with conditional outgoing flows"
                     )),
                 },
                 Err(e) => errors.push(format!("[gateways]: {e}")),
@@ -1229,6 +1253,70 @@ impl Scenario {
             }
         }
 
+        // Conditional flows leaving an activity or event: decided by their conditions, or by
+        // independent probabilities from a `[gateways]` entry (like an inclusive split).
+        let mut activity_splits = BTreeMap::new();
+        for n in &nodes {
+            let Some(split) = project.activity_split(n) else {
+                continue;
+            };
+            let rule = match gw_specs.get(&n.id) {
+                Some(spec) => {
+                    let mut by_flow: BTreeMap<QId, f64> = BTreeMap::new();
+                    for (k, p) in &spec.probabilities {
+                        let q = match k.split_once('#') {
+                            Some((f, i)) => QId::new(f, i),
+                            None => QId::new(&n.id.file, k),
+                        };
+                        if !split.conditional.iter().any(|(f, _)| *f == q) {
+                            errors.push(format!(
+                                "{}: '{k}' is not a conditional outgoing flow of this element",
+                                n.id
+                            ));
+                        } else if !(0.0..=1.0).contains(p) {
+                            errors.push(format!(
+                                "{}: probability of '{k}' must be between 0 and 1",
+                                n.id
+                            ));
+                        } else {
+                            by_flow.insert(q, *p);
+                        }
+                    }
+                    let mut list = Vec::new();
+                    for (f, _) in &split.conditional {
+                        match by_flow.get(f) {
+                            Some(p) => list.push((f.clone(), *p)),
+                            None => errors.push(format!(
+                                "{}: no probability for conditional flow '{}'",
+                                n.id, f.id
+                            )),
+                        }
+                    }
+                    SplitRule::Probabilities(list)
+                }
+                None => {
+                    let mut flows = Vec::new();
+                    for (f, c) in &split.conditional {
+                        match crate::feel::Expr::parse(c) {
+                            Ok(e) => flows.push((f.clone(), e)),
+                            Err(e) => {
+                                errors.push(format!("{} condition of flow {}: {e}", n.id, f.id))
+                            }
+                        }
+                    }
+                    SplitRule::Conditions(flows)
+                }
+            };
+            activity_splits.insert(
+                n.id.clone(),
+                ActivitySplitCfg {
+                    always: split.always,
+                    rule,
+                    default: split.default,
+                },
+            );
+        }
+
         // Event-based gateways lead to catch events (message, signal, timer) or receive tasks.
         for n in nodes
             .iter()
@@ -1280,6 +1368,7 @@ impl Scenario {
             gateways,
             inclusive,
             conditions,
+            activity_splits,
             decisions,
             buffer_unconsumed: messages.buffer_unconsumed,
             signal_scope: sim.signal_scope,

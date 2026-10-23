@@ -15,7 +15,7 @@ use rand_chacha::ChaCha8Rng;
 use crate::feel::Value;
 use crate::model::*;
 use crate::scenario::Sampler;
-use crate::scenario::{BoundModel, SignalScope};
+use crate::scenario::{BoundModel, SignalScope, SplitRule};
 use crate::stats::*;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -697,6 +697,42 @@ impl<'a> Engine<'a> {
 
     /// Send a token out of `node`: XOR picks one flow, everything else takes all flows.
     fn route(&mut self, inst: usize, tok: u64, node: &FlowNode, work: &mut Vec<Work>) {
+        if let Some(cfg) = self.m.activity_splits.get(&node.id) {
+            let vars = &self.instances[inst].variables;
+            let mut taken: Vec<&QId> = match &cfg.rule {
+                SplitRule::Conditions(flows) => flows
+                    .iter()
+                    .filter(|(_, e)| e.eval(vars))
+                    .map(|(f, _)| f)
+                    .collect(),
+                SplitRule::Probabilities(flows) => flows
+                    .iter()
+                    .filter(|(_, p)| self.rng.random::<f64>() < *p)
+                    .map(|(f, _)| f)
+                    .collect(),
+            };
+            if taken.is_empty() {
+                taken.extend(cfg.default.as_ref());
+            }
+            if taken.is_empty() && cfg.always.is_empty() {
+                // BPMN would raise an error; the token stays here and is reported as stuck.
+                self.set_token(
+                    inst,
+                    tok,
+                    &node.id,
+                    "no outgoing condition is true and there is no default flow",
+                );
+                return;
+            }
+            let flows: Vec<QId> = node
+                .outgoing
+                .iter()
+                .filter(|f| cfg.always.contains(f) || taken.contains(f))
+                .cloned()
+                .collect();
+            self.send_along(inst, tok, node, flows, work);
+            return;
+        }
         if let Some(cfg) = self.m.conditions.get(&node.id) {
             let vars = &self.instances[inst].variables;
             let mut chosen: Vec<QId> = cfg

@@ -17,7 +17,8 @@ use crate::project::Project;
 pub enum TokenState {
     /// At a task, waiting to be completed by the player (with `stop_at_tasks`, the default).
     AtTask,
-    /// At an XOR (`multiple == false`) or inclusive split, waiting for a choice.
+    /// At an XOR (`multiple == false`) or inclusive split, or at an activity or event with
+    /// conditional outgoing flows, waiting for a choice.
     Choose {
         multiple: bool,
     },
@@ -218,7 +219,7 @@ impl Game {
                 TokenState::Choose { multiple } => out.push(Pending::Choose {
                     token: *id,
                     gateway: t.node.clone(),
-                    flows: n.outgoing.clone(),
+                    flows: self.choices(n),
                     multiple: *multiple,
                 }),
                 TokenState::AtTask => {
@@ -298,6 +299,20 @@ impl Game {
                 .any(|f| f.target == *event && self.project.node(&f.source).is_some())
     }
 
+    /// The flows the player chooses from at a split: every outgoing flow of a gateway; the
+    /// conditional flows and the default flow of an activity or event.
+    fn choices(&self, n: &FlowNode) -> Vec<QId> {
+        match self.project.activity_split(n) {
+            Some(s) => s
+                .conditional
+                .into_iter()
+                .map(|(f, _)| f)
+                .chain(s.default)
+                .collect(),
+            None => n.outgoing.clone(),
+        }
+    }
+
     fn targets(&self, n: &FlowNode) -> Vec<QId> {
         n.outgoing
             .iter()
@@ -334,9 +349,10 @@ impl Game {
                     .node(&t.node)
                     .cloned()
                     .ok_or("unknown gateway")?;
+                let choices = self.choices(&n);
                 if flows.is_empty()
                     || (!multiple && flows.len() != 1)
-                    || flows.iter().any(|f| !n.outgoing.contains(f))
+                    || flows.iter().any(|f| !choices.contains(f))
                 {
                     return Err(if multiple {
                         "choose one or more outgoing flows"
@@ -348,6 +364,18 @@ impl Game {
                 let names: Vec<String> = flows.iter().map(|f| self.flow_label(f)).collect();
                 self.log
                     .push(format!("'{}': take {}", n.label(), names.join(", ")));
+                // Flows of an activity without a condition go along with the chosen ones.
+                let always = self
+                    .project
+                    .activity_split(&n)
+                    .map(|s| s.always)
+                    .unwrap_or_default();
+                let flows: Vec<QId> = n
+                    .outgoing
+                    .iter()
+                    .filter(|f| flows.contains(f) || always.contains(f))
+                    .cloned()
+                    .collect();
                 let mut work = Vec::new();
                 self.route(token, &n, Some(flows), &mut work);
                 self.process(t.inst, work);
@@ -819,8 +847,13 @@ impl Game {
         self.process(inst, work);
     }
 
-    /// Send a token along `flows` (or all outgoing flows).
+    /// Send a token along `flows` (or all outgoing flows). Without `flows`, an activity or event
+    /// with conditional outgoing flows waits for the player to choose which conditions hold.
     fn route(&mut self, tok: u64, n: &FlowNode, flows: Option<Vec<QId>>, work: &mut Vec<Work>) {
+        if flows.is_none() && self.project.activity_split(n).is_some() {
+            self.set(tok, &n.id, TokenState::Choose { multiple: true });
+            return;
+        }
         let flows = flows.unwrap_or_else(|| n.outgoing.clone());
         if flows.is_empty() {
             self.consume(tok, work);
