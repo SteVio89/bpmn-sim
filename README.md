@@ -56,14 +56,20 @@ cargo run --release -p sim-gui
 
 1. **Model:** open a BPMN file (files it calls through call activities and the DMN files it
    uses are loaded from the same folder automatically) or a whole folder. Validation problems
-   are listed there.
-2. **Scenario:** set the simulation parameters, or generate a skeleton with placeholders for
-   every task and gateway and adjust it. Scenarios are saved as TOML files.
-3. **Run:** choose the number of cases and replications and start the simulation.
-4. **Results:** summary, cases, activities, resources, problems, and confidence intervals
+   are listed there. The scenario starts with placeholders for everything the model needs.
+2. **Diagram, Configure:** click a task, gateway, start event, timer, lane or pool to set its
+   duration, branching, arrivals or resources in an editor next to it. Placeholders still to
+   check are outlined, "Next" leads through them, and a quick check in the background shows
+   the load per resource pool and the cycle time after every change.
+3. **Scenario:** the same parameters as tables, plus working hours, decision inputs and
+   messages. "Update from model" adds what a changed model needs and keeps your values.
+   Scenarios are saved as TOML files.
+4. **Run:** choose how many cases (or how much simulated time) and replications, and start
+   the simulation.
+5. **Results:** summary, cases, activities, resources, problems, and confidence intervals
    across replications; export to JSON, CSV and XES.
-5. **Diagram:** the model with a heat map (waiting time, utilisation, ...), an animated
-   token replay of the simulated cases, and the manual token game ("manual simulation").
+6. **Diagram:** the model with a heat map (waiting time, utilisation, ...), an animated
+   token replay of the simulated cases, and the manual token game.
 
 To try it, open `tests/fixtures/v13-model.bpmn` and load `tests/fixtures/v13-model.toml`
 as the scenario, or open `tests/fixtures/multi-file/main.bpmn` for a model with several pools
@@ -112,8 +118,8 @@ duration = { dist = "triangular", min = "2m", mode = "4m", max = "9m" }
 probabilities = { Flow_simple = 0.6, Flow_complex = 0.4 }
 ```
 
-Tasks use the resource pool named like their lane (or pool). The desktop app can generate a
-complete skeleton for a loaded model.
+Tasks use the resource pool named like their lane (or pool). The desktop app fills in
+placeholders for a loaded model and keeps them up to date when the model changes.
 
 ## Documentation
 
