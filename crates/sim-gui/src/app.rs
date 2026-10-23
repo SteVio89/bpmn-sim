@@ -419,27 +419,58 @@ mod tests {
             app.diagram.pan
         );
 
-        // The mouse wheel zooms in.
-        let wheel = egui::Event::MouseWheel {
+        // A two-finger swipe (wheel event) moves the view with the fingers, without zooming.
+        let pan = app.diagram.pan;
+        let wheel = |delta: egui::Vec2, modifiers: egui::Modifiers| egui::Event::MouseWheel {
             unit: egui::MouseWheelUnit::Point,
-            delta: egui::vec2(0.0, 120.0),
+            delta,
             phase: egui::TouchPhase::Move,
             source: egui::MouseWheelSource::Unknown,
-            modifiers: egui::Modifiers::NONE,
+            modifiers,
         };
         frame_with(
             &mut app,
             &ctx,
-            vec![egui::Event::PointerMoved(at(600.0, 400.0)), wheel],
+            vec![
+                egui::Event::PointerMoved(at(600.0, 400.0)),
+                wheel(egui::vec2(-40.0, 30.0), egui::Modifiers::NONE),
+            ],
         );
         for _ in 0..30 {
             frame_with(&mut app, &ctx, vec![]);
         }
+        let moved = app.diagram.pan - pan;
+        assert!(moved.x < -20.0 && moved.y > 15.0, "{moved:?}");
+        assert_eq!(app.diagram.zoom, zoom, "swiping does not zoom");
+
+        // Pinching apart zooms in around the pointer.
+        frame_with(
+            &mut app,
+            &ctx,
+            vec![
+                egui::Event::PointerMoved(at(600.0, 400.0)),
+                egui::Event::Zoom(1.5),
+            ],
+        );
         assert!(
-            app.diagram.zoom > zoom * 1.05,
+            (app.diagram.zoom / zoom - 1.5).abs() < 1e-3,
             "{zoom} -> {}",
             app.diagram.zoom
         );
+        // Ctrl + wheel zooms as well (the mouse users' pinch).
+        let before = app.diagram.zoom;
+        frame_with(
+            &mut app,
+            &ctx,
+            vec![
+                egui::Event::PointerMoved(at(600.0, 400.0)),
+                wheel(egui::vec2(0.0, -120.0), egui::Modifiers::CTRL),
+            ],
+        );
+        for _ in 0..30 {
+            frame_with(&mut app, &ctx, vec![]);
+        }
+        assert!(app.diagram.zoom != before, "ctrl + wheel zooms");
 
         // With results: every heat metric and replay (also playing) draws.
         app.regenerate_skeleton();

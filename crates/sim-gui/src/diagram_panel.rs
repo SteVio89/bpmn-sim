@@ -496,14 +496,18 @@ fn draw(
         v.pan += response.drag_delta();
     }
     if response.hovered() {
-        let scroll = ui.input(|i| i.smooth_scroll_delta.y);
-        if scroll != 0.0
+        // Two-finger swipe (or mouse wheel) moves the view with the fingers; pinch (or
+        // Ctrl/Cmd + wheel, which egui turns into a zoom) zooms around the pointer.
+        let (scroll, factor) = ui.input(|i| (i.smooth_scroll_delta, i.zoom_delta()));
+        v.pan += scroll;
+        if factor != 1.0
             && let Some(p) = response.hover_pos()
         {
-            let factor = (scroll * 0.002).exp();
+            let new_zoom = (v.zoom * factor).clamp(0.05, 20.0);
+            let applied = new_zoom / v.zoom;
             let local = p - area.min;
-            v.pan = local - (local - v.pan) * factor;
-            v.zoom = (v.zoom * factor).clamp(0.05, 20.0);
+            v.pan = local - (local - v.pan) * applied;
+            v.zoom = new_zoom;
         }
     }
     let (zoom, pan) = (v.zoom, v.pan);
