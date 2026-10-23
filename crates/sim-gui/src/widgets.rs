@@ -142,3 +142,130 @@ pub fn dist_edit(ui: &mut Ui, id: Id, dist: &mut DistSpec) {
         }
     });
 }
+
+/// A duration for reading, rounded to two significant digits in a fitting unit ("5m", "1.5h").
+pub fn short_duration(secs: f64) -> String {
+    let (v, unit) = if secs >= 86_400.0 {
+        (secs / 86_400.0, "d")
+    } else if secs >= 3600.0 {
+        (secs / 3600.0, "h")
+    } else if secs >= 60.0 {
+        (secs / 60.0, "m")
+    } else {
+        (secs, "s")
+    };
+    let v = if v >= 10.0 {
+        v.round()
+    } else {
+        (v * 10.0).round() / 10.0
+    };
+    format!("{v}{unit}")
+}
+
+/// "5m" for a fixed value, "~5m" (the mean) for a random one.
+pub fn dist_short(d: &DistSpec) -> String {
+    match d {
+        DistSpec::Fixed { value } => short_duration(value.0),
+        _ => format!("~{}", short_duration(d.mean())),
+    }
+}
+
+/// How often something happens with this time between events: "about 5 per hour, 40 per day".
+pub fn rate_text(d: &DistSpec) -> String {
+    let mean = d.mean();
+    if mean <= 0.0 {
+        return "all at once".into();
+    }
+    let fmt = |x: f64| {
+        if x >= 10.0 {
+            format!("{}", x.round())
+        } else {
+            format!("{}", (x * 10.0).round() / 10.0)
+        }
+    };
+    let (per_hour, per_day) = (3600.0 / mean, 86_400.0 / mean);
+    if per_hour >= 1.0 {
+        format!("about {} per hour, {} per day", fmt(per_hour), fmt(per_day))
+    } else if per_day >= 1.0 {
+        format!(
+            "about {} per day, {} per week",
+            fmt(per_day),
+            fmt(per_day * 7.0)
+        )
+    } else {
+        format!("about {} per week", fmt(per_day * 7.0))
+    }
+}
+
+/// Sorted preview samples of a distribution, cached per distribution.
+fn samples(ui: &Ui, d: &DistSpec) -> Option<std::sync::Arc<Vec<f64>>> {
+    let key = Id::unique(("dist-preview", format!("{d:?}")));
+    if let Some(s) = ui.data(|m| m.get_temp::<std::sync::Arc<Vec<f64>>>(key)) {
+        return Some(s);
+    }
+    let s = std::sync::Arc::new(d.preview(2000).ok()?);
+    ui.data_mut(|m| m.insert_temp(key, s.clone()));
+    Some(s)
+}
+
+/// A small histogram of the distribution with its mean, and the range most values fall in.
+pub fn dist_preview(ui: &mut Ui, d: &DistSpec) {
+    let Some(s) = samples(ui, d) else {
+        ui.colored_label(ui.visuals().error_fg_color, "invalid distribution");
+        return;
+    };
+    let at = |q: f64| s[((s.len() - 1) as f64 * q) as usize];
+    let (lo, hi) = (at(0.01), at(0.99));
+    let mean = s.iter().sum::<f64>() / s.len() as f64;
+    ui.horizontal(|ui| {
+        let (rect, _) = ui.allocate_exact_size(egui::vec2(140.0, 32.0), egui::Sense::hover());
+        let painter = ui.painter_at(rect);
+        let stroke = ui.visuals().widgets.noninteractive.fg_stroke.color;
+        let fill = ui.visuals().selection.bg_fill;
+        painter.rect_filled(rect, 2.0, ui.visuals().extreme_bg_color);
+        if hi - lo < 1e-9 {
+            // A fixed value: one bar.
+            let x = rect.center().x;
+            painter.line_segment(
+                [
+                    egui::pos2(x, rect.bottom()),
+                    egui::pos2(x, rect.top() + 2.0),
+                ],
+                egui::Stroke::new(3.0, fill),
+            );
+        } else {
+            const BINS: usize = 28;
+            let mut bins = [0u32; BINS];
+            for v in s.iter().filter(|v| (lo..=hi).contains(*v)) {
+                let i = (((v - lo) / (hi - lo)) * BINS as f64) as usize;
+                bins[i.min(BINS - 1)] += 1;
+            }
+            let top = f64::from(*bins.iter().max().unwrap_or(&1).max(&1));
+            let w = rect.width() / BINS as f32;
+            for (i, c) in bins.iter().enumerate() {
+                let h = (f64::from(*c) / top) as f32 * (rect.height() - 3.0);
+                let r = egui::Rect::from_min_max(
+                    egui::pos2(rect.left() + i as f32 * w, rect.bottom() - h),
+                    egui::pos2(rect.left() + (i + 1) as f32 * w - 0.5, rect.bottom()),
+                );
+                painter.rect_filled(r, 0.0, fill);
+            }
+            let x = rect.left() + ((mean - lo) / (hi - lo)) as f32 * rect.width();
+            painter.line_segment(
+                [egui::pos2(x, rect.top()), egui::pos2(x, rect.bottom())],
+                egui::Stroke::new(1.0, stroke),
+            );
+        }
+        let text = if at(0.9) - at(0.1) < 1e-9 {
+            format!("always {}", short_duration(mean))
+        } else {
+            format!(
+                "usually {} to {}, average {}",
+                short_duration(at(0.1)),
+                short_duration(at(0.9)),
+                short_duration(mean)
+            )
+        };
+        ui.label(egui::RichText::new(text).small());
+    });
+}

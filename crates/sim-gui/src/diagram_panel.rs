@@ -5,8 +5,8 @@ use std::collections::BTreeMap;
 use std::f32::consts::FRAC_PI_2;
 
 use eframe::egui::{
-    self, Align2, Color32, CursorIcon, FontId, Pos2, Rect, Sense, Shape, Stroke, StrokeKind, Ui,
-    Vec2, epaint::TextShape,
+    self, Align2, Color32, CursorIcon, FontId, Pos2, Rect, RichText, Sense, Shape, Stroke,
+    StrokeKind, Ui, Vec2, epaint::TextShape,
 };
 use std::collections::BTreeSet;
 use std::sync::Arc;
@@ -22,8 +22,22 @@ use sim_core::{
 };
 
 use crate::app::App;
+use crate::configure::{ConfigOverlay, PopoverAction, Status, Target};
 use crate::diagram_icons::{self, Icon};
 use crate::manual_panel::{ManualState, Marks, accent};
+
+/// What the diagram is for at the moment.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Mode {
+    /// Look at the model (and the heat map of the last run).
+    View,
+    /// Set the simulation parameters on the elements.
+    Configure,
+    /// Play one case by hand.
+    Manual,
+    /// Replay the simulated cases.
+    Replay,
+}
 
 pub struct DiagramView {
     pub file: Option<String>,
@@ -33,7 +47,9 @@ pub struct DiagramView {
     pub pan: Vec2,
     pub fit: bool,
     pub metric: Option<HeatMetric>,
-    pub replay: bool,
+    pub mode: Mode,
+    /// Configure mode: the element whose editor is open.
+    pub target: Option<Target>,
     pub playing: bool,
     pub time: f64,
     /// Playback speed in simulated seconds per real second; `None` = automatic.
@@ -53,6 +69,12 @@ pub struct DrawOut {
     pub hovered: Option<QId>,
     pub clicked_node: Option<QId>,
     pub clicked_flow: Option<QId>,
+    /// The diagram was clicked (anywhere).
+    pub clicked: bool,
+    /// Lane or pool header (or black-box pool) under the pointer.
+    pub hovered_pool: Option<Target>,
+    /// Screen rectangles of the drawn elements, lanes and pools.
+    pub rects: BTreeMap<Target, Rect>,
 }
 
 /// What the replay draws on top of the diagram.
@@ -67,6 +89,8 @@ pub enum Overlay {
     },
     /// Manual token game: (node, instance) of every token.
     Game(Vec<(QId, usize)>),
+    /// Configure mode: parameter badges, what needs input, traffic of the pilot run.
+    Config(ConfigOverlay),
 }
 
 const SPEEDS: [(f64, &str); 7] = [
@@ -201,7 +225,8 @@ impl Default for DiagramView {
             pan: Vec2::ZERO,
             fit: true,
             metric: None,
-            replay: false,
+            mode: Mode::View,
+            target: None,
             playing: false,
             time: 0.0,
             speed: None,
@@ -219,6 +244,22 @@ impl DiagramView {
     #[cfg(test)]
     pub fn to_screen(&self, x: f64, y: f64) -> Pos2 {
         self.area.min + self.pan + Vec2::new(x as f32, y as f32) * self.zoom
+    }
+
+    /// Show `target`: switch to its file and centre it (keeping the zoom).
+    pub fn focus(&mut self, project: &Project, target: &Target) {
+        let Some((file, b)) = crate::configure::locate(project, target) else {
+            return;
+        };
+        if self.file.as_ref() != Some(&file) {
+            self.file = Some(file);
+            self.history.clear();
+        }
+        if self.area.is_positive() {
+            self.fit = false;
+            let c = Vec2::new((b.x + b.width / 2.0) as f32, (b.y + b.height / 2.0) as f32);
+            self.pan = self.area.size() / 2.0 - c * self.zoom;
+        }
     }
 
     fn open(&mut self, file: String) {
@@ -274,6 +315,15 @@ pub fn show(app: &mut App, ui: &mut Ui) {
     }
     let result = app.results.as_ref().and_then(|r| r.data.get(app.rep));
     let unit = app.results.as_ref().map_or(60.0, |r| r.unit.seconds());
+    // The manual game is the state of manual mode (tests and the problems list set it directly).
+    if v.manual.is_some() {
+        v.mode = Mode::Manual;
+    } else if v.mode == Mode::Manual {
+        v.manual = Some(ManualState::new(project.clone()));
+    }
+    if v.mode == Mode::Replay && result.is_none() {
+        v.mode = Mode::View;
+    }
 
     ui.horizontal(|ui| {
         if let Some(back) = v.history.last().cloned()
@@ -302,6 +352,38 @@ pub fn show(app: &mut App, ui: &mut Ui) {
             v.fit = true;
         }
         ui.separator();
+        let before = v.mode;
+        for (mode, name, tip) in [
+            (Mode::View, "View", "look at the model"),
+            (
+                Mode::Configure,
+                "Configure",
+                "click elements, lanes and pools to set durations, branching, arrivals and resources",
+            ),
+            (
+                Mode::Manual,
+                "Manual",
+                "play one case by hand: start tokens and decide at every gateway",
+            ),
+            (Mode::Replay, "Replay", "replay the simulated cases"),
+        ] {
+            let enabled = mode != Mode::Replay || result.is_some();
+            let tip = if enabled {
+                tip
+            } else {
+                "run a simulation to replay it"
+            };
+            ui.add_enabled_ui(enabled, |ui| {
+                ui.selectable_value(&mut v.mode, mode, name)
+                    .on_hover_text(tip)
+                    .on_disabled_hover_text(tip);
+            });
+        }
+        if v.mode != before {
+            v.manual = (v.mode == Mode::Manual).then(|| ManualState::new(project.clone()));
+            v.target = None;
+        }
+        ui.separator();
         ui.add_enabled_ui(result.is_some(), |ui| {
             let label = METRICS
                 .iter()
@@ -313,30 +395,50 @@ pub fn show(app: &mut App, ui: &mut Ui) {
                     for (m, l) in METRICS {
                         ui.selectable_value(&mut v.metric, m, l);
                     }
-                });
-            if ui.checkbox(&mut v.replay, "token replay").changed() && v.replay {
-                v.manual = None;
-            }
+                })
+                .response
+                .on_disabled_hover_text("run a simulation for a heat map");
         });
-        let mut manual = v.manual.is_some();
-        if ui
-            .checkbox(&mut manual, "manual simulation")
-            .on_hover_text("play one case by hand: start tokens and decide at every gateway")
-            .changed()
-        {
-            v.manual = manual.then(|| ManualState::new(project.clone()));
-            if manual {
-                v.replay = false;
-            }
-        }
-        if result.is_none() {
-            ui.label("(run a simulation for heat map and replay)");
-        }
     });
-    if v.replay
+    if v.mode == Mode::Replay
         && let Some(r) = result
     {
         replay_controls(ui, v, r);
+    }
+    // Configure mode: what needs input, the next one, and the quick check.
+    let checked = (v.mode == Mode::Configure).then(|| app.scenario.check(&project));
+    let mut todo = Vec::new();
+    let mut statuses = BTreeMap::new();
+    if let Some(c) = &checked {
+        statuses = crate::configure::statuses(&project, &app.scenario, &app.unreviewed, &c.errors);
+        todo = crate::configure::attention(&project, &statuses);
+        ui.horizontal(|ui| {
+            if todo.is_empty() {
+                ui.label("Everything is set.");
+            } else {
+                let errors = statuses.values().filter(|s| **s == Status::Error).count();
+                let text = match errors {
+                    0 => format!("{} element(s) need input", todo.len()),
+                    e => format!("{} element(s) need input, {e} with errors", todo.len()),
+                };
+                ui.colored_label(ui.visuals().warn_fg_color, text);
+                if ui
+                    .button("Next")
+                    .on_hover_text("open the next element that needs input")
+                    .clicked()
+                    && let Some(next) = next_after(&todo, v.target.as_ref())
+                {
+                    v.focus(&project, &next);
+                    v.target = Some(next);
+                }
+            }
+            ui.separator();
+            ui.label(
+                RichText::new("click a task, gateway, start event, timer, lane or pool to set it")
+                    .weak(),
+            );
+        });
+        crate::configure::pilot_summary(ui, &mut app.pilot);
     }
 
     let Some(file) = v.file.clone().and_then(|f| project.files.get(&f)) else {
@@ -362,7 +464,14 @@ pub fn show(app: &mut App, ui: &mut Ui) {
         .as_ref()
         .map(ManualState::marks)
         .unwrap_or_default();
-    let overlay = match (v.replay, result) {
+    let overlay = match (v.mode == Mode::Replay, result) {
+        _ if v.mode == Mode::Configure => Overlay::Config(crate::configure::overlay(
+            &project,
+            &app.scenario,
+            statuses.clone(),
+            app.pilot.pilot().filter(|_| app.pilot.enabled),
+            v.target.clone(),
+        )),
         _ if v.manual.is_some() => Overlay::Game(
             v.manual
                 .as_ref()
@@ -392,8 +501,15 @@ pub fn show(app: &mut App, ui: &mut Ui) {
     };
     let legend = !heat_values.is_empty();
     let out = draw(ui, v, &project, file, &heat_values, &overlay, &marks);
-    if let Some(id) = &out.hovered {
+    // In configure mode the open editor would hide behind the tooltip.
+    if let Some(id) = &out.hovered
+        && (v.mode != Mode::Configure || v.target.is_none())
+    {
         tooltip(ui, &project, result, id, unit);
+    }
+    if let (Some(c), Overlay::Config(o)) = (&checked, &overlay) {
+        let parts = (&mut app.scenario, &mut app.unreviewed);
+        configure_clicks(ui, v, &project, parts, &out, o, c, &todo);
     }
     let used = match v.manual.as_mut() {
         Some(m) if out.clicked_node.is_some() || out.clicked_flow.is_some() => {
@@ -401,11 +517,16 @@ pub fn show(app: &mut App, ui: &mut Ui) {
         }
         _ => false,
     };
-    let clicked = out.clicked_node.filter(|_| !used).filter(|id| {
-        project
-            .node(id)
-            .is_some_and(|n| n.kind == NodeKind::CallActivity)
-    });
+    let clicked = out
+        .clicked_node
+        .filter(|_| !used)
+        .filter(|id| {
+            project
+                .node(id)
+                .is_some_and(|n| n.kind == NodeKind::CallActivity)
+        })
+        // In configure mode a call activity with parameters opens its editor instead.
+        .filter(|id| !matches!(&overlay, Overlay::Config(o) if o.clickable.contains(id)));
     if let Some(n) = clicked.as_ref().and_then(|id| project.node(id)) {
         match called_file(&project, n) {
             Some((_, f)) if !f.diagram.shapes.is_empty() => v.open(f.name.clone()),
@@ -423,6 +544,95 @@ pub fn show(app: &mut App, ui: &mut Ui) {
             _ => format!("{max:.0}"),
         };
         ui.label(format!("heat map: green = 0, red = {shown}"));
+    }
+}
+
+/// The target after `current` in `todo` (wrapping around), or the first one.
+fn next_after(todo: &[Target], current: Option<&Target>) -> Option<Target> {
+    let at = current.and_then(|c| todo.iter().position(|t| t == c));
+    match at {
+        Some(i) => todo
+            .iter()
+            .cycle()
+            .skip(i + 1)
+            .take(todo.len())
+            .find(|t| Some(*t) != current)
+            .cloned(),
+        None => todo.first().cloned(),
+    }
+}
+
+/// Configure mode: clicks open the editor of an element, lane or pool (a click elsewhere
+/// closes it); the editor floats next to its element.
+#[allow(clippy::too_many_arguments)]
+fn configure_clicks(
+    ui: &mut Ui,
+    v: &mut DiagramView,
+    project: &Project,
+    (s, unreviewed): (&mut sim_core::Scenario, &mut BTreeSet<Target>),
+    out: &DrawOut,
+    o: &ConfigOverlay,
+    c: &sim_core::scenario::Checked,
+    todo: &[Target],
+) {
+    let hit = out
+        .hovered
+        .clone()
+        .filter(|h| o.clickable.contains(h))
+        .map(Target::Node)
+        .or_else(|| out.hovered_pool.clone());
+    if hit.is_some() {
+        ui.ctx().set_cursor_icon(CursorIcon::PointingHand);
+    }
+    if out.clicked {
+        if let Some(Target::Node(q)) = &hit
+            && let Some(n) = project.node(q)
+        {
+            // Missing parameters get placeholders to edit (still to be checked).
+            let (added, pool) = s.fill(project, n);
+            if added {
+                unreviewed.insert(Target::Node(q.clone()));
+            }
+            if let Some(p) = pool {
+                unreviewed.insert(Target::Pool(p));
+            }
+        }
+        v.target = hit;
+    }
+    let Some(t) = v.target.clone() else { return };
+    let Some(anchor) = out.rects.get(&t).copied() else {
+        // Not in this diagram (any more).
+        v.target = None;
+        return;
+    };
+    let problems: Vec<&sim_core::scenario::Problem> = c
+        .errors
+        .iter()
+        .chain(&c.warnings)
+        .filter(|p| crate::configure::problem_target(project, p).as_ref() == Some(&t))
+        .collect();
+    let more = todo.iter().filter(|x| **x != t).count();
+    let action = crate::configure::popover(
+        ui.ctx(),
+        project,
+        s,
+        unreviewed,
+        &t,
+        anchor,
+        v.area,
+        &problems,
+        more,
+    );
+    match action {
+        PopoverAction::None => {}
+        PopoverAction::Close => v.target = None,
+        PopoverAction::Next => {
+            let next = next_after(todo, Some(&t));
+            if let Some(n) = &next {
+                v.focus(project, n);
+            }
+            v.target = next;
+        }
     }
 }
 
@@ -541,6 +751,24 @@ fn draw(
         })
     };
     let header = 30.0 * zoom; // width of the name band of pools and lanes
+    let pointer = response.hover_pos();
+    let config = match overlay {
+        Overlay::Config(o) => Some(o),
+        _ => None,
+    };
+    let warn = ui.visuals().warn_fg_color;
+    let error = ui.visuals().error_fg_color;
+    let status_stroke = |t: &Target| match config.and_then(|o| o.status.get(t)) {
+        _ if config.is_some_and(|o| o.selected.as_ref() == Some(t)) => {
+            Some((Stroke::new(3.0, accent), false))
+        }
+        Some(Status::Error) => Some((Stroke::new(2.5, error), false)),
+        Some(Status::Todo) => Some((Stroke::new(2.0, warn), true)),
+        None => None,
+    };
+    let mut rects: BTreeMap<Target, Rect> = BTreeMap::new();
+    let mut hovered_pool = None;
+    let mut pool_badges: Vec<(Pos2, String, bool)> = Vec::new();
 
     painter.rect_filled(area, 0.0, paper);
 
@@ -569,6 +797,47 @@ fn draw(
             );
         }
         let name = pool.and_then(|p| p.name.clone()).or_else(|| lane.cloned());
+        // The header band (or a whole black-box pool) stands for its resource pool.
+        let band = if black_box {
+            r
+        } else {
+            Rect::from_min_max(r.min, Pos2::new(r.left() + header, r.bottom()))
+        };
+        let target = if black_box {
+            Some(Target::BlackBox(id.clone()))
+        } else {
+            name.clone().map(Target::Pool)
+        };
+        if let Some(t) = target {
+            if config.is_some() && pointer.is_some_and(|p| band.contains(p)) {
+                hovered_pool = Some(t.clone());
+            }
+            if let Some((stroke, dashed)) = status_stroke(&t) {
+                let b = band.shrink(2.0);
+                if dashed {
+                    let ring = vec![
+                        b.left_top(),
+                        b.right_top(),
+                        b.right_bottom(),
+                        b.left_bottom(),
+                        b.left_top(),
+                    ];
+                    painter.extend(Shape::dashed_line(&ring, stroke, 6.0, 4.0));
+                } else {
+                    painter.rect_stroke(b, 2.0, stroke, StrokeKind::Inside);
+                }
+            }
+            if let (Some(o), Target::Pool(n)) = (config, &t)
+                && let Some((text, overloaded)) = o.pool_badges.get(n)
+            {
+                pool_badges.push((
+                    Pos2::new(band.right() + 4.0, r.top() + 3.0),
+                    text.clone(),
+                    *overloaded,
+                ));
+            }
+            rects.entry(t).or_insert(band);
+        }
         if let Some(n) = name {
             if black_box {
                 painter.text(r.center(), Align2::CENTER_CENTER, n, font.clone(), ink);
@@ -581,10 +850,17 @@ fn draw(
 
     // Flows.
     let (default_flows, conditional_flows) = sim_core::diagram::flow_markers(project, &file.name);
-    let pointer = response.hover_pos();
     let mut hovered_flow = None;
     for (id, points) in &d.edges {
         let pts: Vec<Pos2> = points.iter().map(|(x, y)| to_screen(*x, *y)).collect();
+        if let Some(t) = config.and_then(|o| o.traffic.get(id)) {
+            // Pilot run: the more tokens passed a flow, the wider its band.
+            let w = (2.0 + 14.0 * t) * zoom.clamp(0.5, 1.5);
+            painter.add(Shape::line(
+                pts.clone(),
+                Stroke::new(w, Color32::from_rgb(66, 135, 245).gamma_multiply(0.3)),
+            ));
+        }
         if marks.flows.contains(id) {
             // A flow the player can choose: highlighted (thicker when already ticked).
             let w = if marks.selected.contains(id) {
@@ -797,6 +1073,25 @@ fn draw(
             // Inner elements (drawn later) win over an enclosing subprocess.
             hovered = Some(id.clone());
         }
+        let t = Target::Node(id.clone());
+        if let Some((stroke, dashed)) = status_stroke(&t) {
+            // Configure mode: what still needs input (dashed), errors and the selection.
+            let ring = if n.kind.is_event() {
+                let c = r.center();
+                let rad = r.width().min(r.height()) / 2.0 + 5.0;
+                (0..=40)
+                    .map(|i| c + Vec2::angled(i as f32 / 40.0 * std::f32::consts::TAU) * rad)
+                    .collect()
+            } else {
+                rounded_outline(r.expand(5.0), 10.0 * zoom)
+            };
+            if dashed {
+                painter.extend(Shape::dashed_line(&ring, stroke, 5.0, 3.0));
+            } else {
+                painter.add(Shape::line(ring, stroke));
+            }
+        }
+        rects.insert(t, r);
         let fill = heat_of(id).unwrap_or(paper);
         let label = n.name.clone().unwrap_or_default();
         let icon = icon_of(n);
@@ -1055,6 +1350,69 @@ fn draw(
         painter.galley(pos, galley, ink);
     }
 
+    // Configure mode: the parameters set, next to their elements, flows and lanes.
+    if let Some(o) = config {
+        let small = FontId::proportional((10.0 * zoom).clamp(8.0, 16.0));
+        let badge = |pos: Pos2, align: Align2, text: String, color: Color32| {
+            let galley = painter.layout_no_wrap(text, small.clone(), color);
+            let rect = align.anchor_size(pos, galley.size());
+            painter.rect(
+                rect.expand2(Vec2::new(3.0, 1.0)),
+                3.0,
+                paper,
+                Stroke::new(1.0, color.gamma_multiply(0.5)),
+                StrokeKind::Outside,
+            );
+            painter.galley(rect.min, galley, color);
+        };
+        let blue = if ui.visuals().dark_mode {
+            Color32::from_rgb(120, 170, 255)
+        } else {
+            Color32::from_rgb(30, 90, 200)
+        };
+        for (id, text) in &o.badges {
+            let (Some(b), Some(n)) = (d.shapes.get(id), project.node(id)) else {
+                continue;
+            };
+            let r = rect_of(b);
+            let (pos, align) = if n.kind.is_event() {
+                (r.right_top() + Vec2::new(2.0, -2.0), Align2::LEFT_BOTTOM)
+            } else if n.kind.is_gateway() {
+                (r.center_top() - Vec2::new(0.0, 3.0), Align2::CENTER_BOTTOM)
+            } else {
+                (r.center_top() + Vec2::new(0.0, -3.0), Align2::CENTER_BOTTOM)
+            };
+            badge(pos, align, text.clone(), blue);
+        }
+        for (id, text) in &o.flow_badges {
+            let Some(points) = d.edges.get(id) else {
+                continue;
+            };
+            let pts: Vec<Pos2> = points.iter().map(|(x, y)| to_screen(*x, *y)).collect();
+            // Near the start of the flow, where it leaves the split.
+            let total: f32 = pts.windows(2).map(|w| (w[1] - w[0]).length()).sum();
+            let f = if total > 0.0 {
+                (28.0 / total).min(0.5)
+            } else {
+                0.0
+            };
+            badge(
+                point_along(&pts, f64::from(f)) + Vec2::new(4.0, -4.0),
+                Align2::LEFT_BOTTOM,
+                text.clone(),
+                blue,
+            );
+        }
+        for (pos, text, overloaded) in pool_badges {
+            badge(
+                pos,
+                Align2::LEFT_TOP,
+                text,
+                if overloaded { error } else { blue },
+            );
+        }
+    }
+
     // Manual game: tokens where they wait.
     if let Overlay::Game(tokens) = overlay {
         let radius = (7.0 * zoom).clamp(4.0, 14.0);
@@ -1159,6 +1517,10 @@ fn draw(
             clicked && (marks.nodes.contains(h) || openable.is_some_and(|n| n.id == *h))
         }),
         clicked_flow: hovered_flow.filter(|_| clicked),
+        clicked,
+        // Elements win over the lane they sit in.
+        hovered_pool: hovered_pool.filter(|_| hovered.is_none()),
+        rects,
         hovered,
     }
 }

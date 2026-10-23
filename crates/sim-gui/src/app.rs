@@ -1,3 +1,4 @@
+use std::collections::BTreeSet;
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -5,6 +6,8 @@ use eframe::egui;
 use sim_core::scenario::TimeUnit;
 use sim_core::{Project, QId, ReplicationResult, Scenario};
 
+use crate::configure::{PilotRunner, Target};
+use crate::diagram_panel::Mode;
 use crate::job::Job;
 use crate::workspace::Workspace;
 
@@ -47,6 +50,11 @@ pub struct App {
     pub rep: usize,
     pub results_tab: ResultsTab,
     pub diagram: crate::diagram_panel::DiagramView,
+    /// Elements whose parameters are generated placeholders nobody has looked at yet.
+    pub unreviewed: BTreeSet<Target>,
+    pub pilot: PilotRunner,
+    /// What the last "Update from model" (or load) changed, shown in the scenario tab.
+    pub update_note: Option<sim_core::needs::Update>,
 }
 
 impl Default for App {
@@ -64,6 +72,9 @@ impl Default for App {
             rep: 0,
             results_tab: ResultsTab::default(),
             diagram: Default::default(),
+            unreviewed: BTreeSet::new(),
+            pilot: PilotRunner::default(),
+            update_note: None,
         }
     }
 }
@@ -74,9 +85,56 @@ impl App {
         self.scenario.activities.is_empty() && self.scenario.gateways.is_empty()
     }
 
+    /// Replace the scenario by placeholders for everything; all of them still to be checked.
     pub fn regenerate_skeleton(&mut self) {
         self.scenario = Scenario::skeleton(&self.ws.project, None);
         self.scenario_path = None;
+        self.unreviewed.clear();
+        self.mark_placeholders(sim_core::needs::Update {
+            added: self.ws.project.nodes().map(|n| n.id.clone()).collect(),
+            pools_added: self.scenario.resources.keys().cloned().collect(),
+            arrival_added: true,
+            orphaned: Vec::new(),
+        });
+    }
+
+    /// Add placeholders for what the model has and the scenario lacks; keeps all edits.
+    pub fn update_from_model(&mut self) -> sim_core::needs::Update {
+        let u = self.scenario.update_from_model(&self.ws.project);
+        self.mark_placeholders(u.clone());
+        u
+    }
+
+    /// Remember the placeholders of `u` as still to be checked.
+    fn mark_placeholders(&mut self, u: sim_core::needs::Update) {
+        let p = &self.ws.project;
+        for q in u.added {
+            if p.node(&q)
+                .is_some_and(|n| !sim_core::needs::needs(p, n).is_empty())
+            {
+                self.unreviewed.insert(Target::Node(q));
+            }
+        }
+        self.unreviewed
+            .extend(u.pools_added.into_iter().map(Target::Pool));
+        if u.arrival_added {
+            for a in &self.scenario.arrivals {
+                for t in &a.triggers {
+                    if let Some(n) = p.nodes().find(|n| n.id.to_string() == *t || n.id.id == *t) {
+                        self.unreviewed.insert(Target::Node(n.id.clone()));
+                    }
+                }
+            }
+        }
+    }
+
+    /// Show `t` in the diagram with its editor open.
+    pub fn focus(&mut self, t: Target) {
+        self.tab = Tab::Diagram;
+        self.diagram.manual = None;
+        self.diagram.mode = Mode::Configure;
+        self.diagram.focus(&self.ws.project, &t);
+        self.diagram.target = Some(t);
     }
 
     pub fn start_run(&mut self, ctx: &egui::Context) {
@@ -122,6 +180,7 @@ impl App {
     /// One frame of the whole UI (separate from `eframe::App::ui` so tests can drive it).
     pub fn draw(&mut self, ui: &mut egui::Ui) {
         self.poll_job();
+        self.pilot.tick(ui.ctx(), &self.ws.project, &self.scenario);
         egui::Panel::top("tabs").show(ui, |ui| {
             ui.horizontal(|ui| {
                 for (tab, name) in [
@@ -501,7 +560,7 @@ mod tests {
                 vec![egui::Event::PointerMoved(at(300.0, 300.0))],
             );
         }
-        app.diagram.replay = true;
+        app.diagram.mode = Mode::Replay;
         app.diagram.playing = true;
         for _ in 0..10 {
             frame_with(&mut app, &ctx, vec![]);
@@ -572,6 +631,91 @@ mod tests {
             }
             r.save(&ctx, out.unwrap(), &dir.join("glyphs.png"));
         }
+        // Scenario and run tabs of a fresh skeleton and of a saved scenario.
+        for (name, fixture, scenario, tab) in [
+            ("scenario-main", "multi-file/main.bpmn", None, Tab::Scenario),
+            (
+                "scenario-v13",
+                "v13-model.bpmn",
+                Some("v13-model.toml"),
+                Tab::Scenario,
+            ),
+            ("run-main", "multi-file/main.bpmn", None, Tab::Run),
+        ] {
+            let ctx = egui::Context::default();
+            ctx.set_theme(egui::ThemePreference::Light);
+            let mut r = crate::snapshot::Renderer::new(1400, 900);
+            let mut app = App::default();
+            app.ws.open(&fixtures().join(fixture));
+            match scenario {
+                Some(s) => {
+                    let text = std::fs::read_to_string(fixtures().join(s)).unwrap();
+                    app.scenario = Scenario::from_toml(&text).unwrap();
+                }
+                None => app.regenerate_skeleton(),
+            }
+            app.tab = tab;
+            let project = app.ws.project.clone();
+            let scenario = app.scenario.clone();
+            app.pilot.finish(&ctx, &project, &scenario);
+            let mut out = None;
+            for _ in 0..4 {
+                out = Some(r.frame(&ctx, r.input(), |ui| app.draw(ui)));
+            }
+            r.save(&ctx, out.unwrap(), &dir.join(format!("{name}.png")));
+        }
+        // Configure mode: badges, what needs input, an open editor, the pilot's traffic.
+        for (name, fixture, scenario, open) in [
+            (
+                "configure-v13",
+                "v13-model.bpmn",
+                Some("v13-model.toml"),
+                Some("Split"),
+            ),
+            (
+                "configure-v13-task",
+                "v13-model.bpmn",
+                Some("v13-model.toml"),
+                Some("Task_Intake"),
+            ),
+            ("configure-main", "multi-file/main.bpmn", None, None),
+            (
+                "configure-main-start",
+                "multi-file/main.bpmn",
+                None,
+                Some("TimerStart"),
+            ),
+        ] {
+            let ctx = egui::Context::default();
+            ctx.set_theme(egui::ThemePreference::Light);
+            let mut r = crate::snapshot::Renderer::new(1400, 800);
+            let mut app = App::default();
+            app.ws.open(&fixtures().join(fixture));
+            match scenario {
+                Some(s) => {
+                    let text = std::fs::read_to_string(fixtures().join(s)).unwrap();
+                    app.scenario = Scenario::from_toml(&text).unwrap();
+                }
+                None => app.regenerate_skeleton(),
+            }
+            app.tab = Tab::Diagram;
+            app.diagram.mode = Mode::Configure;
+            let project = app.ws.project.clone();
+            let scenario = app.scenario.clone();
+            app.pilot.finish(&ctx, &project, &scenario);
+            for _ in 0..2 {
+                r.frame(&ctx, r.input(), |ui| app.draw(ui));
+            }
+            if let Some(id) = open {
+                let file = app.diagram.file.clone().unwrap();
+                app.diagram.target = Some(Target::Node(QId::new(file, id)));
+            }
+            let mut out = None;
+            for _ in 0..4 {
+                out = Some(r.frame(&ctx, r.input(), |ui| app.draw(ui)));
+            }
+            r.save(&ctx, out.unwrap(), &dir.join(format!("{name}.png")));
+        }
         for (name, fixture) in [
             ("v13", "v13-model.bpmn"),
             ("main", "multi-file/main.bpmn"),
@@ -594,7 +738,7 @@ mod tests {
                 // Replay: tokens of a few followed cases, then queues of all cases.
                 let mut app = with_results("v13-model.bpmn", "v13-model.toml");
                 app.tab = Tab::Diagram;
-                app.diagram.replay = true;
+                app.diagram.mode = Mode::Replay;
                 app.diagram.follow = true;
                 app.diagram.case = 40;
                 app.diagram.cases_shown = 6;
@@ -756,7 +900,7 @@ mod tests {
         let ctx = egui::Context::default();
         let mut app = with_results("v13-model.bpmn", "v13-model.toml");
         app.tab = Tab::Diagram;
-        app.diagram.replay = true;
+        app.diagram.mode = Mode::Replay;
         app.diagram.speed = Some(3600.0); // one simulated hour per second
         app.diagram.follow = false;
         frame_with(&mut app, &ctx, vec![]);
@@ -787,6 +931,77 @@ mod tests {
             (app.diagram.time - end).abs() < 1e-6,
             "{} vs {end}",
             app.diagram.time
+        );
+    }
+
+    #[test]
+    fn configure_mode_opens_editors_by_clicking() {
+        let ctx = egui::Context::default();
+        let mut app = App::default();
+        app.ws.open(&fixtures().join("v13-model.bpmn"));
+        app.regenerate_skeleton();
+        app.tab = Tab::Diagram;
+        app.diagram.mode = Mode::Configure;
+        for _ in 0..3 {
+            frame_with(&mut app, &ctx, vec![]);
+        }
+        let q = |id: &str| QId::new("v13-model.bpmn", id);
+        // A fresh skeleton is all placeholders: tasks, the split, the start event, the lanes.
+        for t in [
+            Target::Node(q("Task_Intake")),
+            Target::Node(q("Split")),
+            Target::Node(q("Start")),
+            Target::Pool("Clerks".into()),
+        ] {
+            assert!(app.unreviewed.contains(&t), "{t:?}");
+        }
+        let shapes = app.ws.project.files["v13-model.bpmn"].diagram.clone();
+        let b = shapes.shapes[&q("Task_Intake")];
+        let p = app
+            .diagram
+            .to_screen(b.x + b.width / 2.0, b.y + b.height / 2.0);
+        click_at(&mut app, &ctx, p);
+        assert_eq!(app.diagram.target, Some(Target::Node(q("Task_Intake"))));
+        // Escape closes the editor.
+        let esc = egui::Event::Key {
+            key: egui::Key::Escape,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: egui::Modifiers::NONE,
+        };
+        frame_with(&mut app, &ctx, vec![esc]);
+        assert_eq!(app.diagram.target, None);
+        // The name band of a lane stands for its resource pool.
+        let lane = shapes.shapes[&q("Lane_Clerks")];
+        let p = app
+            .diagram
+            .to_screen(lane.x + 5.0, lane.y + lane.height / 2.0);
+        click_at(&mut app, &ctx, p);
+        assert_eq!(app.diagram.target, Some(Target::Pool("Clerks".into())));
+        // A click on empty space closes it.
+        let lane = shapes.shapes[&q("Lane_Experts")];
+        let p = app
+            .diagram
+            .to_screen(lane.x + lane.width - 15.0, lane.y + lane.height - 15.0);
+        click_at(&mut app, &ctx, p);
+        assert_eq!(app.diagram.target, None);
+
+        // Jumping to an element from elsewhere opens its editor in the diagram.
+        app.tab = Tab::Scenario;
+        app.focus(Target::Node(q("Split")));
+        frame_with(&mut app, &ctx, vec![]);
+        assert_eq!(app.tab, Tab::Diagram);
+        assert_eq!(app.diagram.target, Some(Target::Node(q("Split"))));
+
+        // Updating from the model marks only the new placeholders.
+        app.unreviewed.clear();
+        app.scenario.activities.remove("v13-model.bpmn#Task_Close");
+        let u = app.update_from_model();
+        assert_eq!(u.added, [q("Task_Close")]);
+        assert_eq!(
+            app.unreviewed.iter().collect::<Vec<_>>(),
+            [&Target::Node(q("Task_Close"))]
         );
     }
 

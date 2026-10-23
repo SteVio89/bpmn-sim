@@ -2,8 +2,10 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod app;
+mod configure;
 mod diagram_icons;
 mod diagram_panel;
+mod editors;
 mod job;
 mod manual_panel;
 mod model_panel;
