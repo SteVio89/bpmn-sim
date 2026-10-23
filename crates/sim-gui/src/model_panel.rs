@@ -180,7 +180,16 @@ fn after_load(app: &mut App) {
         None => format!("Loaded {} file(s).", app.ws.project.files.len()),
         Some(_) => "Loading failed, see the Model tab.".into(),
     };
-    if app.scenario_is_pristine() && app.ws.load_error.is_none() {
+    if app.ws.load_error.is_some() {
+        return;
+    }
+    if app.scenario_is_pristine() {
         app.regenerate_skeleton();
+    } else {
+        // Keep what was set; add placeholders for new elements and report removed ones.
+        let u = app.update_from_model();
+        if !u.is_empty() {
+            app.update_note = Some(u);
+        }
     }
 }

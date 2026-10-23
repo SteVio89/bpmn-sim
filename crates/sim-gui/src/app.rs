@@ -685,9 +685,19 @@ mod tests {
                 None,
                 Some("TimerStart"),
             ),
+            (
+                "configure-v13-dark",
+                "v13-model.bpmn",
+                Some("v13-model.toml"),
+                Some("Task_Check"),
+            ),
         ] {
             let ctx = egui::Context::default();
-            ctx.set_theme(egui::ThemePreference::Light);
+            ctx.set_theme(if name.ends_with("dark") {
+                egui::ThemePreference::Dark
+            } else {
+                egui::ThemePreference::Light
+            });
             let mut r = crate::snapshot::Renderer::new(1400, 800);
             let mut app = App::default();
             app.ws.open(&fixtures().join(fixture));

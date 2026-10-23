@@ -585,21 +585,21 @@ fn configure_clicks(
         ui.ctx().set_cursor_icon(CursorIcon::PointingHand);
     }
     if out.clicked {
-        if let Some(Target::Node(q)) = &hit
-            && let Some(n) = project.node(q)
-        {
-            // Missing parameters get placeholders to edit (still to be checked).
-            let (added, pool) = s.fill(project, n);
-            if added {
-                unreviewed.insert(Target::Node(q.clone()));
-            }
-            if let Some(p) = pool {
-                unreviewed.insert(Target::Pool(p));
-            }
-        }
         v.target = hit;
     }
     let Some(t) = v.target.clone() else { return };
+    if let Target::Node(q) = &t
+        && let Some(n) = project.node(q)
+    {
+        // Missing parameters get placeholders to edit (still to be checked).
+        let (added, pool) = s.fill(project, n);
+        if added {
+            unreviewed.insert(t.clone());
+        }
+        if let Some(p) = pool {
+            unreviewed.insert(Target::Pool(p));
+        }
+    }
     let Some(anchor) = out.rects.get(&t).copied() else {
         // Not in this diagram (any more).
         v.target = None;
@@ -1389,13 +1389,13 @@ fn draw(
                 continue;
             };
             let pts: Vec<Pos2> = points.iter().map(|(x, y)| to_screen(*x, *y)).collect();
-            // Near the start of the flow, where it leaves the split.
+            // Where the flows of a split have parted: just after the first bend, if any.
             let total: f32 = pts.windows(2).map(|w| (w[1] - w[0]).length()).sum();
-            let f = if total > 0.0 {
-                (28.0 / total).min(0.5)
-            } else {
-                0.0
+            let at = match pts.as_slice() {
+                [a, b, c, ..] => (*b - *a).length() + ((*c - *b).length() * 0.5).min(30.0),
+                _ => total * 0.4,
             };
+            let f = if total > 0.0 { at / total } else { 0.0 };
             badge(
                 point_along(&pts, f64::from(f)) + Vec2::new(4.0, -4.0),
                 Align2::LEFT_BOTTOM,
