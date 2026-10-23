@@ -15,7 +15,9 @@ fn claim() -> Project {
 }
 
 fn scenario() -> String {
-    std::fs::read_to_string(fixture("dmn/scenario.toml")).unwrap()
+    std::fs::read_to_string(fixture("dmn/scenario.toml"))
+        .unwrap()
+        .replace("\r\n", "\n")
 }
 
 fn run(s: &str) -> ReplicationResult {
