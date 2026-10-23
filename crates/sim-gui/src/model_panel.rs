@@ -140,9 +140,8 @@ pub fn show(app: &mut App, ui: &mut Ui) {
                                     if let Some(d) = &n.called_decision {
                                         match project.decisions.get(d) {
                                             Some(file) => {
-                                                text += &format!(
-                                                    "  → decision {d} ({file}, not evaluated yet)"
-                                                )
+                                                text +=
+                                                    &format!("  → decision {d} ({file}, evaluated)")
                                             }
                                             None => {
                                                 text += &format!("  → decision {d} (NOT FOUND)")

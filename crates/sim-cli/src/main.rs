@@ -183,6 +183,26 @@ fn print_result(r: &ReplicationResult, unit: f64, unit_name: &str) {
             p.cost
         );
     }
+    for (id, d) in &r.decisions {
+        let outcomes: Vec<String> = d
+            .outcomes
+            .iter()
+            .map(|(o, n)| format!("{o} x{n}"))
+            .collect();
+        println!(
+            "  decision {id}: {} evaluations ({}){}",
+            d.evaluations,
+            outcomes.join(", "),
+            if d.no_match + d.violations > 0 {
+                format!(
+                    "; {} without a matching rule, {} hit policy violations",
+                    d.no_match, d.violations
+                )
+            } else {
+                String::new()
+            }
+        );
+    }
     for (id, n) in &r.end_events {
         println!("  end event {id}: {n}");
     }

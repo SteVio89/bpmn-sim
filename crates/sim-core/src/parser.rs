@@ -154,6 +154,11 @@ impl Parser<'_> {
                 name: f.attribute("name").map(str::to_string),
                 source,
                 target,
+                condition: bpmn_children(*f)
+                    .find(|c| c.tag_name().name() == "conditionExpression")
+                    .and_then(|c| c.text())
+                    .map(|t| t.trim().to_string())
+                    .filter(|t| !t.is_empty()),
             };
             self.out.sequence_flows.insert(flow.id.clone(), flow);
         }
@@ -277,10 +282,13 @@ impl Parser<'_> {
         } else {
             None
         };
-        let called_decision = if kind == NodeKind::Task(TaskKind::BusinessRule) {
-            zeebe_attr(n, "calledDecision", "decisionId")
+        let (called_decision, result_variable) = if kind == NodeKind::Task(TaskKind::BusinessRule) {
+            (
+                zeebe_attr(n, "calledDecision", "decisionId"),
+                zeebe_attr(n, "calledDecision", "resultVariable"),
+            )
         } else {
-            None
+            (None, None)
         };
 
         Ok(FlowNode {
@@ -295,6 +303,7 @@ impl Parser<'_> {
             cancel_activity: n.attribute("cancelActivity") != Some("false"),
             called_element,
             called_decision,
+            result_variable,
             default_flow: n.attribute("default").map(|d| self.qid(d)),
             incoming: Vec::new(),
             outgoing: Vec::new(),

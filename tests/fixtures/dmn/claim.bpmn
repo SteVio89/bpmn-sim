@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL" xmlns:zeebe="http://camunda.org/schema/zeebe/1.0" id="Defs_Claim">
+  <bpmn:process id="Process_Claim">
+    <bpmn:startEvent id="Start"/>
+    <bpmn:businessRuleTask id="Task_Assess" name="Assess claim">
+      <bpmn:extensionElements><zeebe:calledDecision decisionId="claim-route" resultVariable="route"/></bpmn:extensionElements>
+    </bpmn:businessRuleTask>
+    <bpmn:exclusiveGateway id="Gateway_Route" name="Route?"/>
+    <bpmn:task id="Task_Pay" name="Pay automatically"/>
+    <bpmn:task id="Task_Manual" name="Manual check"/>
+    <bpmn:task id="Task_Reject" name="Reject"/>
+    <bpmn:exclusiveGateway id="Join"/>
+    <bpmn:endEvent id="End"/>
+    <bpmn:sequenceFlow id="F1" sourceRef="Start" targetRef="Task_Assess"/>
+    <bpmn:sequenceFlow id="F2" sourceRef="Task_Assess" targetRef="Gateway_Route"/>
+    <bpmn:sequenceFlow id="Flow_auto" sourceRef="Gateway_Route" targetRef="Task_Pay">
+      <bpmn:conditionExpression>=route = "auto"</bpmn:conditionExpression>
+    </bpmn:sequenceFlow>
+    <bpmn:sequenceFlow id="Flow_manual" sourceRef="Gateway_Route" targetRef="Task_Manual">
+      <bpmn:conditionExpression>=route = "manual"</bpmn:conditionExpression>
+    </bpmn:sequenceFlow>
+    <bpmn:sequenceFlow id="Flow_reject" sourceRef="Gateway_Route" targetRef="Task_Reject">
+      <bpmn:conditionExpression>=route = "reject"</bpmn:conditionExpression>
+    </bpmn:sequenceFlow>
+    <bpmn:sequenceFlow id="F6" sourceRef="Task_Pay" targetRef="Join"/>
+    <bpmn:sequenceFlow id="F7" sourceRef="Task_Manual" targetRef="Join"/>
+    <bpmn:sequenceFlow id="F8" sourceRef="Task_Reject" targetRef="Join"/>
+    <bpmn:sequenceFlow id="F9" sourceRef="Join" targetRef="End"/>
+  </bpmn:process>
+</bpmn:definitions>

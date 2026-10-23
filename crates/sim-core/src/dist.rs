@@ -153,14 +153,18 @@ impl Dist {
 
     /// Draw one sample, cut off at 0.
     pub fn sample<R: Rng + ?Sized>(&self, rng: &mut R) -> f64 {
-        let x = match self {
+        self.sample_raw(rng).max(0.0)
+    }
+
+    /// Draw one sample without the cut-off (decision inputs may be negative).
+    pub fn sample_raw<R: Rng + ?Sized>(&self, rng: &mut R) -> f64 {
+        match self {
             Dist::Fixed(v) => *v,
             Dist::Uniform(d) => d.sample(rng),
             Dist::Normal(d) => d.sample(rng),
             Dist::Exponential(d) => d.sample(rng),
             Dist::Triangular(d) => d.sample(rng),
             Dist::LogNormal(d) => d.sample(rng),
-        };
-        x.max(0.0)
+        }
     }
 }

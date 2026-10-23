@@ -48,6 +48,128 @@ pub struct Scenario {
     pub boundary: BTreeMap<String, BoundarySpec>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub messages: Option<MessagesSection>,
+    /// Decision id -> how its inputs are sampled.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub decisions: BTreeMap<String, DecisionSpec>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DecisionSpec {
+    pub label: Option<String>,
+    /// Input expression (variable name) -> distribution of its value.
+    #[serde(default)]
+    pub inputs: BTreeMap<String, InputSpec>,
+}
+
+/// A decision input: a number distribution (`dist = ...`, plain numbers, no time units),
+/// a categorical choice (`choice = { gold = 0.2, silver = 0.8 }`) or a boolean (`p_true = 0.3`).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum InputSpec {
+    Choice(ChoiceSpec),
+    Chance(ChanceSpec),
+    Number(NumberSpec),
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ChoiceSpec {
+    pub choice: BTreeMap<String, f64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ChanceSpec {
+    pub p_true: f64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "dist", rename_all = "lowercase", deny_unknown_fields)]
+pub enum NumberSpec {
+    Fixed { value: f64 },
+    Uniform { min: f64, max: f64 },
+    Normal { mean: f64, stdev: f64 },
+    Exponential { mean: f64 },
+    Triangular { min: f64, mode: f64, max: f64 },
+    Lognormal { mean: f64, stdev: f64 },
+}
+
+impl NumberSpec {
+    fn to_dist(&self) -> Result<Dist, String> {
+        use crate::dist::Seconds as S;
+        Dist::new(&match *self {
+            NumberSpec::Fixed { value } => DistSpec::Fixed { value: S(value) },
+            NumberSpec::Uniform { min, max } => DistSpec::Uniform {
+                min: S(min),
+                max: S(max),
+            },
+            NumberSpec::Normal { mean, stdev } => DistSpec::Normal {
+                mean: S(mean),
+                stdev: S(stdev),
+            },
+            NumberSpec::Exponential { mean } => DistSpec::Exponential { mean: S(mean) },
+            NumberSpec::Triangular { min, mode, max } => DistSpec::Triangular {
+                min: S(min),
+                mode: S(mode),
+                max: S(max),
+            },
+            NumberSpec::Lognormal { mean, stdev } => DistSpec::Lognormal {
+                mean: S(mean),
+                stdev: S(stdev),
+            },
+        })
+    }
+}
+
+/// How a decision input is drawn.
+#[derive(Debug, Clone)]
+pub enum Sampler {
+    Number(Dist),
+    Choice(Vec<(String, f64)>),
+    Chance(f64),
+}
+
+impl InputSpec {
+    fn sampler(&self) -> Result<Sampler, String> {
+        match self {
+            InputSpec::Number(n) => n.to_dist().map(Sampler::Number),
+            InputSpec::Chance(c) if (0.0..=1.0).contains(&c.p_true) => {
+                Ok(Sampler::Chance(c.p_true))
+            }
+            InputSpec::Chance(_) => Err("p_true must be between 0 and 1".into()),
+            InputSpec::Choice(c) => {
+                let sum: f64 = c.choice.values().sum();
+                if c.choice.is_empty()
+                    || c.choice.values().any(|p| *p < 0.0)
+                    || (sum - 1.0).abs() > 1e-9
+                {
+                    return Err(format!(
+                        "choice probabilities must be non-negative and sum to 1 (they sum to {sum})"
+                    ));
+                }
+                Ok(Sampler::Choice(
+                    c.choice.iter().map(|(k, p)| (k.clone(), *p)).collect(),
+                ))
+            }
+        }
+    }
+}
+
+/// A business rule task's decision, ready to evaluate.
+#[derive(Debug, Clone)]
+pub struct BoundDecision {
+    pub decision: String,
+    pub table: crate::dmn::Table,
+    pub result_variable: Option<String>,
+    pub samplers: BTreeMap<String, Sampler>,
+}
+
+/// A split decided by its flows' condition expressions.
+#[derive(Debug, Clone)]
+pub struct ConditionCfg {
+    pub flows: Vec<(QId, crate::feel::Expr)>,
+    pub default: Option<QId>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -284,6 +406,10 @@ pub struct BoundModel<'p> {
     pub gateways: BTreeMap<QId, Vec<(QId, f64)>>,
     /// Inclusive (OR) split -> independent flow probabilities and the default flow.
     pub inclusive: BTreeMap<QId, InclusiveCfg>,
+    /// Splits whose flows' conditions decide (no `[gateways]` entry, every flow has a condition).
+    pub conditions: BTreeMap<QId, ConditionCfg>,
+    /// Business rule task -> its evaluable decision.
+    pub decisions: BTreeMap<QId, BoundDecision>,
     pub buffer_unconsumed: bool,
     pub signal_scope: SignalScope,
     /// Black-box participant -> reply delay.
@@ -867,10 +993,112 @@ impl Scenario {
             );
         }
 
+        // Decisions of business rule tasks (DMN evaluation, spec §5.9).
+        for key in self.decisions.keys() {
+            if !project.decisions.contains_key(key) {
+                errors.push(format!(
+                    "[decisions.{key}]: no loaded DMN file defines this decision"
+                ));
+            }
+        }
+        let mut decisions = BTreeMap::new();
+        let mut produced: Vec<String> = Vec::new();
+        let mut pending = Vec::new();
+        for n in nodes
+            .iter()
+            .filter(|n| n.kind == NodeKind::Task(TaskKind::BusinessRule))
+        {
+            let Some(id) = &n.called_decision else {
+                continue;
+            };
+            let Some(decision) = project
+                .decisions
+                .get(id)
+                .and_then(|f| project.dmn.get(f))
+                .and_then(|f| f.decisions.get(id))
+            else {
+                warnings.push(format!(
+                    "{}: decision '{id}' is not loaded; the task runs without evaluating it",
+                    n.id
+                ));
+                continue;
+            };
+            let Some(raw) = &decision.table else {
+                errors.push(format!("{}: decision '{id}' is not a decision table", n.id));
+                continue;
+            };
+            match crate::dmn::Table::compile(id, raw) {
+                Ok(table) => {
+                    for o in &table.outputs {
+                        produced.push(o.clone());
+                        if let Some(r) = &n.result_variable {
+                            produced.push(format!("{r}.{o}"));
+                        }
+                    }
+                    produced.extend(n.result_variable.clone());
+                    pending.push((n.id.clone(), id.clone(), table, n.result_variable.clone()));
+                }
+                Err(e) => errors.push(format!("{}: {e}", n.id)),
+            }
+        }
+        // Inputs are process variables: a distribution given under any decision serves every
+        // decision with an input of that name (it is sampled once per instance).
+        let mut global: BTreeMap<String, (String, Sampler)> = BTreeMap::new();
+        for (id, spec) in &self.decisions {
+            for (input, s) in &spec.inputs {
+                match s.sampler() {
+                    Ok(sampler) => {
+                        if let Some((first, _)) = global.get(input) {
+                            warnings.push(format!(
+                                "decision input '{input}' is defined under both [decisions.{first}] and [decisions.{id}]; the first is used"
+                            ));
+                        } else {
+                            global.insert(input.clone(), (id.clone(), sampler));
+                        }
+                    }
+                    Err(e) => errors.push(format!("[decisions.{id}.inputs.{input}]: {e}")),
+                }
+            }
+        }
+        let all_inputs: Vec<String> = pending
+            .iter()
+            .flat_map(|(_, _, t, _)| t.inputs.clone())
+            .collect();
+        for (id, spec) in &self.decisions {
+            for k in spec.inputs.keys().filter(|k| !all_inputs.contains(k)) {
+                warnings.push(format!("[decisions.{id}.inputs]: '{k}' is not an input of any decision used and is ignored"));
+            }
+        }
+        for (task, id, table, result_variable) in pending {
+            let mut samplers = BTreeMap::new();
+            for input in &table.inputs {
+                match global.get(input) {
+                    Some((_, s)) => {
+                        samplers.insert(input.clone(), s.clone());
+                    }
+                    // Values set by another decision need no sampler.
+                    None if produced.contains(input) => {}
+                    None => errors.push(format!(
+                        "{task}: decision '{id}' needs a distribution for its input '{input}' under [decisions.\"{id}\".inputs]"
+                    )),
+                }
+            }
+            decisions.insert(
+                task,
+                BoundDecision {
+                    decision: id,
+                    table,
+                    result_variable,
+                    samplers,
+                },
+            );
+        }
+
         // Split probabilities: XOR splits need one per flow summing to 1; inclusive (OR) splits
         // take each flow independently with its probability, except the default flow.
         let mut gateways = BTreeMap::new();
         let mut inclusive = BTreeMap::new();
+        let mut conditions = BTreeMap::new();
         let mut gw_specs: BTreeMap<QId, &GatewaySpec> = BTreeMap::new();
         for (key, spec) in &self.gateways {
             match resolve(project, key, "gateway") {
@@ -892,9 +1120,47 @@ impl Scenario {
             ) && n.outgoing.len() > 1
         }) {
             let is_or = n.kind == NodeKind::InclusiveGateway;
+            let conditional: Vec<(QId, Option<&String>)> = n
+                .outgoing
+                .iter()
+                .filter(|f| n.default_flow.as_ref() != Some(*f))
+                .map(|f| {
+                    (
+                        f.clone(),
+                        project.flow(f).and_then(|fl| fl.condition.as_ref()),
+                    )
+                })
+                .collect();
+            let all_conditions = conditional.iter().all(|(_, c)| c.is_some());
+            if !gw_specs.contains_key(&n.id) && all_conditions {
+                let mut flows = Vec::new();
+                for (f, c) in conditional {
+                    match c.map(|c| crate::feel::Expr::parse(c)) {
+                        Some(Ok(e)) => flows.push((f, e)),
+                        Some(Err(e)) => {
+                            errors.push(format!("{} condition of flow {}: {e}", n.id, f.id))
+                        }
+                        None => {}
+                    }
+                }
+                conditions.insert(
+                    n.id.clone(),
+                    ConditionCfg {
+                        flows,
+                        default: n.default_flow.clone(),
+                    },
+                );
+                continue;
+            }
+            if gw_specs.contains_key(&n.id) && all_conditions {
+                warnings.push(format!(
+                    "{}: the [gateways] probabilities are used instead of the flow conditions",
+                    n.id
+                ));
+            }
             let Some(spec) = gw_specs.get(&n.id) else {
                 errors.push(format!(
-                    "{} ({}): {} split needs a [gateways] entry with probabilities",
+                    "{} ({}): {} split needs a [gateways] entry with probabilities (or a condition on every outgoing flow)",
                     n.id,
                     n.label(),
                     if is_or { "inclusive" } else { "XOR" }
@@ -1003,6 +1269,8 @@ impl Scenario {
             activities,
             gateways,
             inclusive,
+            conditions,
+            decisions,
             buffer_unconsumed: messages.buffer_unconsumed,
             signal_scope: sim.signal_scope,
             black_box_reply,
@@ -1183,7 +1451,48 @@ impl Scenario {
         let mut gateways = BTreeMap::new();
         let mut events = BTreeMap::new();
         let mut boundary = BTreeMap::new();
+        let mut skeleton_decisions = BTreeMap::new();
         for n in project.nodes() {
+            if let Some(table) = n
+                .called_decision
+                .as_ref()
+                .and_then(|d| {
+                    project
+                        .decisions
+                        .get(d)
+                        .and_then(|f| project.dmn.get(f))
+                        .and_then(|f| f.decisions.get(d))
+                })
+                .and_then(|d| d.table.as_ref())
+            {
+                let id = n.called_decision.clone().unwrap_or_default();
+                skeleton_decisions
+                    .entry(id)
+                    .or_insert_with(|| DecisionSpec {
+                        label: None,
+                        inputs: table
+                            .inputs
+                            .iter()
+                            .map(|i| {
+                                (
+                                    i.clone(),
+                                    InputSpec::Number(NumberSpec::Uniform {
+                                        min: 0.0,
+                                        max: 100.0,
+                                    }),
+                                )
+                            })
+                            .collect(),
+                    });
+            }
+            let conditioned = n
+                .outgoing
+                .iter()
+                .filter(|f| n.default_flow.as_ref() != Some(*f))
+                .all(|f| project.flow(f).is_some_and(|fl| fl.condition.is_some()));
+            if n.kind.is_gateway() && n.outgoing.len() > 1 && conditioned {
+                continue; // decided by its conditions
+            }
             match &n.kind {
                 NodeKind::Task(TaskKind::Receive) => {}
                 NodeKind::Task(_) => {
@@ -1284,6 +1593,7 @@ impl Scenario {
             calendars: BTreeMap::new(),
             events,
             boundary,
+            decisions: skeleton_decisions,
             messages: None,
         }
     }

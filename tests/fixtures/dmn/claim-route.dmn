@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<definitions xmlns="https://www.omg.org/spec/DMN/20191111/MODEL/" id="Defs_Route" name="Claim routing" namespace="http://camunda.org/schema/1.0/dmn">
+  <decision id="claim-route" name="Claim route">
+    <decisionTable id="DT_Route" hitPolicy="UNIQUE">
+      <input id="In_Amount" label="Amount"><inputExpression id="IE_1" typeRef="number"><text>amount</text></inputExpression></input>
+      <input id="In_Segment" label="Segment"><inputExpression id="IE_2" typeRef="string"><text>segment</text></inputExpression></input>
+      <output id="Out_Route" name="route" typeRef="string"/>
+      <rule id="R1"><inputEntry id="R1_1"><text>&lt; 1000</text></inputEntry><inputEntry id="R1_2"><text>-</text></inputEntry><outputEntry id="R1_O"><text>"auto"</text></outputEntry></rule>
+      <rule id="R2"><inputEntry id="R2_1"><text>[1000..5000]</text></inputEntry><inputEntry id="R2_2"><text>"gold"</text></inputEntry><outputEntry id="R2_O"><text>"manual"</text></outputEntry></rule>
+      <rule id="R3"><inputEntry id="R3_1"><text>[1000..5000]</text></inputEntry><inputEntry id="R3_2"><text>not("gold")</text></inputEntry><outputEntry id="R3_O"><text>"auto"</text></outputEntry></rule>
+      <rule id="R4"><inputEntry id="R4_1"><text>&gt; 5000</text></inputEntry><inputEntry id="R4_2"><text>-</text></inputEntry><outputEntry id="R4_O"><text>"reject"</text></outputEntry></rule>
+    </decisionTable>
+  </decision>
+</definitions>

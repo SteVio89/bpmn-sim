@@ -12,7 +12,9 @@ use std::collections::{BTreeMap, BTreeSet, BinaryHeap, VecDeque};
 use rand::{RngExt, SeedableRng};
 use rand_chacha::ChaCha8Rng;
 
+use crate::feel::Value;
 use crate::model::*;
+use crate::scenario::Sampler;
 use crate::scenario::{BoundModel, SignalScope};
 use crate::stats::*;
 
@@ -95,6 +97,8 @@ struct Instance {
     parent: Option<(usize, u64)>,
     started: f64,
     finished: Option<f64>,
+    /// Process variables (decision inputs and outputs).
+    variables: BTreeMap<String, Value>,
     process: QId,
     tokens: BTreeMap<u64, Token>,
     /// AND join node -> incoming flow -> waiting tokens (FIFO).
@@ -150,6 +154,7 @@ pub struct Engine<'a> {
     records: Vec<ActivityRecord>,
     end_events: BTreeMap<QId, u64>,
     boundary_fired: BTreeMap<QId, u64>,
+    decision_stats: BTreeMap<String, DecisionStats>,
     horizon_reached: bool,
     msg_flows: Vec<&'a MessageFlow>,
     /// group -> case
@@ -258,6 +263,7 @@ impl<'a> Engine<'a> {
             records: Vec::new(),
             end_events: BTreeMap::new(),
             boundary_fired: BTreeMap::new(),
+            decision_stats: BTreeMap::new(),
             horizon_reached: false,
             msg_flows: m
                 .project
@@ -366,6 +372,7 @@ impl<'a> Engine<'a> {
             parent,
             started: self.now,
             finished: None,
+            variables: BTreeMap::new(),
             process,
             tokens: BTreeMap::new(),
             joins: BTreeMap::new(),
@@ -658,6 +665,35 @@ impl<'a> Engine<'a> {
 
     /// Send a token out of `node`: XOR picks one flow, everything else takes all flows.
     fn route(&mut self, inst: usize, tok: u64, node: &FlowNode, work: &mut Vec<Work>) {
+        if let Some(cfg) = self.m.conditions.get(&node.id) {
+            let vars = &self.instances[inst].variables;
+            let mut chosen: Vec<QId> = cfg
+                .flows
+                .iter()
+                .filter(|(_, e)| e.eval(vars))
+                .map(|(f, _)| f.clone())
+                .collect();
+            if node.kind == NodeKind::ExclusiveGateway {
+                chosen.truncate(1); // the first true condition in model order
+            }
+            if chosen.is_empty() {
+                match &cfg.default {
+                    Some(d) => chosen.push(d.clone()),
+                    None => {
+                        // BPMN would raise an error; the token stays here and is reported as stuck.
+                        self.set_token(
+                            inst,
+                            tok,
+                            &node.id,
+                            "no outgoing condition is true and there is no default flow",
+                        );
+                        return;
+                    }
+                }
+            }
+            self.send_along(inst, tok, node, chosen, work);
+            return;
+        }
         let flows: Vec<QId> = match (&node.kind, self.m.gateways.get(&node.id)) {
             (NodeKind::ExclusiveGateway, Some(probs)) => {
                 let r: f64 = self.rng.random();
@@ -698,6 +734,17 @@ impl<'a> Engine<'a> {
                 _ => node.outgoing.clone(),
             },
         };
+        self.send_along(inst, tok, node, flows, work);
+    }
+
+    fn send_along(
+        &mut self,
+        inst: usize,
+        tok: u64,
+        node: &FlowNode,
+        flows: Vec<QId>,
+        work: &mut Vec<Work>,
+    ) {
         if flows.is_empty() {
             // Implicit end (validation warns about it).
             self.consume(inst, tok, work);
@@ -1190,11 +1237,81 @@ impl<'a> Engine<'a> {
         if node.kind == NodeKind::Task(TaskKind::Send) {
             self.throw(inst, node);
         }
+        if let Some(d) = m.decisions.get(&node_id) {
+            self.decide(inst, d);
+        }
         let mut work = Vec::new();
         if self.alive(inst, tok) {
             self.route(inst, tok, node, &mut work);
         }
         self.process(inst, work);
+    }
+
+    /// Evaluate a business rule task's decision table: inputs come from the instance's
+    /// variables or are sampled (once per instance) from the scenario; outputs become variables.
+    fn decide(&mut self, inst: usize, d: &crate::scenario::BoundDecision) {
+        let rng = &mut self.rng;
+        let vars = &mut self.instances[inst].variables;
+        let result = d.table.evaluate(|name| {
+            if let Some(v) = vars.get(name) {
+                return v.clone();
+            }
+            let v = match d.samplers.get(name) {
+                Some(Sampler::Number(dist)) => Value::Num(dist.sample_raw(rng)),
+                Some(Sampler::Chance(p)) => Value::Bool(rng.random::<f64>() < *p),
+                Some(Sampler::Choice(options)) => {
+                    let r: f64 = rng.random();
+                    let mut acc = 0.0;
+                    let mut pick = options.last().map(|(k, _)| k.clone()).unwrap_or_default();
+                    for (k, p) in options {
+                        acc += p;
+                        if r < acc {
+                            pick = k.clone();
+                            break;
+                        }
+                    }
+                    Value::Str(pick)
+                }
+                None => Value::Null,
+            };
+            vars.insert(name.to_string(), v.clone());
+            v
+        });
+        let single = result.outputs.len() == 1;
+        for (name, v) in &result.outputs {
+            if !name.is_empty() {
+                vars.insert(name.clone(), v.clone());
+            }
+            if let Some(r) = &d.result_variable {
+                let key = if single {
+                    r.clone()
+                } else {
+                    format!("{r}.{name}")
+                };
+                vars.insert(key, v.clone());
+            }
+        }
+        let stats = self.decision_stats.entry(d.decision.clone()).or_default();
+        stats.evaluations += 1;
+        if result.matched == 0 {
+            stats.no_match += 1;
+        }
+        if result.violation {
+            stats.violations += 1;
+        }
+        let outcome = result
+            .outputs
+            .iter()
+            .map(|(k, v)| {
+                if single {
+                    v.to_string()
+                } else {
+                    format!("{k}={v}")
+                }
+            })
+            .collect::<Vec<_>>()
+            .join(", ");
+        *stats.outcomes.entry(outcome).or_default() += 1;
     }
 
     /// Cut a task short (interrupting boundary event, terminate end event).
@@ -1647,6 +1764,7 @@ impl<'a> Engine<'a> {
             messages: self.messages,
             signals: self.signals,
             boundary_fired: self.boundary_fired,
+            decisions: self.decision_stats,
             processes,
             cases,
             records: self.records,

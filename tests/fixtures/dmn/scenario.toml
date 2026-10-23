@@ -1,0 +1,22 @@
+# Claims are routed by the decision table claim-route.dmn; the gateway follows its output.
+# Expected routes: auto 0.1 + 0.4 * 0.75 = 0.4, manual 0.4 * 0.25 = 0.1, reject 0.5.
+[simulation]
+seed = 5
+cases = 4000
+
+[[arrivals]]
+inter_arrival = { dist = "fixed", value = "60m" }
+triggers = ["Start"]
+
+[activities.Task_Assess]
+duration = { dist = "fixed", value = "5m" }
+[activities.Task_Pay]
+duration = { dist = "fixed", value = "1m" }
+[activities.Task_Manual]
+duration = { dist = "fixed", value = "30m" }
+[activities.Task_Reject]
+duration = { dist = "fixed", value = "2m" }
+
+[decisions."claim-route".inputs]
+amount = { dist = "uniform", min = 0.0, max = 10000.0 }
+segment = { choice = { gold = 0.25, silver = 0.75 } }

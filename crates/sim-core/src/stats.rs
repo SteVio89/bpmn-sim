@@ -111,6 +111,18 @@ pub struct ResourceStats {
     pub cost: f64,
 }
 
+/// How a decision table evaluated (spec §5.9).
+#[derive(Debug, Clone, Default, PartialEq, Serialize)]
+pub struct DecisionStats {
+    pub evaluations: u64,
+    /// No rule matched (outputs are null).
+    pub no_match: u64,
+    /// UNIQUE matched several rules / ANY rules disagreed (the first match was used).
+    pub violations: u64,
+    /// Output (as text) -> count.
+    pub outcomes: BTreeMap<String, u64>,
+}
+
 /// Completed instances of one process (a call activity or message start creates its own).
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct ProcessStats {
@@ -198,6 +210,8 @@ pub struct ReplicationResult {
     /// How often each boundary event fired.
     pub boundary_fired: BTreeMap<QId, u64>,
     pub processes: BTreeMap<QId, ProcessStats>,
+    /// Decision id -> evaluation statistics.
+    pub decisions: BTreeMap<String, DecisionStats>,
     pub cases: Vec<CaseRecord>,
     pub records: Vec<ActivityRecord>,
 }

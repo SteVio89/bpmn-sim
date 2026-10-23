@@ -238,7 +238,11 @@ mod tests {
                 std::thread::sleep(Duration::from_millis(10));
                 frames(&mut app, &ctx, 1);
             }
-            for t in [ResultsTab::Activities, ResultsTab::Problems] {
+            for t in [
+                ResultsTab::Summary,
+                ResultsTab::Activities,
+                ResultsTab::Problems,
+            ] {
                 app.results_tab = t;
                 frames(&mut app, &ctx, 2);
             }

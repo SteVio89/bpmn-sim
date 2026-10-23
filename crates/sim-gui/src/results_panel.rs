@@ -133,6 +133,13 @@ pub fn show(app: &mut App, ui: &mut Ui) {
                     }
                 });
             }
+            if !r.decisions.is_empty() {
+                ui.heading("Decisions");
+                for (id, d) in &r.decisions {
+                    let outcomes: Vec<String> = d.outcomes.iter().map(|(o, n)| format!("{o}: {n}")).collect();
+                    ui.label(format!("{id}: {} evaluations — {}", d.evaluations, outcomes.join(", ")));
+                }
+            }
             ui.heading("End events");
             for (id, n) in &r.end_events {
                 ui.label(format!("{id}: {n}"));
@@ -296,6 +303,15 @@ pub fn show(app: &mut App, ui: &mut Ui) {
                 for (id, n) in &r.boundary_fired {
                     ui.label(format!("{id}: {n}"));
                 }
+            }
+            for (id, d) in r.decisions.iter().filter(|(_, d)| d.no_match > 0 || d.violations > 0) {
+                ui.colored_label(
+                    egui::Color32::YELLOW,
+                    format!(
+                        "decision {id}: {} evaluation(s) matched no rule, {} violated the hit policy",
+                        d.no_match, d.violations
+                    ),
+                );
             }
             let incomplete = r.cases_started - r.cases_completed;
             if incomplete > 0 {

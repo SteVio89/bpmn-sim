@@ -50,3 +50,7 @@ duration = { dist = "fixed", value = "6m" }
 probabilities = { Flow_ok = 1.0, Flow_retry = 0.0 }
 [gateways."subprocess-b.bpmn#Gateway_Check"]
 probabilities = { Flow_ok = 1.0, Flow_retry = 0.0 }
+
+# Decision inputs of the business rule tasks in subprocess-b.bpmn (sampled once per instance).
+[decisions."decision-risk".inputs]
+amount = { dist = "uniform", min = 0.0, max = 2000.0 }

@@ -112,6 +112,8 @@ pub struct FlowNode {
     pub called_element: Option<String>,
     /// Business rule tasks: decision id (`zeebe:calledDecision`).
     pub called_decision: Option<String>,
+    /// Business rule tasks: `zeebe:calledDecision resultVariable`.
+    pub result_variable: Option<String>,
     /// Gateways and activities: `default` flow.
     pub default_flow: Option<QId>,
     pub incoming: Vec<QId>,
@@ -131,6 +133,8 @@ pub struct SequenceFlow {
     pub name: Option<String>,
     pub source: QId,
     pub target: QId,
+    /// `conditionExpression` text, if any.
+    pub condition: Option<String>,
 }
 
 #[derive(Debug, Clone)]

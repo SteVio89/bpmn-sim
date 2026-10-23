@@ -3,6 +3,7 @@ use sim_core::calendar::CalendarSpec;
 use sim_core::scenario::{
     ActivitySpec, ArrivalSpec, GatewaySpec, ResourceSpec, SignalScope, SimulationSection, TimeUnit,
 };
+use sim_core::scenario::{ChanceSpec, ChoiceSpec, InputSpec, NumberSpec};
 use sim_core::{NodeKind, Project, Scenario};
 
 use crate::app::App;
@@ -325,6 +326,23 @@ pub fn show(app: &mut App, ui: &mut Ui) {
                 });
         }
 
+        if !s.decisions.is_empty() {
+            egui::CollapsingHeader::new(format!("Decision inputs ({})", s.decisions.len())).show(
+                ui,
+                |ui| {
+                    for (id, d) in s.decisions.iter_mut() {
+                        ui.label(RichText::new(id.as_str()).strong());
+                        for (input, spec) in d.inputs.iter_mut() {
+                            ui.horizontal(|ui| {
+                                ui.label(format!("{input}:"));
+                                input_edit(ui, (id.as_str(), input.as_str()), spec);
+                            });
+                        }
+                    }
+                },
+            );
+        }
+
         egui::CollapsingHeader::new(format!("Gateways ({})", s.gateways.len())).show(ui, |ui| {
             for (key, g) in s.gateways.iter_mut() {
                 gateway_editor(ui, &project, key, g);
@@ -507,4 +525,69 @@ pub fn show_run(app: &mut App, ui: &mut Ui) {
             );
         }
     });
+}
+
+/// Edit a decision input: number distribution, categorical choice or boolean.
+fn input_edit(ui: &mut Ui, id: (&str, &str), spec: &mut InputSpec) {
+    let kind = match spec {
+        InputSpec::Number(_) => 0,
+        InputSpec::Choice(_) => 1,
+        InputSpec::Chance(_) => 2,
+    };
+    let mut chosen = kind;
+    ComboBox::from_id_salt(("input-kind", id))
+        .width(80.0)
+        .selected_text(["number", "choice", "true/false"][kind])
+        .show_ui(ui, |ui| {
+            for (i, k) in ["number", "choice", "true/false"].iter().enumerate() {
+                ui.selectable_value(&mut chosen, i, *k);
+            }
+        });
+    if chosen != kind {
+        *spec = match chosen {
+            0 => InputSpec::Number(NumberSpec::Uniform {
+                min: 0.0,
+                max: 100.0,
+            }),
+            1 => InputSpec::Choice(ChoiceSpec {
+                choice: [("a".to_string(), 0.5), ("b".to_string(), 0.5)].into(),
+            }),
+            _ => InputSpec::Chance(ChanceSpec { p_true: 0.5 }),
+        };
+    }
+    let num = |ui: &mut Ui, label: &str, v: &mut f64| {
+        ui.label(label);
+        ui.add(DragValue::new(v).speed(0.5));
+    };
+    match spec {
+        InputSpec::Number(n) => match n {
+            NumberSpec::Fixed { value } => num(ui, "value", value),
+            NumberSpec::Uniform { min, max } => {
+                num(ui, "min", min);
+                num(ui, "max", max);
+            }
+            NumberSpec::Normal { mean, stdev } | NumberSpec::Lognormal { mean, stdev } => {
+                num(ui, "mean", mean);
+                num(ui, "stdev", stdev);
+            }
+            NumberSpec::Exponential { mean } => num(ui, "mean", mean),
+            NumberSpec::Triangular { min, mode, max } => {
+                num(ui, "min", min);
+                num(ui, "mode", mode);
+                num(ui, "max", max);
+            }
+        },
+        InputSpec::Choice(c) => {
+            for (value, p) in c.choice.iter_mut() {
+                ui.add(egui::Slider::new(p, 0.0..=1.0).text(value.as_str()));
+            }
+            let sum: f64 = c.choice.values().sum();
+            if (sum - 1.0).abs() > 1e-9 && ui.button("Normalise").clicked() && sum > 0.0 {
+                c.choice.values_mut().for_each(|p| *p /= sum);
+            }
+        }
+        InputSpec::Chance(c) => {
+            ui.add(egui::Slider::new(&mut c.p_true, 0.0..=1.0).text("P(true)"));
+        }
+    }
 }
