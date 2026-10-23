@@ -18,10 +18,11 @@ Camunda 8 models) and does three things with them:
   one.
 
 It supports collaborations (several pools exchanging messages), call activities across files,
-embedded subprocesses, multi-instance and loop activities, boundary events (including errors
-and escalations thrown inside subprocesses and called processes), timers, signals, link events,
-inclusive and event-based gateways, conditional flows, and DMN decision tables behind business
-rule tasks.
+embedded subprocesses and event subprocesses, multi-instance and loop activities, boundary
+events (including errors and escalations thrown inside subprocesses and called processes),
+timers, signals, link events, inclusive and event-based gateways, conditional flows, and DMN
+decision tables behind business rule tasks. `docs/semantics.md` lists where it deviates from
+BPMN 2.0.2 and which elements it does not run.
 
 **Status:** early, version 0.1. The simulation results are checked against queueing theory
 and hand-calculated cases (see `docs/validation.md`), but the tool has so far been used on a
@@ -66,7 +67,8 @@ cargo run --release -p sim-gui
 
 To try it, open `tests/fixtures/v13-model.bpmn` and load `tests/fixtures/v13-model.toml`
 as the scenario, or open `tests/fixtures/multi-file/main.bpmn` for a model with several pools
-and called subprocesses.
+and called subprocesses, or `tests/fixtures/event-subprocess.bpmn` with
+`tests/fixtures/event-subprocess.toml` for event subprocesses.
 
 ## Running the command-line tool
 
