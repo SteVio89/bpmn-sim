@@ -162,10 +162,7 @@ impl ManualState {
     pub fn controls(&mut self, ui: &mut Ui) {
         ui.horizontal(|ui| {
             ui.checkbox(&mut self.game.stop_at_tasks, "stop at tasks");
-            ui.checkbox(
-                &mut self.game.stop_at_events,
-                "stop at message / signal events",
-            );
+            ui.checkbox(&mut self.game.stop_at_events, "stop at events");
             if ui
                 .add_enabled(!self.undo.is_empty(), egui::Button::new("Undo"))
                 .clicked()
@@ -284,13 +281,19 @@ impl ManualState {
                             }
                         }
                         Pending::Continue { token, at } => {
-                            let sending = matches!(
-                                self.project.node(&at).map(|n| &n.kind),
-                                Some(
+                            let sending = self.project.node(&at).is_some_and(|n| {
+                                matches!(
+                                    n.kind,
                                     sim_core::NodeKind::IntermediateThrowEvent
                                         | sim_core::NodeKind::EndEvent
-                                )
-                            );
+                                ) && n.event_defs.iter().any(|d| {
+                                    matches!(
+                                        d,
+                                        sim_core::EventDef::Message(_)
+                                            | sim_core::EventDef::Signal(_)
+                                    )
+                                })
+                            });
                             let what = if sending { "Send from" } else { "Go on from" };
                             if ui.button(format!("{what} {}", self.label(&at))).clicked() {
                                 self.apply(Action::Continue { token });

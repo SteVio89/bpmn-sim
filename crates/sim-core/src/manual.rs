@@ -372,6 +372,11 @@ impl Game {
                 self.log.push(format!("go on from '{}'", n.label()));
                 let mut work = Vec::new();
                 match n.kind {
+                    NodeKind::IntermediateThrowEvent
+                        if matches!(n.event_defs.first(), Some(EventDef::Link(_))) =>
+                    {
+                        self.link_jump(token, &n, &mut work);
+                    }
                     NodeKind::IntermediateThrowEvent => {
                         self.throw(t.inst, &n);
                         if self.tokens.contains_key(&token) {
@@ -647,6 +652,9 @@ impl Game {
                         }
                     }
                     NodeKind::IntermediateCatchEvent => match def {
+                        Some(EventDef::Link(_)) if self.stop_at_events => {
+                            self.set(tok, &node_id, TokenState::Ready)
+                        }
                         Some(EventDef::Link(_)) => self.route(tok, &n, None, &mut work),
                         Some(EventDef::Signal(name)) => self.set(
                             tok,
@@ -657,21 +665,12 @@ impl Game {
                         _ => self.set(tok, &node_id, TokenState::WaitTimer),
                     },
                     NodeKind::IntermediateThrowEvent => {
-                        if let Some(EventDef::Link(name)) = &def {
-                            let target = self.project.nodes().find(|c| {
-                                c.process == n.process
-                                    && c.kind == NodeKind::IntermediateCatchEvent
-                                    && c.event_defs
-                                        .iter()
-                                        .any(|d| matches!(d, EventDef::Link(l) if l == name))
-                            });
-                            match target {
-                                Some(c) => work.push((tok, c.id.clone(), None)),
-                                None => self.consume(tok, &mut work),
-                            }
-                        } else if self.stop_at_events && Self::throws(&n) {
-                            // About to send: wait for the player.
+                        if self.stop_at_events {
+                            // Every intermediate throw event waits for the player (before it
+                            // sends, or before a link jumps).
                             self.set(tok, &node_id, TokenState::Ready);
+                        } else if matches!(def, Some(EventDef::Link(_))) {
+                            self.link_jump(tok, &n, &mut work);
                         } else {
                             self.throw(inst, &n);
                             if self.tokens.contains_key(&tok) {
@@ -749,7 +748,25 @@ impl Game {
         self.check_instances();
     }
 
-    /// Does this throw / end event send a message or signal (or end with a result)?
+    /// Jump from a link throw event to the link catch event with the same name.
+    fn link_jump(&mut self, tok: u64, n: &FlowNode, work: &mut Vec<Work>) {
+        let Some(EventDef::Link(name)) = n.event_defs.first() else {
+            return;
+        };
+        let target = self.project.nodes().find(|c| {
+            c.process == n.process
+                && c.kind == NodeKind::IntermediateCatchEvent
+                && c.event_defs
+                    .iter()
+                    .any(|d| matches!(d, EventDef::Link(l) if l == name))
+        });
+        match target {
+            Some(c) => work.push((tok, c.id.clone(), None)),
+            None => self.consume(tok, work),
+        }
+    }
+
+    /// Does this end event send a message or signal (or end with a result)?
     fn throws(n: &FlowNode) -> bool {
         n.event_defs.iter().any(|d| {
             matches!(

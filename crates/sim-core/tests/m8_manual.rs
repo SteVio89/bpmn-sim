@@ -448,3 +448,40 @@ fn message_start_and_signal_events_wait_too() {
     continue_at(&mut g, f, "Catch");
     assert!(g.tokens().is_empty());
 }
+
+#[test]
+fn every_intermediate_event_waits_including_links_and_plain_ones() {
+    let f = "v11-link.bpmn";
+    let mut g = Game::new(Arc::new(Project::open_main(&fixture(f)).unwrap()));
+    start(&mut g, f, "Start");
+    // The link throw waits, then the link catch it jumps to, then the task.
+    assert_eq!(at(&g), ["Throw"]);
+    continue_at(&mut g, f, "Throw");
+    assert_eq!(at(&g), ["Catch"]);
+    assert_eq!(g.tokens()[0].state, TokenState::Ready);
+    continue_at(&mut g, f, "Catch");
+    assert_eq!(at(&g), ["Task_A"]);
+
+    // A plain (none) intermediate throw event waits too.
+    let text = std::fs::read_to_string(fixture("v13-model.bpmn"))
+        .unwrap()
+        .replace(
+            r#"<bpmn:task id="Task_Close" name="Close request"/>"#,
+            r#"<bpmn:intermediateThrowEvent id="Task_Close" name="Request done"/>"#,
+        );
+    let mut p = Project::new();
+    p.add_source("v13-model.bpmn", &text).unwrap();
+    let mut g = Game::new(Arc::new(p));
+    g.stop_at_tasks = false;
+    start(&mut g, "v13-model.bpmn", "Start");
+    choose(&mut g, "v13-model.bpmn", &["Flow_simple"]);
+    assert_eq!(at(&g), ["Task_Close"]);
+    continue_at(&mut g, "v13-model.bpmn", "Task_Close");
+    assert!(g.tokens().is_empty());
+
+    // With the option off they pass by themselves.
+    let mut g = Game::new(Arc::new(Project::open_main(&fixture(f)).unwrap()));
+    g.stop_at_events = false;
+    start(&mut g, f, "Start");
+    assert_eq!(at(&g), ["Task_A"]);
+}
