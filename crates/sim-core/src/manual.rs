@@ -110,6 +110,9 @@ pub struct Game {
     or_reach: BTreeMap<QId, BTreeSet<QId>>,
     /// What happened, in words.
     pub log: Vec<String>,
+    /// Order in which tokens came to rest (token -> sequence number), for `focus`.
+    rested: BTreeMap<u64, u64>,
+    rest_seq: u64,
 }
 
 impl Game {
@@ -131,6 +134,8 @@ impl Game {
             joins: BTreeMap::new(),
             or_reach,
             log: Vec::new(),
+            rested: BTreeMap::new(),
+            rest_seq: 0,
         }
     }
 
@@ -440,10 +445,61 @@ impl Game {
     }
 
     fn set(&mut self, tok: u64, node: &QId, state: TokenState) {
+        let rests = state != TokenState::Passing;
         if let Some(t) = self.tokens.get_mut(&tok) {
             t.node = node.clone();
             t.state = state;
+            if rests {
+                self.rest_seq += 1;
+                self.rested.insert(tok, self.rest_seq);
+            }
         }
+    }
+
+    /// The call activities through which the focus token's instance was called, outermost
+    /// first (empty for a top-level instance).
+    pub fn focus_calls(&self) -> Vec<QId> {
+        let Some(focus) = self.focus() else {
+            return Vec::new();
+        };
+        let Some(t) = self.tokens.values().find(|t| t.node == focus) else {
+            return Vec::new();
+        };
+        let mut out = Vec::new();
+        let mut inst = t.inst;
+        while let Some((pi, pt)) = self.insts[inst].parent {
+            if let Some(p) = self.tokens.get(&pt) {
+                out.push(p.node.clone());
+            }
+            inst = pi;
+        }
+        out.reverse();
+        out
+    }
+
+    /// Where the player's attention belongs: the element of the token that most recently came
+    /// to rest and is waiting for the player (e.g. inside a called process that was just
+    /// entered, or back in the parent after the called process ended).
+    pub fn focus(&self) -> Option<QId> {
+        let waiting: BTreeSet<u64> = self
+            .pending()
+            .into_iter()
+            .map(|p| match p {
+                Pending::Choose { token, .. }
+                | Pending::Complete { token, .. }
+                | Pending::Fire { token, .. } => token,
+            })
+            .collect();
+        waiting
+            .into_iter()
+            .filter_map(|t| {
+                Some((
+                    self.rested.get(&t).copied().unwrap_or(0),
+                    self.tokens.get(&t)?.node.clone(),
+                ))
+            })
+            .max_by_key(|(seq, _)| *seq)
+            .map(|(_, node)| node)
     }
 
     fn process(&mut self, inst: usize, mut work: Vec<Work>) {

@@ -772,6 +772,71 @@ mod tests {
     }
 
     #[test]
+    fn manual_simulation_follows_tokens_into_called_files_and_back() {
+        let ctx = egui::Context::default();
+        let mut app = App::default();
+        app.ws.open(&fixtures().join("multi-file/main.bpmn"));
+        app.tab = Tab::Diagram;
+        app.diagram.manual = Some(crate::manual_panel::ManualState::new(
+            app.ws.project.clone(),
+        ));
+        frame_with(&mut app, &ctx, vec![]);
+        let m = app.diagram.manual.as_mut().unwrap();
+        m.apply(sim_core::manual::Action::Start {
+            event: QId::new("main.bpmn", "TimerStart"),
+        });
+        let mut seen = vec![(
+            app.diagram.file.clone().unwrap(),
+            app.diagram.history.clone(),
+        )];
+        for _ in 0..60 {
+            frame_with(&mut app, &ctx, vec![]);
+            let here = (
+                app.diagram.file.clone().unwrap(),
+                app.diagram.history.clone(),
+            );
+            if seen.last() != Some(&here) {
+                seen.push(here);
+            }
+            // Act on the token in focus, as a player following the case would.
+            let m = app.diagram.manual.as_mut().unwrap();
+            let Some(f) = m.game.focus() else { break };
+            let action = m.game.pending().into_iter().find_map(|p| match p {
+                sim_core::manual::Pending::Complete { token, task } if task == f => {
+                    Some(sim_core::manual::Action::Complete { token })
+                }
+                sim_core::manual::Pending::Choose {
+                    token,
+                    gateway,
+                    flows,
+                    ..
+                } if gateway == f => Some(sim_core::manual::Action::Choose {
+                    token,
+                    flows: vec![flows[0].clone()],
+                }),
+                _ => None,
+            });
+            if let Some(a) = action {
+                m.apply(a);
+            }
+        }
+        let files: Vec<&str> = seen.iter().map(|(f, _)| f.as_str()).collect();
+        assert_eq!(
+            files,
+            [
+                "main.bpmn",
+                "subprocess-a.bpmn",
+                "subprocess-b.bpmn",
+                "main.bpmn"
+            ]
+        );
+        // While inside a called file, "Back" leads to its caller's file.
+        assert_eq!(seen[1].1, ["main.bpmn"]);
+        assert_eq!(seen[2].1, ["main.bpmn"]);
+        assert!(seen[3].1.is_empty());
+    }
+
+    #[test]
     fn folder_open_remove_and_errors() {
         let mut app = App::default();
         app.ws.open(&fixtures().join("multi-file"));

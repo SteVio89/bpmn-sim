@@ -353,6 +353,7 @@ pub fn show(app: &mut App, ui: &mut Ui) {
     if let Some(m) = v.manual.as_mut() {
         m.controls(ui);
     }
+    follow_manual_focus(v, &project);
     let marks = v
         .manual
         .as_ref()
@@ -1132,4 +1133,28 @@ fn speed_label(s: f64) -> String {
     } else {
         format!("{s:.0} s/s")
     }
+}
+
+/// After a manual step, show the file where the token that just came to rest waits for the
+/// player: into a called process when a token entered it, back to the caller when it ended.
+/// "Back" then leads along the chain of calling files.
+fn follow_manual_focus(v: &mut DiagramView, project: &Project) {
+    let Some(m) = v.manual.as_mut() else { return };
+    if !std::mem::take(&mut m.moved) {
+        return;
+    }
+    let Some(target) = m.game.focus().map(|n| n.file) else {
+        return;
+    };
+    if v.file.as_ref() == Some(&target)
+        || project
+            .files
+            .get(&target)
+            .is_none_or(|f| f.diagram.shapes.is_empty())
+    {
+        return;
+    }
+    v.history = m.game.focus_calls().into_iter().map(|c| c.file).collect();
+    v.file = Some(target);
+    v.fit = true;
 }

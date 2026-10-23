@@ -302,3 +302,59 @@ fn a_clone_is_an_undo_point() {
     let g = before;
     assert_eq!(at(&g), ["Split"]);
 }
+
+#[test]
+fn focus_follows_the_token_into_called_processes_and_back() {
+    let mut g = Game::new(Arc::new(
+        Project::open_main(&fixture("multi-file/main.bpmn")).unwrap(),
+    ));
+    start(&mut g, "main.bpmn", "TimerStart");
+    assert_eq!(g.focus(), Some(q("main.bpmn", "Task_PlaceOrder")));
+    // Play: always act on the token in focus (complete tasks, take "ok").
+    let mut files = vec![g.focus().unwrap().file];
+    let mut calls_seen: Vec<Vec<String>> = Vec::new();
+    for _ in 0..60 {
+        let Some(f) = g.focus() else { break };
+        let action = g
+            .pending()
+            .into_iter()
+            .find_map(|p| match p {
+                Pending::Complete { token, task } if task == f => Some(Action::Complete { token }),
+                Pending::Choose {
+                    token,
+                    gateway,
+                    flows,
+                    ..
+                } if gateway == f => Some(Action::Choose {
+                    token,
+                    flows: vec![flows[0].clone()],
+                }),
+                Pending::Fire { token, at, events } if at == f => Some(Action::Fire {
+                    token,
+                    event: events[0].clone(),
+                }),
+                _ => None,
+            })
+            .expect("the focus is something to act on");
+        g.apply(action).unwrap();
+        if let Some(f) = g.focus()
+            && files.last() != Some(&f.file)
+        {
+            calls_seen.push(g.focus_calls().iter().map(|c| c.id.clone()).collect());
+            files.push(f.file);
+        }
+    }
+    // Into subprocess A when Call A is reached; when A ends the case runs on by itself through
+    // the main file into subprocess B (called by Call B); then back to the main file.
+    assert_eq!(
+        files,
+        [
+            "main.bpmn",
+            "subprocess-a.bpmn",
+            "subprocess-b.bpmn",
+            "main.bpmn"
+        ]
+    );
+    let expected: Vec<Vec<String>> = vec![vec!["Call_A".into()], vec!["Call_B".into()], vec![]];
+    assert_eq!(calls_seen, expected);
+}

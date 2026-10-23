@@ -17,6 +17,8 @@ pub struct ManualState {
     /// Flows ticked so far at inclusive splits, per waiting token.
     pub selection: BTreeMap<u64, BTreeSet<QId>>,
     pub error: Option<String>,
+    /// Set after a step: the diagram may have to follow the tokens into another file.
+    pub moved: bool,
 }
 
 /// What the diagram highlights and lets the player click.
@@ -35,6 +37,7 @@ impl ManualState {
             undo: Vec::new(),
             selection: BTreeMap::new(),
             error: None,
+            moved: false,
         }
     }
 
@@ -71,6 +74,7 @@ impl ManualState {
                 self.undo.push(before);
                 self.selection.clear();
                 self.error = None;
+                self.moved = true;
             }
             Err(e) => self.error = Some(e),
         }
@@ -159,6 +163,7 @@ impl ManualState {
                 self.game = g;
                 self.selection.clear();
                 self.error = None;
+                self.moved = true;
             }
             if ui.button("Reset").clicked() {
                 let stop = self.game.stop_at_tasks;
