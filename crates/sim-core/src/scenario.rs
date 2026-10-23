@@ -578,10 +578,76 @@ fn resolve(project: &Project, key: &str, what: &str) -> Result<QId, String> {
     }
 }
 
+/// A scenario error or warning, with the element (or resource pool) it is about.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Problem {
+    pub element: Option<QId>,
+    pub pool: Option<String>,
+    pub message: String,
+}
+
+impl std::fmt::Display for Problem {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.message)
+    }
+}
+
+/// Result of `Scenario::check`.
+#[derive(Debug, Clone)]
+pub struct Checked<'p> {
+    pub bound: Option<BoundModel<'p>>,
+    pub errors: Vec<Problem>,
+    pub warnings: Vec<Problem>,
+}
+
+#[derive(Default)]
+struct Problems(Vec<Problem>);
+
+impl Problems {
+    fn push(&mut self, message: String) {
+        self.0.push(Problem {
+            element: None,
+            pool: None,
+            message,
+        });
+    }
+    fn at(&mut self, element: &QId, message: String) {
+        self.0.push(Problem {
+            element: Some(element.clone()),
+            pool: None,
+            message,
+        });
+    }
+    fn pool(&mut self, pool: &str, message: String) {
+        self.0.push(Problem {
+            element: None,
+            pool: Some(pool.to_string()),
+            message,
+        });
+    }
+}
+
 impl Scenario {
     pub fn bind<'p>(&self, project: &'p Project) -> Result<BoundModel<'p>, ScenarioError> {
-        let mut errors: Vec<String> = Vec::new();
-        let mut warnings: Vec<String> = Vec::new();
+        let c = self.check(project);
+        match c.bound {
+            Some(b) => Ok(b),
+            None => {
+                let mut m: Vec<String> = c.errors.into_iter().map(|p| p.message).collect();
+                Err(if m.len() == 1 {
+                    ScenarioError::Invalid(m.remove(0))
+                } else {
+                    ScenarioError::Many(m)
+                })
+            }
+        }
+    }
+
+    /// Like `bind`, but reports every error and warning with the element it is about; the
+    /// bound model is there when there are no errors.
+    pub fn check<'p>(&self, project: &'p Project) -> Checked<'p> {
+        let mut errors = Problems::default();
+        let mut warnings = Problems::default();
 
         if let Some(m) = &self.model {
             let loaded = |f: &String| project.files.contains_key(f) || project.dmn.contains_key(f);
@@ -646,20 +712,21 @@ impl Scenario {
         let mut pools = BTreeMap::new();
         for (name, r) in &self.resources {
             if r.count == 0 {
-                errors.push(format!("resource '{name}': count must be at least 1"));
+                errors.pool(name, format!("resource '{name}': count must be at least 1"));
             }
-            let calendar = match &r.calendar {
-                None => None,
-                Some(c) => {
-                    let found = calendars.get(c).cloned();
-                    if found.is_none() && !self.calendars.contains_key(c) {
-                        errors.push(format!(
+            let calendar =
+                match &r.calendar {
+                    None => None,
+                    Some(c) => {
+                        let found = calendars.get(c).cloned();
+                        if found.is_none() && !self.calendars.contains_key(c) {
+                            errors.pool(name, format!(
                             "resource '{name}': calendar '{c}' is not defined under [calendars]"
                         ));
+                        }
+                        found
                     }
-                    found
-                }
-            };
+                };
             pools.insert(
                 name.clone(),
                 PoolDef {
@@ -687,10 +754,10 @@ impl Scenario {
                     Ok(q) => {
                         let Some(n) = project.node(&q) else { continue };
                         if n.kind != NodeKind::StartEvent {
-                            errors.push(format!("{label}: trigger '{q}' is not a start event"));
+                            errors.at(&q, format!("{label}: trigger '{q}' is not a start event"));
                         } else if n.parent.is_some() {
                             // Earlier skeletons listed these; the subprocess starts them itself.
-                            warnings.push(format!(
+                            warnings.at(&q, format!(
                                 "{label}: trigger '{q}' is a start event inside a subprocess, it is ignored"
                             ));
                         } else if !n
@@ -698,7 +765,7 @@ impl Scenario {
                             .iter()
                             .all(|d| matches!(d, EventDef::None | EventDef::Timer))
                         {
-                            errors.push(format!(
+                            errors.at(&q, format!(
                                 "{label}: trigger '{q}' is a message/signal/other start event; arrivals can only fire none or timer start events"
                             ));
                         } else {
@@ -828,7 +895,7 @@ impl Scenario {
             if let Some(n) = src
                 && !sends_messages(n)
             {
-                errors.push(format!(
+                errors.at(&f.source, format!(
                     "message flow {}: source '{}' is not a send task or message throw/end event",
                     f.id, f.source
                 ));
@@ -836,14 +903,17 @@ impl Scenario {
             match project.node(&f.target) {
                 Some(t) => {
                     if !receives_messages(t) {
-                        errors.push(format!(
-                            "message flow {}: target '{}' cannot receive a message",
-                            f.id, f.target
-                        ));
+                        errors.at(
+                            &f.target,
+                            format!(
+                                "message flow {}: target '{}' cannot receive a message",
+                                f.id, f.target
+                            ),
+                        );
                     } else if !processes.contains(&t.process)
                         && !(t.kind == NodeKind::StartEvent && t.parent.is_none())
                     {
-                        warnings.push(format!(
+                        warnings.at(&f.target, format!(
                             "message flow {}: target '{}' is in a process that is never instantiated, the message will stay undelivered",
                             f.id, f.target
                         ));
@@ -856,7 +926,7 @@ impl Scenario {
                         .and_then(|file| file.participants.get(&f.target))
                         .is_some_and(|p| p.process.is_none());
                     if !is_black_box {
-                        errors.push(format!(
+                        errors.at(&f.source, format!(
                             "message flow {}: target '{}' is a pool with a process; point the flow at a message start or catch event instead",
                             f.id, f.target
                         ));
@@ -872,7 +942,7 @@ impl Scenario {
             .collect();
         for n in &nodes {
             if let Some(why) = unsupported(project, n) {
-                errors.push(format!("{} ({}): {why}", n.id, n.label()));
+                errors.at(&n.id, format!("{} ({}): {why}", n.id, n.label()));
             }
         }
 
@@ -889,11 +959,14 @@ impl Scenario {
                                     .any(|d| matches!(d, EventDef::Link(l) if l == name))
                         })
                     {
-                        errors.push(format!(
-                            "{} ({}): no link catch event named '{name}' in this process",
-                            n.id,
-                            n.label()
-                        ));
+                        errors.at(
+                            &n.id,
+                            format!(
+                                "{} ({}): no link catch event named '{name}' in this process",
+                                n.id,
+                                n.label()
+                            ),
+                        );
                     }
                 }
             }
@@ -903,15 +976,18 @@ impl Scenario {
                     .as_ref()
                     .and_then(|c| project.processes.get(c))
                 {
-                    None => errors.push(format!(
-                        "{} ({}): called process {} is not defined in any loaded file",
-                        n.id,
-                        n.label(),
-                        n.called_element.as_deref().unwrap_or("(none)")
-                    )),
+                    None => errors.at(
+                        &n.id,
+                        format!(
+                            "{} ({}): called process {} is not defined in any loaded file",
+                            n.id,
+                            n.label(),
+                            n.called_element.as_deref().unwrap_or("(none)")
+                        ),
+                    ),
                     Some(p) => {
                         if project.start_nodes(p, None).is_empty() {
-                            errors.push(format!(
+                            errors.at(&n.id, format!(
                                 "{} ({}): called process '{}' has no none start event (nor, without any start event, an activity or gateway without incoming flows)",
                                 n.id,
                                 n.label(),
@@ -922,15 +998,13 @@ impl Scenario {
                 }
             }
             if n.triggered_by_event {
-                errors.extend(
-                    event_sub_problems(project, n)
-                        .into_iter()
-                        .map(|why| format!("{} ({}): {why}", n.id, n.label())),
-                );
+                for why in event_sub_problems(project, n) {
+                    errors.at(&n.id, format!("{} ({}): {why}", n.id, n.label()));
+                }
             } else if n.kind == NodeKind::SubProcess
                 && project.start_nodes(&n.process, Some(&n.id)).is_empty()
             {
-                errors.push(format!(
+                errors.at(&n.id, format!(
                     "{} ({}): embedded subprocess has no none start event (nor, without any start event, an activity or gateway without incoming flows)",
                     n.id,
                     n.label()
@@ -955,10 +1029,13 @@ impl Scenario {
                         continue;
                     };
                     if next == start {
-                        errors.push(format!(
-                            "{}: recursive call, process '{}' (indirectly) calls itself",
-                            n.id, start.id
-                        ));
+                        errors.at(
+                            &n.id,
+                            format!(
+                                "{}: recursive call, process '{}' (indirectly) calls itself",
+                                n.id, start.id
+                            ),
+                        );
                     } else if !seen.contains(next) {
                         seen.push(next.clone());
                         stack.push(next.clone());
@@ -986,7 +1063,7 @@ impl Scenario {
                     {
                         event_specs.insert(q, spec);
                     }
-                    _ => errors.push(format!(
+                    _ => errors.at(&q, format!(
                         "[events.{key}]: '{q}' is not an intermediate catch event, receive task or timer/message/signal start event of an event subprocess"
                     )),
                 },
@@ -1002,13 +1079,16 @@ impl Scenario {
                     Ok(d) => {
                         events.insert(n.id.clone(), d);
                     }
-                    Err(e) => errors.push(format!("[events] {}: delay: {e}", n.id)),
+                    Err(e) => errors.at(&n.id, format!("[events] {}: delay: {e}", n.id)),
                 },
-                None if is_timer => errors.push(format!(
-                    "{} ({}): timer event needs an [events] entry with a delay",
-                    n.id,
-                    n.label()
-                )),
+                None if is_timer => errors.at(
+                    &n.id,
+                    format!(
+                        "{} ({}): timer event needs an [events] entry with a delay",
+                        n.id,
+                        n.label()
+                    ),
+                ),
                 None => {}
             }
         }
@@ -1019,7 +1099,10 @@ impl Scenario {
                 Ok(q) if project.node(&q).map(|n| &n.kind) == Some(&NodeKind::BoundaryEvent) => {
                     boundary_specs.insert(q, spec);
                 }
-                Ok(q) => errors.push(format!("[boundary.{key}]: '{q}' is not a boundary event")),
+                Ok(q) => errors.at(
+                    &q,
+                    format!("[boundary.{key}]: '{q}' is not a boundary event"),
+                ),
                 Err(e) => errors.push(format!("[boundary]: {e}")),
             }
         }
@@ -1031,7 +1114,7 @@ impl Scenario {
                 host.map(|h| &h.kind),
                 Some(NodeKind::Task(_) | NodeKind::SubProcess | NodeKind::CallActivity)
             ) {
-                errors.push(format!(
+                errors.at(&n.id, format!(
                     "{name}: boundary events are only supported on tasks, call activities and embedded subprocesses"
                 ));
             }
@@ -1053,27 +1136,33 @@ impl Scenario {
                 continue;
             }
             if (needs_prob || needs_delay) && spec.is_none() {
-                errors.push(format!("{name}: needs a [boundary] entry"));
+                errors.at(&n.id, format!("{name}: needs a [boundary] entry"));
                 continue;
             }
             if needs_prob && spec.is_some_and(|s| s.probability.is_none()) {
-                errors.push(format!("{name}: [boundary] entry needs a probability"));
+                errors.at(
+                    &n.id,
+                    format!("{name}: [boundary] entry needs a probability"),
+                );
             }
             if needs_delay && spec.is_some_and(|s| s.delay.is_none()) {
-                errors.push(format!("{name}: [boundary] entry needs a delay"));
+                errors.at(&n.id, format!("{name}: [boundary] entry needs a delay"));
             }
             if !(needs_prob || needs_delay) && spec.is_some() {
-                warnings.push(format!("{name}: message/signal boundary events take no [boundary] parameters, the entry is ignored"));
+                warnings.at(&n.id, format!("{name}: message/signal boundary events take no [boundary] parameters, the entry is ignored"));
             }
             let probability = spec.and_then(|s| s.probability).unwrap_or(1.0);
             if !(0.0..=1.0).contains(&probability) {
-                errors.push(format!("{name}: probability must be between 0 and 1"));
+                errors.at(
+                    &n.id,
+                    format!("{name}: probability must be between 0 and 1"),
+                );
             }
             let delay = match spec.and_then(|s| s.delay.as_ref()).filter(|_| needs_delay) {
                 Some(d) => match Dist::new(d) {
                     Ok(d) => Some(d),
                     Err(e) => {
-                        errors.push(format!("{name}: delay: {e}"));
+                        errors.at(&n.id, format!("{name}: delay: {e}"));
                         None
                     }
                 },
@@ -1087,9 +1176,9 @@ impl Scenario {
             match resolve(project, key, "activity") {
                 Ok(q) => {
                     if !matches!(project.node(&q).map(|n| &n.kind), Some(NodeKind::Task(_))) {
-                        errors.push(format!("[activities.{key}]: '{q}' is not a task"));
+                        errors.at(&q, format!("[activities.{key}]: '{q}' is not a task"));
                     } else if configured.insert(q.clone(), spec).is_some() {
-                        errors.push(format!("[activities.{key}]: '{q}' is configured twice"));
+                        errors.at(&q, format!("[activities.{key}]: '{q}' is configured twice"));
                     }
                 }
                 Err(e) => errors.push(format!("[activities]: {e}")),
@@ -1102,17 +1191,20 @@ impl Scenario {
             .filter(|n| matches!(n.kind, NodeKind::Task(k) if k != TaskKind::Receive))
         {
             let Some(spec) = configured.get(&n.id) else {
-                errors.push(format!(
-                    "{} ({}): no [activities] entry with a duration",
-                    n.id,
-                    n.label()
-                ));
+                errors.at(
+                    &n.id,
+                    format!(
+                        "{} ({}): no [activities] entry with a duration",
+                        n.id,
+                        n.label()
+                    ),
+                );
                 continue;
             };
             let duration = match Dist::new(&spec.duration) {
                 Ok(d) => d,
                 Err(e) => {
-                    errors.push(format!("{}: duration: {e}", n.id));
+                    errors.at(&n.id, format!("{}: duration: {e}", n.id));
                     continue;
                 }
             };
@@ -1124,11 +1216,14 @@ impl Scenario {
             if let Some(p) = &pool
                 && !pools.contains_key(p)
             {
-                errors.push(format!(
-                    "{} ({}): resource pool '{p}' is not defined under [resources]",
-                    n.id,
-                    n.label()
-                ));
+                errors.at(
+                    &n.id,
+                    format!(
+                        "{} ({}): resource pool '{p}' is not defined under [resources]",
+                        n.id,
+                        n.label()
+                    ),
+                );
             }
             activities.insert(
                 n.id.clone(),
@@ -1164,14 +1259,20 @@ impl Scenario {
                 .and_then(|f| project.dmn.get(f))
                 .and_then(|f| f.decisions.get(id))
             else {
-                warnings.push(format!(
-                    "{}: decision '{id}' is not loaded; the task runs without evaluating it",
-                    n.id
-                ));
+                warnings.at(
+                    &n.id,
+                    format!(
+                        "{}: decision '{id}' is not loaded; the task runs without evaluating it",
+                        n.id
+                    ),
+                );
                 continue;
             };
             let Some(raw) = &decision.table else {
-                errors.push(format!("{}: decision '{id}' is not a decision table", n.id));
+                errors.at(
+                    &n.id,
+                    format!("{}: decision '{id}' is not a decision table", n.id),
+                );
                 continue;
             };
             match crate::dmn::Table::compile(id, raw) {
@@ -1185,7 +1286,7 @@ impl Scenario {
                     produced.extend(n.result_variable.clone());
                     pending.push((n.id.clone(), id.clone(), table, n.result_variable.clone()));
                 }
-                Err(e) => errors.push(format!("{}: {e}", n.id)),
+                Err(e) => errors.at(&n.id, format!("{}: {e}", n.id)),
             }
         }
         // Inputs are process variables: a distribution given under any decision serves every
@@ -1225,7 +1326,7 @@ impl Scenario {
                     }
                     // Values set by another decision need no sampler.
                     None if produced.contains(input) => {}
-                    None => errors.push(format!(
+                    None => errors.at(&task, format!(
                         "{task}: decision '{id}' needs a distribution for its input '{input}' under [decisions.\"{id}\".inputs]"
                     )),
                 }
@@ -1253,9 +1354,10 @@ impl Scenario {
                 {
                     mi_specs.insert(q, spec);
                 }
-                Ok(q) => errors.push(format!(
-                    "[multi_instance.{key}]: '{q}' is not a multi-instance activity"
-                )),
+                Ok(q) => errors.at(
+                    &q,
+                    format!("[multi_instance.{key}]: '{q}' is not a multi-instance activity"),
+                ),
                 Err(e) => errors.push(format!("[multi_instance]: {e}")),
             }
         }
@@ -1270,9 +1372,10 @@ impl Scenario {
                 {
                     loop_specs.insert(q, spec);
                 }
-                Ok(q) => errors.push(format!(
-                    "[loops.{key}]: '{q}' is not an activity with a standard loop"
-                )),
+                Ok(q) => errors.at(
+                    &q,
+                    format!("[loops.{key}]: '{q}' is not an activity with a standard loop"),
+                ),
                 Err(e) => errors.push(format!("[loops]: {e}")),
             }
         }
@@ -1296,9 +1399,12 @@ impl Scenario {
                     completion_condition,
                 }) => {
                     if completion_condition.is_some() {
-                        warnings.push(format!(
-                            "{name}: the completion condition is ignored, all instances run"
-                        ));
+                        warnings.at(
+                            &n.id,
+                            format!(
+                                "{name}: the completion condition is ignored, all instances run"
+                            ),
+                        );
                     }
                     // The scenario first, then a number in the model, then a variable that a
                     // decision sets (the collection, or the cardinality expression).
@@ -1314,7 +1420,7 @@ impl Scenario {
                         (Some(spec), _, _) => match spec.count.to_dist() {
                             Ok(d) => Count::Sample(d),
                             Err(e) => {
-                                errors.push(format!("[multi_instance] {}: count: {e}", n.id));
+                                errors.at(&n.id, format!("[multi_instance] {}: count: {e}", n.id));
                                 continue;
                             }
                         },
@@ -1323,7 +1429,7 @@ impl Scenario {
                         }
                         (None, None, Some(v)) => Count::Variable(v),
                         (None, None, None) => {
-                            errors.push(format!(
+                            errors.at(&n.id, format!(
                                 "{name}: multi-instance activity needs a [multi_instance] entry with a count"
                             ));
                             continue;
@@ -1343,20 +1449,24 @@ impl Scenario {
                     ..
                 }) => {
                     let Some(spec) = loop_specs.get(&n.id) else {
-                        errors.push(format!(
+                        errors.at(&n.id, format!(
                             "{name}: loop activity needs a [loops] entry with a repeat_probability"
                         ));
                         continue;
                     };
                     let p = spec.repeat_probability;
                     if !(0.0..=1.0).contains(&p) {
-                        errors.push(format!(
-                            "{name}: repeat_probability must be between 0 and 1"
-                        ));
+                        errors.at(
+                            &n.id,
+                            format!("{name}: repeat_probability must be between 0 and 1"),
+                        );
                     } else if p >= 1.0 && maximum.is_none() {
-                        errors.push(format!(
-                            "{name}: repeat_probability 1 without a loopMaximum never ends"
-                        ));
+                        errors.at(
+                            &n.id,
+                            format!(
+                                "{name}: repeat_probability 1 without a loopMaximum never ends"
+                            ),
+                        );
                     }
                     loops.insert(
                         n.id.clone(),
@@ -1387,7 +1497,7 @@ impl Scenario {
                     {
                         gw_specs.insert(q, spec);
                     }
-                    _ => errors.push(format!(
+                    _ => errors.at(&q, format!(
                         "[gateways.{key}]: '{q}' is not an exclusive or inclusive gateway or an element with conditional outgoing flows"
                     )),
                 },
@@ -1419,7 +1529,7 @@ impl Scenario {
                     match c.map(|c| crate::feel::Expr::parse(c)) {
                         Some(Ok(e)) => flows.push((f, e)),
                         Some(Err(e)) => {
-                            errors.push(format!("{} condition of flow {}: {e}", n.id, f.id))
+                            errors.at(&n.id, format!("{} condition of flow {}: {e}", n.id, f.id))
                         }
                         None => {}
                     }
@@ -1434,13 +1544,16 @@ impl Scenario {
                 continue;
             }
             if gw_specs.contains_key(&n.id) && all_conditions {
-                warnings.push(format!(
-                    "{}: the [gateways] probabilities are used instead of the flow conditions",
-                    n.id
-                ));
+                warnings.at(
+                    &n.id,
+                    format!(
+                        "{}: the [gateways] probabilities are used instead of the flow conditions",
+                        n.id
+                    ),
+                );
             }
             let Some(spec) = gw_specs.get(&n.id) else {
-                errors.push(format!(
+                errors.at(&n.id, format!(
                     "{} ({}): {} split needs a [gateways] entry with probabilities (or a condition on every outgoing flow)",
                     n.id,
                     n.label(),
@@ -1456,20 +1569,20 @@ impl Scenario {
                     None => QId::new(&n.id.file, k),
                 };
                 if !n.outgoing.contains(&q) {
-                    errors.push(format!(
-                        "{}: '{k}' is not an outgoing flow of this gateway",
-                        n.id
-                    ));
+                    errors.at(
+                        &n.id,
+                        format!("{}: '{k}' is not an outgoing flow of this gateway", n.id),
+                    );
                 } else if default.as_ref() == Some(&q) {
-                    errors.push(format!(
+                    errors.at(&n.id, format!(
                         "{}: '{k}' is the default flow of an inclusive gateway and takes no probability (it is used when no other flow is chosen)",
                         n.id
                     ));
                 } else if !(0.0..=1.0).contains(p) {
-                    errors.push(format!(
-                        "{}: probability of '{k}' must be between 0 and 1",
-                        n.id
-                    ));
+                    errors.at(
+                        &n.id,
+                        format!("{}: probability of '{k}' must be between 0 and 1", n.id),
+                    );
                 } else {
                     by_flow.insert(q, *p);
                 }
@@ -1478,10 +1591,10 @@ impl Scenario {
             for f in n.outgoing.iter().filter(|f| default.as_ref() != Some(*f)) {
                 match by_flow.get(f) {
                     Some(p) => list.push((f.clone(), *p)),
-                    None => errors.push(format!(
-                        "{}: no probability for outgoing flow '{}'",
-                        n.id, f.id
-                    )),
+                    None => errors.at(
+                        &n.id,
+                        format!("{}: no probability for outgoing flow '{}'", n.id, f.id),
+                    ),
                 }
             }
             if is_or {
@@ -1495,7 +1608,10 @@ impl Scenario {
             } else {
                 let sum: f64 = list.iter().map(|(_, p)| p).sum();
                 if list.len() == n.outgoing.len() && (sum - 1.0).abs() > 1e-9 {
-                    errors.push(format!("{}: probabilities sum to {sum}, expected 1", n.id));
+                    errors.at(
+                        &n.id,
+                        format!("{}: probabilities sum to {sum}, expected 1", n.id),
+                    );
                 }
                 gateways.insert(n.id.clone(), list);
             }
@@ -1517,15 +1633,18 @@ impl Scenario {
                             None => QId::new(&n.id.file, k),
                         };
                         if !split.conditional.iter().any(|(f, _)| *f == q) {
-                            errors.push(format!(
-                                "{}: '{k}' is not a conditional outgoing flow of this element",
-                                n.id
-                            ));
+                            errors.at(
+                                &n.id,
+                                format!(
+                                    "{}: '{k}' is not a conditional outgoing flow of this element",
+                                    n.id
+                                ),
+                            );
                         } else if !(0.0..=1.0).contains(p) {
-                            errors.push(format!(
-                                "{}: probability of '{k}' must be between 0 and 1",
-                                n.id
-                            ));
+                            errors.at(
+                                &n.id,
+                                format!("{}: probability of '{k}' must be between 0 and 1", n.id),
+                            );
                         } else {
                             by_flow.insert(q, *p);
                         }
@@ -1534,10 +1653,10 @@ impl Scenario {
                     for (f, _) in &split.conditional {
                         match by_flow.get(f) {
                             Some(p) => list.push((f.clone(), *p)),
-                            None => errors.push(format!(
-                                "{}: no probability for conditional flow '{}'",
-                                n.id, f.id
-                            )),
+                            None => errors.at(
+                                &n.id,
+                                format!("{}: no probability for conditional flow '{}'", n.id, f.id),
+                            ),
                         }
                     }
                     SplitRule::Probabilities(list)
@@ -1547,9 +1666,8 @@ impl Scenario {
                     for (f, c) in &split.conditional {
                         match crate::feel::Expr::parse(c) {
                             Ok(e) => flows.push((f.clone(), e)),
-                            Err(e) => {
-                                errors.push(format!("{} condition of flow {}: {e}", n.id, f.id))
-                            }
+                            Err(e) => errors
+                                .at(&n.id, format!("{} condition of flow {}: {e}", n.id, f.id)),
                         }
                     }
                     SplitRule::Conditions(flows)
@@ -1581,7 +1699,7 @@ impl Scenario {
                     _ => false,
                 });
                 if !ok {
-                    errors.push(format!(
+                    errors.at(&n.id, format!(
                         "{} ({}): flow '{}' of an event-based gateway must lead to a message, signal or timer catch event or a receive task",
                         n.id,
                         n.label(),
@@ -1591,14 +1709,8 @@ impl Scenario {
             }
         }
 
-        if !errors.is_empty() {
-            return Err(if errors.len() == 1 {
-                ScenarioError::Invalid(errors.remove(0))
-            } else {
-                ScenarioError::Many(errors)
-            });
-        }
-        Ok(BoundModel {
+        let warning_texts = warnings.0.iter().map(|w| w.message.clone()).collect();
+        let bound = errors.0.is_empty().then_some(BoundModel {
             project,
             sim: SimParams {
                 seed: sim.seed,
@@ -1625,8 +1737,13 @@ impl Scenario {
             events,
             boundaries,
             active: processes,
-            warnings,
-        })
+            warnings: warning_texts,
+        });
+        Checked {
+            bound,
+            errors: errors.0,
+            warnings: warnings.0,
+        }
     }
 }
 

@@ -77,3 +77,24 @@ fn missing_reports_unconfigured_needs() {
     s.activities.remove("v13-model.bpmn#Task_Check");
     assert_eq!(s.missing(&p, task), [Need::Duration]);
 }
+
+#[test]
+fn check_ties_problems_to_elements() {
+    let p = load("v13-model.bpmn");
+    let mut s = Scenario::skeleton(&p, None);
+    s.activities.remove("v13-model.bpmn#Task_Check");
+    s.resources.get_mut("Clerks").unwrap().count = 0;
+    let c = s.check(&p);
+    assert!(c.bound.is_none());
+    assert!(c.errors.iter().any(
+        |e| e.element == Some(QId::new("v13-model.bpmn", "Task_Check"))
+            && e.message.contains("no [activities] entry")
+    ));
+    assert!(c.errors.iter().any(|e| e.pool.as_deref() == Some("Clerks")));
+    // `bind` reports the same messages.
+    let text = s.bind(&p).unwrap_err().to_string();
+    assert!(
+        text.contains("Task_Check") && text.contains("Clerks"),
+        "{text}"
+    );
+}
