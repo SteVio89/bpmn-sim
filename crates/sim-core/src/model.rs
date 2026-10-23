@@ -195,6 +195,8 @@ pub struct Diagram {
     pub shapes: BTreeMap<QId, Bounds>,
     /// Sequence or message flow -> waypoints.
     pub edges: BTreeMap<QId, Vec<(f64, f64)>>,
+    /// Element -> bounds of its name label (`bpmndi:BPMNLabel`), where the modeller gave one.
+    pub labels: BTreeMap<QId, Bounds>,
 }
 
 impl serde::Serialize for QId {

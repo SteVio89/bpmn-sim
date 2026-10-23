@@ -144,3 +144,32 @@ fn replay_snapshot_counts_waiting_and_working_tokens() {
     }
     assert!(snapshot(&r, -1.0).is_empty());
 }
+
+#[test]
+fn label_positions_are_read_when_the_modeller_gave_them() {
+    let text = std::fs::read_to_string(fixture("v13-model.bpmn")).unwrap().replace(
+        r#"<bpmndi:BPMNEdge id="Flow_simple_di" bpmnElement="Flow_simple">"#,
+        r#"<bpmndi:BPMNEdge id="Flow_simple_di" bpmnElement="Flow_simple"><bpmndi:BPMNLabel><dc:Bounds x="470" y="230" width="40" height="14"/></bpmndi:BPMNLabel>"#,
+    );
+    let mut p = Project::new();
+    p.add_source("v13-model.bpmn", &text).unwrap();
+    let d = &p.files["v13-model.bpmn"].diagram;
+    assert_eq!(
+        d.labels[&q("Flow_simple")],
+        Bounds {
+            x: 470.0,
+            y: 230.0,
+            width: 40.0,
+            height: 14.0
+        }
+    );
+    assert_eq!(
+        d.edges[&q("Flow_simple")].len(),
+        4,
+        "the label does not disturb the waypoints"
+    );
+    assert!(
+        !d.labels.contains_key(&q("Flow_complex")),
+        "no label bounds: drawn at the middle of the flow"
+    );
+}

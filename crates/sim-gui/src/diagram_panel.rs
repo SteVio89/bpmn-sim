@@ -605,6 +605,23 @@ fn draw(
         }
     }
 
+    // Names of events and gateways: where the modeller put them (BPMNLabel), else below.
+    let name_label = |painter: &egui::Painter, id: &QId, below: Pos2, text: String| {
+        if text.is_empty() {
+            return;
+        }
+        match d.labels.get(id) {
+            Some(b) => {
+                let lr = rect_of(b);
+                let galley = painter.layout(text, font.clone(), ink, lr.width().max(20.0) + 4.0);
+                painter.galley(lr.center() - galley.size() / 2.0, galley, ink);
+            }
+            None => {
+                painter.text(below, Align2::CENTER_TOP, text, font.clone(), ink);
+            }
+        }
+    };
+
     // Flow nodes.
     let mut hovered = None;
     // Boundary events last, so they sit on top of their activity's border.
@@ -675,15 +692,7 @@ fn draw(
                 if let Some(i) = icon {
                     diagram_icons::draw(&painter, i, r.center(), radius * 1.3, ink, fill);
                 }
-                if !label.is_empty() {
-                    painter.text(
-                        r.center_bottom() + Vec2::new(0.0, 2.0),
-                        Align2::CENTER_TOP,
-                        label,
-                        font.clone(),
-                        ink,
-                    );
-                }
+                name_label(&painter, id, r.center_bottom() + Vec2::new(0.0, 2.0), label);
             }
             k if k.is_gateway() => {
                 let c = r.center();
@@ -724,15 +733,7 @@ fn draw(
                         painter.line_segment([c - Vec2::new(d, -d), c + Vec2::new(d, -d)], bold);
                     }
                 }
-                if !label.is_empty() {
-                    painter.text(
-                        r.center_bottom() + Vec2::new(0.0, 2.0),
-                        Align2::CENTER_TOP,
-                        label,
-                        font.clone(),
-                        ink,
-                    );
-                }
+                name_label(&painter, id, r.center_bottom() + Vec2::new(0.0, 2.0), label);
             }
             _ => {
                 let rounding = 8.0 * zoom;
@@ -823,6 +824,31 @@ fn draw(
                 );
             }
         }
+    }
+
+    // Names of sequence and message flows: at their BPMNLabel, else next to the middle of the
+    // flow, on a backing so they stay readable across lines.
+    for (id, points) in &d.edges {
+        let name = file
+            .sequence_flows
+            .get(id)
+            .and_then(|f| f.name.clone())
+            .or_else(|| file.message_flows.get(id).and_then(|f| f.name.clone()));
+        let Some(name) = name.filter(|n| !n.trim().is_empty()) else {
+            continue;
+        };
+        let pts: Vec<Pos2> = points.iter().map(|(x, y)| to_screen(*x, *y)).collect();
+        let galley = painter.layout(name, font.clone(), ink, (120.0 * zoom).max(40.0));
+        let pos = match d.labels.get(id) {
+            Some(b) => rect_of(b).center() - galley.size() / 2.0,
+            None => point_along(&pts, 0.5) + Vec2::new(4.0, -3.0 - galley.size().y),
+        };
+        painter.rect_filled(
+            Rect::from_min_size(pos, galley.size()).expand(1.5),
+            2.0,
+            paper.gamma_multiply(0.85),
+        );
+        painter.galley(pos, galley, ink);
     }
 
     // Manual game: tokens where they wait.

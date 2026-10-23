@@ -124,6 +124,23 @@ impl Parser<'_> {
                     continue;
                 };
                 let q = self.qid(target);
+                let bounds_of = |n: &Node| {
+                    let b = n.children().find(|c| in_ns(c, DC_NS, "Bounds"))?;
+                    Some(Bounds {
+                        x: num(&b, "x")?,
+                        y: num(&b, "y")?,
+                        width: num(&b, "width")?,
+                        height: num(&b, "height")?,
+                    })
+                };
+                // Where a modeller placed the element's name (`bpmndi:BPMNLabel`), if anywhere.
+                if let Some(label) = el
+                    .children()
+                    .find(|c| in_ns(c, BPMNDI_NS, "BPMNLabel"))
+                    .and_then(|l| bounds_of(&l))
+                {
+                    self.out.diagram.labels.insert(q.clone(), label);
+                }
                 if in_ns(&el, BPMNDI_NS, "BPMNShape") {
                     let b = el.children().find(|c| in_ns(c, DC_NS, "Bounds"));
                     if let Some(b) = b
