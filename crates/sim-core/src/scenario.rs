@@ -930,9 +930,17 @@ impl Scenario {
             };
             let (needs_prob, needs_delay) = match def {
                 EventDef::Timer => (false, true),
-                EventDef::Error | EventDef::Escalation => (true, true),
+                EventDef::Error(_) | EventDef::Escalation(_) => (true, true),
                 _ => (false, false),
             };
+            // On a subprocess or call activity, errors and escalations thrown inside trigger
+            // the event; a [boundary] entry only adds failures the model does not show.
+            if matches!(def, EventDef::Error(_) | EventDef::Escalation(_))
+                && spec.is_none()
+                && host.is_some_and(|h| !matches!(h.kind, NodeKind::Task(_)))
+            {
+                continue;
+            }
             if (needs_prob || needs_delay) && spec.is_none() {
                 errors.push(format!("{name}: needs a [boundary] entry"));
                 continue;
@@ -1463,8 +1471,8 @@ fn unsupported(n: &FlowNode) -> Option<String> {
                         | EventDef::Message(_)
                         | EventDef::Signal(_)
                         | EventDef::Terminate
-                        | EventDef::Error
-                        | EventDef::Escalation
+                        | EventDef::Error(_)
+                        | EventDef::Escalation(_)
                 )
             }) =>
         {
@@ -1478,7 +1486,7 @@ fn unsupported(n: &FlowNode) -> Option<String> {
                         | EventDef::Message(_)
                         | EventDef::Signal(_)
                         | EventDef::Link(_)
-                        | EventDef::Escalation
+                        | EventDef::Escalation(_)
                 )
             }) =>
         {
@@ -1502,8 +1510,8 @@ fn unsupported(n: &FlowNode) -> Option<String> {
                 matches!(
                     d,
                     EventDef::Timer
-                        | EventDef::Error
-                        | EventDef::Escalation
+                        | EventDef::Error(_)
+                        | EventDef::Escalation(_)
                         | EventDef::Message(_)
                         | EventDef::Signal(_)
                 )
@@ -1628,17 +1636,26 @@ impl Scenario {
                     );
                 }
                 NodeKind::BoundaryEvent => {
+                    // Errors and escalations on subprocesses and call activities are thrown
+                    // inside; only those on tasks need a probability.
+                    let on_task = n
+                        .attached_to
+                        .as_ref()
+                        .and_then(|a| project.node(a))
+                        .is_some_and(|h| matches!(h.kind, NodeKind::Task(_)));
                     let spec = match n.event_defs.first() {
                         Some(EventDef::Timer) => Some(BoundarySpec {
                             label: n.name.clone(),
                             probability: None,
                             delay: Some(fixed(3600.0)),
                         }),
-                        Some(EventDef::Error | EventDef::Escalation) => Some(BoundarySpec {
-                            label: n.name.clone(),
-                            probability: Some(0.1),
-                            delay: Some(fixed(600.0)),
-                        }),
+                        Some(EventDef::Error(_) | EventDef::Escalation(_)) if on_task => {
+                            Some(BoundarySpec {
+                                label: n.name.clone(),
+                                probability: Some(0.1),
+                                delay: Some(fixed(600.0)),
+                            })
+                        }
                         _ => None,
                     };
                     if let Some(spec) = spec {

@@ -46,8 +46,10 @@ pub enum EventDef {
     /// Optional signal name (resolved from `signalRef`).
     Signal(Option<String>),
     Link(String),
-    Error,
-    Escalation,
+    /// Optional error code (resolved from `errorRef`); `None` catches every error.
+    Error(Option<String>),
+    /// Optional escalation code (resolved from `escalationRef`); `None` catches every escalation.
+    Escalation(Option<String>),
     Terminate,
     /// An event definition the simulator does not support (e.g. conditional, compensation).
     Unsupported(String),
@@ -174,6 +176,10 @@ pub struct BpmnFile {
     pub signals: BTreeMap<String, String>,
     /// Message id -> message name.
     pub messages: BTreeMap<String, String>,
+    /// Error id -> error code (`errorCode`, else the name, else the id).
+    pub errors: BTreeMap<String, String>,
+    /// Escalation id -> escalation code (`escalationCode`, else the name, else the id).
+    pub escalations: BTreeMap<String, String>,
     /// Lane id -> lane name.
     pub lanes: BTreeMap<QId, String>,
     /// BPMNDI layout of the file's first diagram (only used for drawing).

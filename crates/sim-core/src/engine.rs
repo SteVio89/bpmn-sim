@@ -482,11 +482,32 @@ impl<'a> Engine<'a> {
                     if !self.alive(inst, tok) {
                         continue;
                     }
-                    if matches!(first_def, Some(EventDef::Terminate)) {
-                        self.terminate(inst, tok);
-                    }
                     *self.end_events.entry(node_id.clone()).or_default() += 1;
-                    self.consume(inst, tok, &mut work);
+                    match first_def {
+                        Some(EventDef::Terminate) => self.terminate(inst, tok),
+                        Some(EventDef::Error(code)) => {
+                            if !self.raise(inst, tok, true, code.as_deref(), &mut work) {
+                                // Camunda raises an incident: the token stays and is reported.
+                                self.set_token(
+                                    inst,
+                                    tok,
+                                    &node_id,
+                                    &format!(
+                                        "uncaught error '{}'",
+                                        code.as_deref().unwrap_or_default()
+                                    ),
+                                );
+                                continue;
+                            }
+                        }
+                        Some(EventDef::Escalation(code)) => {
+                            self.raise(inst, tok, false, code.as_deref(), &mut work);
+                        }
+                        _ => {}
+                    }
+                    if self.alive(inst, tok) {
+                        self.consume(inst, tok, &mut work);
+                    }
                 }
                 NodeKind::Task(TaskKind::Receive) => {
                     self.arm_boundaries(inst, tok, node);
@@ -516,6 +537,11 @@ impl<'a> Engine<'a> {
                         }
                     } else {
                         self.throw(inst, node);
+                        if let Some(EventDef::Escalation(code)) = first_def
+                            && self.alive(inst, tok)
+                        {
+                            self.raise(inst, tok, false, code.as_deref(), &mut work);
+                        }
                         if self.alive(inst, tok) {
                             self.route(inst, tok, node, &mut work);
                         }
@@ -1076,7 +1102,7 @@ impl<'a> Engine<'a> {
                 continue;
             };
             match node.event_defs.first() {
-                Some(EventDef::Timer | EventDef::Error | EventDef::Escalation) => {
+                Some(EventDef::Timer | EventDef::Error(_) | EventDef::Escalation(_)) => {
                     let Some(cfg) = m.boundaries.get(&b) else {
                         continue;
                     };
@@ -1103,6 +1129,84 @@ impl<'a> Engine<'a> {
                 _ => {}
             }
         }
+    }
+
+    /// The activity that catches an error (`error`) or escalation thrown by token `tok`: the
+    /// closest enclosing embedded subprocess or call activity, innermost first, with a matching
+    /// boundary event. At one activity a boundary event for exactly this code wins over a
+    /// catch-all one (without a code). Returns (instance, token at the activity, boundary event).
+    fn find_catch(
+        &self,
+        inst: usize,
+        tok: u64,
+        error: bool,
+        code: Option<&str>,
+    ) -> Option<(usize, u64, QId)> {
+        let (mut i, mut t) = (inst, tok);
+        loop {
+            let (owner_inst, owner) = match self.instances[i].tokens.get(&t)?.scope {
+                Some(sc) => (i, self.scopes[sc].parent),
+                None => self.instances[i].parent?,
+            };
+            let activity = &self.instances[owner_inst].tokens.get(&owner)?.node;
+            let codes: Vec<(&QId, Option<&str>)> = self
+                .boundaries_of
+                .get(activity)
+                .into_iter()
+                .flatten()
+                .filter_map(|b| {
+                    let n = self.m.project.node(b)?;
+                    match (n.event_defs.first()?, error) {
+                        (EventDef::Error(c), true) | (EventDef::Escalation(c), false) => {
+                            Some((b, c.as_deref()))
+                        }
+                        _ => None,
+                    }
+                })
+                .collect();
+            let exact = codes.iter().find(|(_, c)| c.is_some() && *c == code);
+            if let Some((b, _)) = exact.or_else(|| codes.iter().find(|(_, c)| c.is_none())) {
+                return Some((owner_inst, owner, (*b).clone()));
+            }
+            (i, t) = (owner_inst, owner);
+        }
+    }
+
+    /// Throw an error or escalation from token `tok`; returns whether a boundary event caught it.
+    /// An error, and an escalation caught by an interrupting boundary event, cancel the catching
+    /// activity with everything inside (including the thrower); a non-interrupting escalation
+    /// boundary starts an extra token and the thrower goes on.
+    fn raise(
+        &mut self,
+        inst: usize,
+        tok: u64,
+        error: bool,
+        code: Option<&str>,
+        work: &mut Vec<Work>,
+    ) -> bool {
+        let Some((owner_inst, owner, b)) = self.find_catch(inst, tok, error, code) else {
+            return false;
+        };
+        let m = self.m;
+        let interrupting = error || m.project.node(&b).is_some_and(|n| n.cancel_activity);
+        *self.boundary_fired.entry(b.clone()).or_default() += 1;
+        let next = if interrupting {
+            self.cancel_activity(owner_inst, owner);
+            self.set_token(owner_inst, owner, &b, "passing");
+            owner
+        } else {
+            let scope = self.instances[owner_inst]
+                .tokens
+                .get(&owner)
+                .and_then(|t| t.scope);
+            self.new_token(owner_inst, &b, "passing", scope)
+        };
+        if owner_inst == inst {
+            work.push((next, b, None));
+        } else {
+            self.process(owner_inst, vec![(next, b, None)]);
+        }
+        true
     }
 
     /// A subscription's trigger happened.

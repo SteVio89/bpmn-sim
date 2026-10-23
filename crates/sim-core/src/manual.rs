@@ -406,19 +406,9 @@ impl Game {
                         self.link_jump(token, &n, &mut work);
                     }
                     NodeKind::IntermediateThrowEvent => {
-                        self.throw(t.inst, &n);
-                        if self.tokens.contains_key(&token) {
-                            self.route(token, &n, None, &mut work);
-                        }
+                        self.pass_throw(token, &n, t.inst, &mut work)
                     }
-                    NodeKind::EndEvent => {
-                        self.throw(t.inst, &n);
-                        if matches!(n.event_defs.first(), Some(EventDef::Terminate)) {
-                            self.terminate(token);
-                            self.log.push(format!("terminate at '{}'", n.label()));
-                        }
-                        self.consume(token, &mut work);
-                    }
+                    NodeKind::EndEvent => self.end(token, &n, t.inst, &mut work),
                     _ => self.route(token, &n, None, &mut work),
                 }
                 self.process(t.inst, work);
@@ -604,14 +594,7 @@ impl Game {
                         // Started by a message or signal: show where it arrived.
                         self.set(tok, &node_id, TokenState::Ready);
                     }
-                    NodeKind::EndEvent => {
-                        self.throw(inst, &n);
-                        if matches!(def, Some(EventDef::Terminate)) {
-                            self.terminate(tok);
-                            self.log.push(format!("terminate at '{}'", n.label()));
-                        }
-                        self.consume(tok, &mut work);
-                    }
+                    NodeKind::EndEvent => self.end(tok, &n, inst, &mut work),
                     NodeKind::Task(TaskKind::Receive) => self.wait_message(tok, &n, &mut work),
                     NodeKind::Task(_) => {
                         if self.stop_at_tasks {
@@ -700,10 +683,7 @@ impl Game {
                         } else if matches!(def, Some(EventDef::Link(_))) {
                             self.link_jump(tok, &n, &mut work);
                         } else {
-                            self.throw(inst, &n);
-                            if self.tokens.contains_key(&tok) {
-                                self.route(tok, &n, None, &mut work);
-                            }
+                            self.pass_throw(tok, &n, inst, &mut work);
                         }
                     }
                     NodeKind::SubProcess => {
@@ -801,8 +781,8 @@ impl Game {
                 d,
                 EventDef::Message(_)
                     | EventDef::Signal(_)
-                    | EventDef::Escalation
-                    | EventDef::Error
+                    | EventDef::Escalation(_)
+                    | EventDef::Error(_)
                     | EventDef::Terminate
             )
         })
@@ -986,6 +966,101 @@ impl Game {
                 self.route(parent, &n, None, work);
             }
         }
+    }
+
+    /// A token reached an end event: send its message / signal, terminate, or throw its error
+    /// or escalation, then end (an uncaught error keeps the token where it is).
+    fn end(&mut self, tok: u64, n: &FlowNode, inst: usize, work: &mut Vec<Work>) {
+        self.throw(inst, n);
+        match n.event_defs.first() {
+            Some(EventDef::Terminate) => {
+                self.terminate(tok);
+                self.log.push(format!("terminate at '{}'", n.label()));
+            }
+            Some(EventDef::Error(code)) if !self.raise(tok, true, code.as_deref(), work) => {
+                self.log.push(format!(
+                    "error '{}' is not caught; the token stays at '{}'",
+                    code.as_deref().unwrap_or_default(),
+                    n.label()
+                ));
+                self.set(tok, &n.id, TokenState::Passing);
+                return;
+            }
+            Some(EventDef::Escalation(code)) => {
+                self.raise(tok, false, code.as_deref(), work);
+            }
+            _ => {}
+        }
+        if self.tokens.contains_key(&tok) {
+            self.consume(tok, work);
+        }
+    }
+
+    /// A token passes an intermediate throw event (not a link): send, escalate, go on.
+    fn pass_throw(&mut self, tok: u64, n: &FlowNode, inst: usize, work: &mut Vec<Work>) {
+        self.throw(inst, n);
+        if let Some(EventDef::Escalation(code)) = n.event_defs.first()
+            && self.tokens.contains_key(&tok)
+        {
+            self.raise(tok, false, code.as_deref(), work);
+        }
+        if self.tokens.contains_key(&tok) {
+            self.route(tok, n, None, work);
+        }
+    }
+
+    /// The closest enclosing subprocess or call activity with a boundary event that catches
+    /// this error (`error`) or escalation; exact codes win over catch-alls (as in the engine).
+    /// Returns (token at the activity, boundary event).
+    fn find_catch(&self, tok: u64, error: bool, code: Option<&str>) -> Option<(u64, QId)> {
+        let mut t = tok;
+        loop {
+            let x = self.tokens.get(&t)?;
+            let owner = match x.scope {
+                Some(sc) => self.scopes[sc].1,
+                None => self.insts[x.inst].parent?.1,
+            };
+            let activity = &self.tokens.get(&owner)?.node;
+            let codes: Vec<(&QId, Option<&str>)> = self
+                .project
+                .nodes()
+                .filter(|b| b.attached_to.as_ref() == Some(activity))
+                .filter_map(|b| match (b.event_defs.first()?, error) {
+                    (EventDef::Error(c), true) | (EventDef::Escalation(c), false) => {
+                        Some((&b.id, c.as_deref()))
+                    }
+                    _ => None,
+                })
+                .collect();
+            let exact = codes.iter().find(|(_, c)| c.is_some() && *c == code);
+            if let Some((b, _)) = exact.or_else(|| codes.iter().find(|(_, c)| c.is_none())) {
+                return Some((owner, (*b).clone()));
+            }
+            t = owner;
+        }
+    }
+
+    /// Throw an error or escalation; returns whether a boundary event caught it.
+    fn raise(&mut self, tok: u64, error: bool, code: Option<&str>, work: &mut Vec<Work>) -> bool {
+        let Some((owner, b)) = self.find_catch(tok, error, code) else {
+            return false;
+        };
+        let what = if error { "error" } else { "escalation" };
+        self.log.push(format!(
+            "{what} '{}' caught by '{}'",
+            code.unwrap_or_default(),
+            self.label(&b)
+        ));
+        let interrupting = error || self.project.node(&b).is_some_and(|n| n.cancel_activity);
+        if interrupting {
+            self.cancel_activity(owner);
+            self.set(owner, &b, TokenState::Passing);
+            work.push((owner, b, None));
+        } else if let Some(o) = self.tokens.get(&owner).cloned() {
+            let nt = self.new_token(o.inst, &b, o.scope);
+            work.push((nt, b, None));
+        }
+        true
     }
 
     fn terminate(&mut self, tok: u64) {

@@ -207,3 +207,280 @@ fn the_player_chooses_which_conditions_of_a_task_hold() {
         .collect();
     assert_eq!(finished, ["'Score': take to 'High'"]);
 }
+
+// ---------------------------------------------------------------- errors and escalations
+
+const ERRORS: &str = r#"<bpmn:error id="Err_A" errorCode="A"/><bpmn:error id="Err_B" errorCode="B"/>
+    <bpmn:escalation id="Esc_X" escalationCode="X"/>"#;
+
+/// `Sub` runs `Work` (5 min) and then throws error `thrown` from `ErrEnd`, while `Long`
+/// (60 min) runs beside it. `boundaries` are attached to `Sub`; `Sub` itself leads to `E_ok`.
+fn erroring(thrown: &str, boundaries: &str) -> Project {
+    model_with(
+        &format!(
+            r#"
+        <bpmn:startEvent id="Start"/>
+        <bpmn:subProcess id="Sub">
+          <bpmn:startEvent id="S_start"/>
+          <bpmn:parallelGateway id="S_split"/>
+          <bpmn:task id="Work"/><bpmn:task id="Long"/>
+          <bpmn:endEvent id="ErrEnd"><bpmn:errorEventDefinition {thrown}/></bpmn:endEvent>
+          <bpmn:endEvent id="S_end"/>
+          <bpmn:sequenceFlow id="S0" sourceRef="S_start" targetRef="S_split"/>
+          <bpmn:sequenceFlow id="S1" sourceRef="S_split" targetRef="Work"/>
+          <bpmn:sequenceFlow id="S2" sourceRef="S_split" targetRef="Long"/>
+          <bpmn:sequenceFlow id="S3" sourceRef="Work" targetRef="ErrEnd"/>
+          <bpmn:sequenceFlow id="S4" sourceRef="Long" targetRef="S_end"/>
+        </bpmn:subProcess>
+        {boundaries}
+        <bpmn:task id="Handle"/><bpmn:task id="Other"/>
+        <bpmn:endEvent id="E_ok"/><bpmn:endEvent id="E_handled"/><bpmn:endEvent id="E_other"/>
+        <bpmn:sequenceFlow id="F0" sourceRef="Start" targetRef="Sub"/>
+        <bpmn:sequenceFlow id="F1" sourceRef="Sub" targetRef="E_ok"/>
+        <bpmn:sequenceFlow id="F2" sourceRef="Handle" targetRef="E_handled"/>
+        <bpmn:sequenceFlow id="F3" sourceRef="Other" targetRef="E_other"/>"#
+        ),
+        ERRORS,
+    )
+}
+
+const ON_A: &str = r#"<bpmn:boundaryEvent id="B_A" attachedToRef="Sub"><bpmn:errorEventDefinition errorRef="Err_A"/></bpmn:boundaryEvent>
+    <bpmn:sequenceFlow id="FB_A" sourceRef="B_A" targetRef="Handle"/>"#;
+const ON_ANY: &str = r#"<bpmn:boundaryEvent id="B_any" attachedToRef="Sub"><bpmn:errorEventDefinition/></bpmn:boundaryEvent>
+    <bpmn:sequenceFlow id="FB_any" sourceRef="B_any" targetRef="Other"/>"#;
+
+fn error_scenario() -> String {
+    base(
+        10,
+        &format!(
+            "{}{}{}{}",
+            fixed("Work", 5),
+            fixed("Long", 60),
+            fixed("Handle", 5),
+            fixed("Other", 5)
+        ),
+    )
+}
+
+#[test]
+fn a_thrown_error_is_caught_by_the_boundary_event_of_its_subprocess() {
+    let r = run(&erroring(r#"errorRef="Err_A""#, ON_A), &error_scenario());
+    assert_eq!(r.cases_completed, 10);
+    assert!(r.stuck.is_empty(), "{:?}", r.stuck);
+    // The subprocess is cancelled with everything in it: `Long` never finishes.
+    assert_eq!(runs(&r, "Handle"), 10);
+    assert_eq!(runs(&r, "Long"), 0);
+    assert_eq!(r.activities[&q("Long")].cancelled, 10);
+    assert_eq!(ends(&r, "E_ok"), 0);
+    assert_eq!(ends(&r, "E_handled"), 10);
+    assert_eq!(r.boundary_fired[&q("B_A")], 10);
+    assert!((r.case_cycle_time.mean - 600.0).abs() < 1e-9);
+}
+
+#[test]
+fn an_exact_error_code_wins_over_a_catch_all_boundary_event() {
+    let both = format!("{ON_A}{ON_ANY}");
+    let r = run(&erroring(r#"errorRef="Err_A""#, &both), &error_scenario());
+    assert_eq!((runs(&r, "Handle"), runs(&r, "Other")), (10, 0));
+    // Another code, and an error without a code, only match the catch-all.
+    let r = run(&erroring(r#"errorRef="Err_B""#, &both), &error_scenario());
+    assert_eq!((runs(&r, "Handle"), runs(&r, "Other")), (0, 10));
+    let r = run(&erroring("", &both), &error_scenario());
+    assert_eq!((runs(&r, "Handle"), runs(&r, "Other")), (0, 10));
+}
+
+#[test]
+fn an_uncaught_error_leaves_the_token_stuck_at_the_end_event() {
+    let r = run(&erroring(r#"errorRef="Err_B""#, ON_A), &error_scenario());
+    assert_eq!(r.cases_completed, 0);
+    let errs: Vec<_> = r
+        .stuck
+        .iter()
+        .filter(|s| s.element == q("ErrEnd"))
+        .collect();
+    assert_eq!(errs.len(), 10);
+    assert_eq!(errs[0].state, "uncaught error 'B'");
+}
+
+#[test]
+fn an_error_travels_up_through_nested_subprocesses() {
+    let p = model_with(
+        r#"
+        <bpmn:startEvent id="Start"/>
+        <bpmn:subProcess id="Outer">
+          <bpmn:startEvent id="O_start"/>
+          <bpmn:subProcess id="Inner">
+            <bpmn:startEvent id="I_start"/>
+            <bpmn:endEvent id="ErrEnd"><bpmn:errorEventDefinition errorRef="Err_A"/></bpmn:endEvent>
+            <bpmn:sequenceFlow id="I0" sourceRef="I_start" targetRef="ErrEnd"/>
+          </bpmn:subProcess>
+          <bpmn:boundaryEvent id="B_inner" attachedToRef="Inner"><bpmn:errorEventDefinition errorRef="Err_B"/></bpmn:boundaryEvent>
+          <bpmn:endEvent id="O_end"/><bpmn:endEvent id="O_b"/>
+          <bpmn:sequenceFlow id="O0" sourceRef="O_start" targetRef="Inner"/>
+          <bpmn:sequenceFlow id="O1" sourceRef="Inner" targetRef="O_end"/>
+          <bpmn:sequenceFlow id="O2" sourceRef="B_inner" targetRef="O_b"/>
+        </bpmn:subProcess>
+        <bpmn:boundaryEvent id="B_outer" attachedToRef="Outer"><bpmn:errorEventDefinition errorRef="Err_A"/></bpmn:boundaryEvent>
+        <bpmn:endEvent id="E_ok"/><bpmn:endEvent id="E_caught"/>
+        <bpmn:sequenceFlow id="F0" sourceRef="Start" targetRef="Outer"/>
+        <bpmn:sequenceFlow id="F1" sourceRef="Outer" targetRef="E_ok"/>
+        <bpmn:sequenceFlow id="F2" sourceRef="B_outer" targetRef="E_caught"/>"#,
+        ERRORS,
+    );
+    let r = run(&p, &base(4, ""));
+    assert_eq!(r.cases_completed, 4);
+    assert_eq!(ends(&r, "E_caught"), 4);
+    assert_eq!(ends(&r, "O_b") + ends(&r, "O_end") + ends(&r, "E_ok"), 0);
+}
+
+#[test]
+fn an_error_in_a_called_process_is_caught_at_the_call_activity() {
+    let mut p = model_with(
+        r#"
+        <bpmn:startEvent id="Start"/>
+        <bpmn:callActivity id="Call" calledElement="Child"/>
+        <bpmn:boundaryEvent id="B_call" attachedToRef="Call"><bpmn:errorEventDefinition errorRef="Err_A"/></bpmn:boundaryEvent>
+        <bpmn:endEvent id="E_ok"/><bpmn:endEvent id="E_caught"/>
+        <bpmn:sequenceFlow id="F0" sourceRef="Start" targetRef="Call"/>
+        <bpmn:sequenceFlow id="F1" sourceRef="Call" targetRef="E_ok"/>
+        <bpmn:sequenceFlow id="F2" sourceRef="B_call" targetRef="E_caught"/>"#,
+        ERRORS,
+    );
+    // The child file declares its own error element with the same code.
+    p.add_source(
+        "child.bpmn",
+        &format!(
+            r#"<bpmn:definitions {NS} id="C"><bpmn:error id="Child_Err" errorCode="A"/>
+            <bpmn:process id="Child">
+              <bpmn:startEvent id="C_start"/><bpmn:task id="C_work"/>
+              <bpmn:endEvent id="C_err"><bpmn:errorEventDefinition errorRef="Child_Err"/></bpmn:endEvent>
+              <bpmn:sequenceFlow id="C0" sourceRef="C_start" targetRef="C_work"/>
+              <bpmn:sequenceFlow id="C1" sourceRef="C_work" targetRef="C_err"/>
+            </bpmn:process></bpmn:definitions>"#
+        ),
+    )
+    .unwrap();
+    let r = run(&p, &base(5, &fixed("C_work", 10)));
+    assert_eq!(r.cases_completed, 5);
+    assert!(r.stuck.is_empty(), "{:?}", r.stuck);
+    assert_eq!(ends(&r, "E_caught"), 5);
+    assert_eq!(ends(&r, "E_ok"), 0);
+    assert!((r.case_cycle_time.mean - 600.0).abs() < 1e-9);
+}
+
+/// `Sub` throws escalation X from an intermediate event, then runs `Work` (10 min).
+fn escalating(interrupting: bool) -> Project {
+    model_with(
+        &format!(
+            r#"
+        <bpmn:startEvent id="Start"/>
+        <bpmn:subProcess id="Sub">
+          <bpmn:startEvent id="S_start"/>
+          <bpmn:intermediateThrowEvent id="Esc"><bpmn:escalationEventDefinition escalationRef="Esc_X"/></bpmn:intermediateThrowEvent>
+          <bpmn:task id="Work"/><bpmn:endEvent id="S_end"/>
+          <bpmn:sequenceFlow id="S0" sourceRef="S_start" targetRef="Esc"/>
+          <bpmn:sequenceFlow id="S1" sourceRef="Esc" targetRef="Work"/>
+          <bpmn:sequenceFlow id="S2" sourceRef="Work" targetRef="S_end"/>
+        </bpmn:subProcess>
+        <bpmn:boundaryEvent id="B_esc" attachedToRef="Sub" cancelActivity="{interrupting}"><bpmn:escalationEventDefinition escalationRef="Esc_X"/></bpmn:boundaryEvent>
+        <bpmn:task id="Notify"/>
+        <bpmn:endEvent id="E_ok"/><bpmn:endEvent id="E_notified"/>
+        <bpmn:sequenceFlow id="F0" sourceRef="Start" targetRef="Sub"/>
+        <bpmn:sequenceFlow id="F1" sourceRef="Sub" targetRef="E_ok"/>
+        <bpmn:sequenceFlow id="F2" sourceRef="B_esc" targetRef="Notify"/>
+        <bpmn:sequenceFlow id="F3" sourceRef="Notify" targetRef="E_notified"/>"#
+        ),
+        ERRORS,
+    )
+}
+
+#[test]
+fn a_non_interrupting_escalation_starts_its_boundary_path_and_the_thrower_goes_on() {
+    let r = run(
+        &escalating(false),
+        &base(5, &format!("{}{}", fixed("Work", 10), fixed("Notify", 5))),
+    );
+    assert_eq!(r.cases_completed, 5);
+    assert_eq!((runs(&r, "Work"), runs(&r, "Notify")), (5, 5));
+    assert_eq!((ends(&r, "E_ok"), ends(&r, "E_notified")), (5, 5));
+}
+
+#[test]
+fn an_interrupting_escalation_cancels_the_subprocess() {
+    let r = run(
+        &escalating(true),
+        &base(5, &format!("{}{}", fixed("Work", 10), fixed("Notify", 5))),
+    );
+    assert_eq!(r.cases_completed, 5);
+    assert_eq!((runs(&r, "Work"), runs(&r, "Notify")), (0, 5));
+    assert_eq!((ends(&r, "E_ok"), ends(&r, "E_notified")), (0, 5));
+}
+
+#[test]
+fn an_uncaught_escalation_has_no_effect() {
+    // Nothing catches it at the top level of the process: the token just goes on.
+    let p = model_with(
+        r#"
+        <bpmn:startEvent id="Start"/>
+        <bpmn:intermediateThrowEvent id="Esc"><bpmn:escalationEventDefinition escalationRef="Esc_X"/></bpmn:intermediateThrowEvent>
+        <bpmn:endEvent id="E_ok"/>
+        <bpmn:sequenceFlow id="F0" sourceRef="Start" targetRef="Esc"/>
+        <bpmn:sequenceFlow id="F1" sourceRef="Esc" targetRef="E_ok"/>"#,
+        ERRORS,
+    );
+    assert_eq!(
+        p.node(&q("Esc")).unwrap().event_defs,
+        [EventDef::Escalation(Some("X".into()))]
+    );
+    let r = run(&p, &base(3, ""));
+    assert_eq!(ends(&r, "E_ok"), 3);
+}
+
+#[test]
+fn error_boundaries_on_subprocesses_need_no_probability_but_on_tasks_they_do() {
+    // Bound without a [boundary] entry (the scenarios above); a task's error boundary still
+    // needs one, nothing in the model can throw it.
+    let p = model(
+        r#"
+        <bpmn:startEvent id="Start"/><bpmn:task id="T"/><bpmn:endEvent id="E"/>
+        <bpmn:boundaryEvent id="B" attachedToRef="T"><bpmn:errorEventDefinition/></bpmn:boundaryEvent>
+        <bpmn:sequenceFlow id="F0" sourceRef="Start" targetRef="T"/>
+        <bpmn:sequenceFlow id="F1" sourceRef="T" targetRef="E"/>
+        <bpmn:sequenceFlow id="F2" sourceRef="B" targetRef="E"/>"#,
+    );
+    let e = bind_err(&p, &base(1, &fixed("T", 5)));
+    assert!(e.contains("needs a [boundary] entry"), "{e}");
+    // A probability on a subprocess's error boundary adds failures on top of thrown errors.
+    let s = format!(
+        "{}[boundary.B_any]\nprobability = 1.0\ndelay = {{ dist = \"fixed\", value = \"1m\" }}\n",
+        error_scenario()
+    );
+    let r = run(
+        &erroring(r#"errorRef="Err_A""#, &format!("{ON_A}{ON_ANY}")),
+        &s,
+    );
+    assert_eq!((runs(&r, "Handle"), runs(&r, "Other")), (0, 10));
+}
+
+#[test]
+fn the_token_game_catches_thrown_errors_too() {
+    let mut g = Game::new(Arc::new(erroring(r#"errorRef="Err_A""#, ON_A)));
+    g.stop_at_events = false;
+    g.apply(Action::Start { event: q("Start") }).unwrap();
+    let work = g
+        .pending()
+        .into_iter()
+        .find_map(|p| match p {
+            Pending::Complete { token, task } if task == q("Work") => Some(token),
+            _ => None,
+        })
+        .expect("Work waits");
+    g.apply(Action::Complete { token: work }).unwrap();
+    let at: Vec<String> = g.tokens().iter().map(|t| t.node.id.clone()).collect();
+    assert_eq!(at, ["Handle"]);
+    assert!(
+        g.log.iter().any(|l| l == "error 'A' caught by 'B_A'"),
+        "{:?}",
+        g.log
+    );
+}

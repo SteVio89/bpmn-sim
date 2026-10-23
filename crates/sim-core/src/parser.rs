@@ -81,17 +81,24 @@ impl Parser<'_> {
     }
 
     fn read_definitions(&mut self, root: Node) -> Result<(), ParseError> {
-        // Messages and signals first: event definitions refer to them.
+        // Messages, signals, errors and escalations first: event definitions refer to them.
         for c in bpmn_children(root) {
             let kind = c.tag_name().name();
-            if kind == "message" || kind == "signal" {
+            if matches!(kind, "message" | "signal" | "error" | "escalation") {
                 let id = self.required_id(c)?;
                 let name = c.attribute("name").unwrap_or(&id).to_string();
-                if kind == "message" {
-                    self.out.messages.insert(id, name);
-                } else {
-                    self.out.signals.insert(id, name);
-                }
+                // Errors and escalations are matched by code, also across files.
+                let code = |attr: &str| {
+                    c.attribute(attr)
+                        .filter(|v| !v.is_empty())
+                        .map_or_else(|| name.clone(), str::to_string)
+                };
+                match kind {
+                    "message" => self.out.messages.insert(id, name),
+                    "signal" => self.out.signals.insert(id, name.clone()),
+                    "error" => self.out.errors.insert(id, code("errorCode")),
+                    _ => self.out.escalations.insert(id, code("escalationCode")),
+                };
             }
         }
         for c in bpmn_children(root) {
@@ -466,8 +473,22 @@ impl Parser<'_> {
             "linkEventDefinition" => {
                 EventDef::Link(d.attribute("name").unwrap_or_default().to_string())
             }
-            "errorEventDefinition" => EventDef::Error,
-            "escalationEventDefinition" => EventDef::Escalation,
+            "errorEventDefinition" => EventDef::Error(d.attribute("errorRef").map(|r| {
+                self.out
+                    .errors
+                    .get(r)
+                    .cloned()
+                    .unwrap_or_else(|| r.to_string())
+            })),
+            "escalationEventDefinition" => {
+                EventDef::Escalation(d.attribute("escalationRef").map(|r| {
+                    self.out
+                        .escalations
+                        .get(r)
+                        .cloned()
+                        .unwrap_or_else(|| r.to_string())
+                }))
+            }
             "terminateEventDefinition" => EventDef::Terminate,
             other => EventDef::Unsupported(other.to_string()),
         }
