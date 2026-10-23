@@ -1,4 +1,5 @@
 mod app;
+mod diagram_panel;
 mod job;
 mod model_panel;
 mod results_panel;

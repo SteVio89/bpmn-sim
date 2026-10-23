@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL" id="Defs_V13">
+<bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL" xmlns:bpmndi="http://www.omg.org/spec/BPMN/20100524/DI" xmlns:dc="http://www.omg.org/spec/DD/20100524/DC" xmlns:di="http://www.omg.org/spec/DD/20100524/DI" id="Defs_V13">
   <bpmn:collaboration id="Collab">
     <bpmn:participant id="Part_Support" name="Support" processRef="Process_V13"/>
   </bpmn:collaboration>
@@ -39,4 +39,34 @@
     <bpmn:sequenceFlow id="F11" sourceRef="Join" targetRef="Task_Close"/>
     <bpmn:sequenceFlow id="F12" sourceRef="Task_Close" targetRef="End"/>
   </bpmn:process>
+  <bpmndi:BPMNDiagram id="Diagram_1">
+    <bpmndi:BPMNPlane id="Plane_1" bpmnElement="Collab">
+      <bpmndi:BPMNShape id="Part_Support_di" bpmnElement="Part_Support" isHorizontal="true"><dc:Bounds x="100" y="50" width="1200" height="400"/></bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Lane_Clerks_di" bpmnElement="Lane_Clerks" isHorizontal="true"><dc:Bounds x="130" y="50" width="1170" height="200"/></bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Lane_Experts_di" bpmnElement="Lane_Experts" isHorizontal="true"><dc:Bounds x="130" y="250" width="1170" height="200"/></bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Start_di" bpmnElement="Start"><dc:Bounds x="170" y="132" width="36" height="36"/></bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Task_Intake_di" bpmnElement="Task_Intake"><dc:Bounds x="250" y="110" width="100" height="80"/></bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Split_di" bpmnElement="Split"><dc:Bounds x="400" y="125" width="50" height="50"/></bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Task_Simple_di" bpmnElement="Task_Simple"><dc:Bounds x="520" y="60" width="100" height="80"/></bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="And_Split_di" bpmnElement="And_Split"><dc:Bounds x="520" y="175" width="50" height="50"/></bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Task_Review_di" bpmnElement="Task_Review"><dc:Bounds x="640" y="160" width="100" height="80"/></bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Task_Check_di" bpmnElement="Task_Check"><dc:Bounds x="640" y="300" width="100" height="80"/></bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="And_Join_di" bpmnElement="And_Join"><dc:Bounds x="800" y="175" width="50" height="50"/></bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Join_di" bpmnElement="Join"><dc:Bounds x="900" y="125" width="50" height="50"/></bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Task_Close_di" bpmnElement="Task_Close"><dc:Bounds x="1000" y="300" width="100" height="80"/></bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="End_di" bpmnElement="End"><dc:Bounds x="1180" y="322" width="36" height="36"/></bpmndi:BPMNShape>
+      <bpmndi:BPMNEdge id="F1_di" bpmnElement="F1"><di:waypoint x="206" y="150"/><di:waypoint x="250" y="150"/></bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="F2_di" bpmnElement="F2"><di:waypoint x="350" y="150"/><di:waypoint x="400" y="150"/></bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_simple_di" bpmnElement="Flow_simple"><di:waypoint x="450" y="150"/><di:waypoint x="485" y="150"/><di:waypoint x="485" y="100"/><di:waypoint x="520" y="100"/></bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_complex_di" bpmnElement="Flow_complex"><di:waypoint x="450" y="150"/><di:waypoint x="485" y="150"/><di:waypoint x="485" y="200"/><di:waypoint x="520" y="200"/></bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="F5_di" bpmnElement="F5"><di:waypoint x="620" y="100"/><di:waypoint x="760" y="100"/><di:waypoint x="760" y="150"/><di:waypoint x="900" y="150"/></bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="F6_di" bpmnElement="F6"><di:waypoint x="570" y="200"/><di:waypoint x="605" y="200"/><di:waypoint x="605" y="340"/><di:waypoint x="640" y="340"/></bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="F7_di" bpmnElement="F7"><di:waypoint x="570" y="200"/><di:waypoint x="640" y="200"/></bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="F8_di" bpmnElement="F8"><di:waypoint x="740" y="340"/><di:waypoint x="770" y="340"/><di:waypoint x="770" y="200"/><di:waypoint x="800" y="200"/></bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="F9_di" bpmnElement="F9"><di:waypoint x="740" y="200"/><di:waypoint x="800" y="200"/></bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="F10_di" bpmnElement="F10"><di:waypoint x="850" y="200"/><di:waypoint x="875" y="200"/><di:waypoint x="875" y="150"/><di:waypoint x="900" y="150"/></bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="F11_di" bpmnElement="F11"><di:waypoint x="950" y="150"/><di:waypoint x="975" y="150"/><di:waypoint x="975" y="340"/><di:waypoint x="1000" y="340"/></bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="F12_di" bpmnElement="F12"><di:waypoint x="1100" y="340"/><di:waypoint x="1180" y="340"/></bpmndi:BPMNEdge>
+    </bpmndi:BPMNPlane>
+  </bpmndi:BPMNDiagram>
 </bpmn:definitions>

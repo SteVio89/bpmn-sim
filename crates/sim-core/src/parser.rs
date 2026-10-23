@@ -11,6 +11,9 @@ use crate::model::*;
 
 const BPMN_NS: &str = "http://www.omg.org/spec/BPMN/20100524/MODEL";
 const ZEEBE_NS: &str = "http://camunda.org/schema/zeebe/1.0";
+const BPMNDI_NS: &str = "http://www.omg.org/spec/BPMN/20100524/DI";
+const DC_NS: &str = "http://www.omg.org/spec/DD/20100524/DC";
+const DI_NS: &str = "http://www.omg.org/spec/DD/20100524/DI";
 
 /// Parse one BPMN file. `file` is the file name used in qualified ids and error messages.
 pub fn parse_file(file: &str, xml: &str) -> Result<BpmnFile, ParseError> {
@@ -98,7 +101,61 @@ impl Parser<'_> {
                 _ => {}
             }
         }
+        self.read_diagram(root);
         self.check_references()
+    }
+
+    /// Shapes and edges of the first `bpmndi:BPMNDiagram`. Layout problems never fail parsing:
+    /// shapes without usable bounds are skipped.
+    fn read_diagram(&mut self, root: Node) {
+        let in_ns = |n: &Node, ns: &str, local: &str| {
+            n.is_element() && n.tag_name().name() == local && n.tag_name().namespace() == Some(ns)
+        };
+        let Some(diagram) = root.children().find(|c| in_ns(c, BPMNDI_NS, "BPMNDiagram")) else {
+            return;
+        };
+        let num = |n: &Node, a: &str| n.attribute(a).and_then(|v| v.parse::<f64>().ok());
+        for plane in diagram
+            .children()
+            .filter(|c| in_ns(c, BPMNDI_NS, "BPMNPlane"))
+        {
+            for el in plane.children().filter(|c| c.is_element()) {
+                let Some(target) = el.attribute("bpmnElement") else {
+                    continue;
+                };
+                let q = self.qid(target);
+                if in_ns(&el, BPMNDI_NS, "BPMNShape") {
+                    let b = el.children().find(|c| in_ns(c, DC_NS, "Bounds"));
+                    if let Some(b) = b
+                        && let (Some(x), Some(y), Some(width), Some(height)) = (
+                            num(&b, "x"),
+                            num(&b, "y"),
+                            num(&b, "width"),
+                            num(&b, "height"),
+                        )
+                    {
+                        self.out.diagram.shapes.insert(
+                            q,
+                            Bounds {
+                                x,
+                                y,
+                                width,
+                                height,
+                            },
+                        );
+                    }
+                } else if in_ns(&el, BPMNDI_NS, "BPMNEdge") {
+                    let points: Vec<(f64, f64)> = el
+                        .children()
+                        .filter(|c| in_ns(c, DI_NS, "waypoint"))
+                        .filter_map(|w| Some((num(&w, "x")?, num(&w, "y")?)))
+                        .collect();
+                    if points.len() >= 2 {
+                        self.out.diagram.edges.insert(q, points);
+                    }
+                }
+            }
+        }
     }
 
     fn read_collaboration(&mut self, n: Node) -> Result<(), ParseError> {
@@ -139,8 +196,13 @@ impl Parser<'_> {
 
         let mut lane_of: BTreeMap<String, String> = BTreeMap::new();
         let mut lanes = Vec::new();
+        let mut lane_ids = Vec::new();
         for ls in bpmn_children(n).filter(|c| c.tag_name().name() == "laneSet") {
-            self.read_lanes(ls, &mut lane_of, &mut lanes);
+            self.read_lanes(ls, &mut lane_of, &mut lanes, &mut lane_ids);
+        }
+        for (id, name) in lane_ids {
+            let q = self.qid(&id);
+            self.out.lanes.insert(q, name);
         }
 
         let mut flows = Vec::new();
@@ -198,6 +260,7 @@ impl Parser<'_> {
         set: Node,
         lane_of: &mut BTreeMap<String, String>,
         lanes: &mut Vec<String>,
+        lane_ids: &mut Vec<(String, String)>,
     ) {
         for lane in bpmn_children(set).filter(|c| c.tag_name().name() == "lane") {
             let name = lane
@@ -206,13 +269,16 @@ impl Parser<'_> {
                 .unwrap_or_default()
                 .to_string();
             lanes.push(name.clone());
+            if let Some(id) = lane.attribute("id") {
+                lane_ids.push((id.to_string(), name.clone()));
+            }
             for r in bpmn_children(lane).filter(|c| c.tag_name().name() == "flowNodeRef") {
                 if let Some(text) = r.text() {
                     lane_of.insert(text.trim().to_string(), name.clone());
                 }
             }
             for child in bpmn_children(lane).filter(|c| c.tag_name().name() == "childLaneSet") {
-                self.read_lanes(child, lane_of, lanes);
+                self.read_lanes(child, lane_of, lanes, lane_ids);
             }
         }
     }

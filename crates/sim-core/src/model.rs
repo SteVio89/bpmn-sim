@@ -174,6 +174,27 @@ pub struct BpmnFile {
     pub signals: BTreeMap<String, String>,
     /// Message id -> message name.
     pub messages: BTreeMap<String, String>,
+    /// Lane id -> lane name.
+    pub lanes: BTreeMap<QId, String>,
+    /// BPMNDI layout of the file's first diagram (only used for drawing).
+    pub diagram: Diagram,
+}
+
+/// Rectangle in diagram coordinates (BPMNDI `dc:Bounds`).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Bounds {
+    pub x: f64,
+    pub y: f64,
+    pub width: f64,
+    pub height: f64,
+}
+
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct Diagram {
+    /// Element (flow node, participant or lane) -> its shape.
+    pub shapes: BTreeMap<QId, Bounds>,
+    /// Sequence or message flow -> waypoints.
+    pub edges: BTreeMap<QId, Vec<(f64, f64)>>,
 }
 
 impl serde::Serialize for QId {

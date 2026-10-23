@@ -14,6 +14,7 @@ pub enum Tab {
     Scenario,
     Run,
     Results,
+    Diagram,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Default)]
@@ -45,6 +46,7 @@ pub struct App {
     pub results: Option<RunResults>,
     pub rep: usize,
     pub results_tab: ResultsTab,
+    pub diagram: crate::diagram_panel::DiagramView,
 }
 
 impl Default for App {
@@ -61,6 +63,7 @@ impl Default for App {
             results: None,
             rep: 0,
             results_tab: ResultsTab::default(),
+            diagram: Default::default(),
         }
     }
 }
@@ -126,6 +129,7 @@ impl App {
                     (Tab::Scenario, "Scenario"),
                     (Tab::Run, "Run"),
                     (Tab::Results, "Results"),
+                    (Tab::Diagram, "Diagram"),
                 ] {
                     ui.selectable_value(&mut self.tab, tab, name);
                 }
@@ -147,6 +151,7 @@ impl App {
             Tab::Scenario => crate::scenario_panel::show(self, ui),
             Tab::Run => crate::scenario_panel::show_run(self, ui),
             Tab::Results => crate::results_panel::show(self, ui),
+            Tab::Diagram => crate::diagram_panel::show(self, ui),
         });
     }
 }
@@ -334,6 +339,138 @@ mod tests {
             app.results_tab = t;
             frames(&mut app, &ctx, 2);
         }
+    }
+
+    fn frame_with(app: &mut App, ctx: &egui::Context, events: Vec<egui::Event>) {
+        let input = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(1200.0, 800.0),
+            )),
+            events,
+            ..Default::default()
+        };
+        let mut out = ctx.run_ui(input, |ui| app.draw(ui));
+        out.textures_delta.clear();
+    }
+
+    #[test]
+    fn diagram_draws_pans_zooms_and_replays() {
+        let ctx = egui::Context::default();
+        let mut app = App::default();
+        app.ws.open(&fixtures().join("v13-model.bpmn"));
+        app.tab = Tab::Diagram;
+        // Without results: the layout alone.
+        for _ in 0..3 {
+            frame_with(&mut app, &ctx, vec![]);
+        }
+        assert!(!app.diagram.fit, "the view was fitted to the diagram");
+        let zoom = app.diagram.zoom;
+        assert!(zoom > 0.1 && zoom < 5.0, "{zoom}");
+
+        // Drag pans the view.
+        let pan = app.diagram.pan;
+        let at = |x: f32, y: f32| egui::pos2(x, y);
+        let press = |p, pressed| egui::Event::PointerButton {
+            pos: p,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: egui::Modifiers::NONE,
+        };
+        frame_with(
+            &mut app,
+            &ctx,
+            vec![
+                egui::Event::PointerMoved(at(600.0, 400.0)),
+                press(at(600.0, 400.0), true),
+            ],
+        );
+        for k in 1..=5 {
+            frame_with(
+                &mut app,
+                &ctx,
+                vec![egui::Event::PointerMoved(at(
+                    600.0 + 20.0 * k as f32,
+                    400.0,
+                ))],
+            );
+        }
+        frame_with(&mut app, &ctx, vec![press(at(700.0, 400.0), false)]);
+        assert!(
+            app.diagram.pan.x > pan.x + 50.0,
+            "{:?} -> {:?}",
+            pan,
+            app.diagram.pan
+        );
+
+        // The mouse wheel zooms in.
+        let wheel = egui::Event::MouseWheel {
+            unit: egui::MouseWheelUnit::Point,
+            delta: egui::vec2(0.0, 120.0),
+            phase: egui::TouchPhase::Move,
+            source: egui::MouseWheelSource::Unknown,
+            modifiers: egui::Modifiers::NONE,
+        };
+        frame_with(
+            &mut app,
+            &ctx,
+            vec![egui::Event::PointerMoved(at(600.0, 400.0)), wheel],
+        );
+        for _ in 0..30 {
+            frame_with(&mut app, &ctx, vec![]);
+        }
+        assert!(
+            app.diagram.zoom > zoom * 1.05,
+            "{zoom} -> {}",
+            app.diagram.zoom
+        );
+
+        // With results: every heat metric and replay (also playing) draws.
+        app.regenerate_skeleton();
+        app.scenario.simulation.cases = Some(50);
+        app.start_run(&ctx);
+        let deadline = Instant::now() + Duration::from_secs(20);
+        while app.results.is_none() {
+            assert!(
+                Instant::now() < deadline && app.run_error.is_none(),
+                "{:?}",
+                app.run_error
+            );
+            std::thread::sleep(Duration::from_millis(10));
+            frames(&mut app, &ctx, 1);
+        }
+        app.tab = Tab::Diagram;
+        for m in [
+            Some(sim_core::diagram::HeatMetric::Waiting),
+            Some(sim_core::diagram::HeatMetric::Processing),
+            Some(sim_core::diagram::HeatMetric::Runs),
+            Some(sim_core::diagram::HeatMetric::Utilisation),
+            None,
+        ] {
+            app.diagram.metric = m;
+            frame_with(
+                &mut app,
+                &ctx,
+                vec![egui::Event::PointerMoved(at(300.0, 300.0))],
+            );
+        }
+        app.diagram.replay = true;
+        app.diagram.playing = true;
+        for _ in 0..10 {
+            frame_with(&mut app, &ctx, vec![]);
+        }
+        assert!(app.diagram.time > 0.0, "replay advances while playing");
+    }
+
+    #[test]
+    fn diagram_tab_without_layout_says_so() {
+        let ctx = egui::Context::default();
+        let mut app = App::default();
+        app.ws.open(&fixtures().join("v1-single-task.bpmn"));
+        app.tab = Tab::Diagram;
+        frames(&mut app, &ctx, 2);
+        app.ws.open(&fixtures().join("multi-file/main.bpmn"));
+        frames(&mut app, &ctx, 2);
     }
 
     #[test]

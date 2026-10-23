@@ -3,6 +3,7 @@
 
 pub mod aggregate;
 pub mod calendar;
+pub mod diagram;
 pub mod dist;
 pub mod dmn;
 pub mod engine;
