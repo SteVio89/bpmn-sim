@@ -12,6 +12,7 @@ pub mod export;
 pub mod feel;
 pub mod manual;
 pub mod model;
+pub mod needs;
 pub mod parser;
 pub mod project;
 pub mod scenario;
