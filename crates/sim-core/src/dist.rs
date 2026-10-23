@@ -168,3 +168,28 @@ impl Dist {
         }
     }
 }
+
+impl DistSpec {
+    /// Expected value in seconds (normal: before the cut-off at 0).
+    pub fn mean(&self) -> f64 {
+        match self {
+            DistSpec::Fixed { value } => value.0,
+            DistSpec::Uniform { min, max } => (min.0 + max.0) / 2.0,
+            DistSpec::Normal { mean, .. }
+            | DistSpec::Exponential { mean }
+            | DistSpec::Lognormal { mean, .. } => mean.0,
+            DistSpec::Triangular { min, mode, max } => (min.0 + mode.0 + max.0) / 3.0,
+        }
+    }
+
+    /// `n` samples as the simulation draws them (cut off at 0), sorted; always the same
+    /// for the same distribution. For previews.
+    pub fn preview(&self, n: usize) -> Result<Vec<f64>, String> {
+        use rand::SeedableRng;
+        let d = Dist::new(self)?;
+        let mut rng = rand_chacha::ChaCha8Rng::seed_from_u64(7);
+        let mut v: Vec<f64> = (0..n).map(|_| d.sample(&mut rng)).collect();
+        v.sort_by(f64::total_cmp);
+        Ok(v)
+    }
+}

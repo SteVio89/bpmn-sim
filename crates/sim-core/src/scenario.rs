@@ -23,7 +23,7 @@ pub enum ScenarioError {
     Many(Vec<String>),
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Scenario {
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -59,7 +59,7 @@ pub struct Scenario {
     pub loops: BTreeMap<String, LoopSpec>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct MultiInstanceSpec {
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -69,14 +69,14 @@ pub struct MultiInstanceSpec {
 
 /// A number of instances: `count = 3` or a distribution of plain numbers (rounded; a uniform
 /// distribution draws whole numbers from `min` to `max` with equal chances).
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum CountSpec {
     Fixed(u32),
     Dist(NumberSpec),
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct LoopSpec {
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -86,7 +86,7 @@ pub struct LoopSpec {
     pub repeat_probability: f64,
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct DecisionSpec {
     pub label: Option<String>,
@@ -97,7 +97,7 @@ pub struct DecisionSpec {
 
 /// A decision input: a number distribution (`dist = ...`, plain numbers, no time units),
 /// a categorical choice (`choice = { gold = 0.2, silver = 0.8 }`) or a boolean (`p_true = 0.3`).
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum InputSpec {
     Choice(ChoiceSpec),
@@ -105,19 +105,19 @@ pub enum InputSpec {
     Number(NumberSpec),
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ChoiceSpec {
     pub choice: BTreeMap<String, f64>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ChanceSpec {
     pub p_true: f64,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "dist", rename_all = "lowercase", deny_unknown_fields)]
 pub enum NumberSpec {
     Fixed { value: f64 },
@@ -205,7 +205,7 @@ pub struct ConditionCfg {
     pub default: Option<QId>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct EventSpec {
     pub label: Option<String>,
@@ -214,7 +214,7 @@ pub struct EventSpec {
 
 /// Timer boundary: `delay` (+ optional `probability`, default 1). Error/escalation boundary:
 /// `probability` and `delay` (time after the activity was activated). Message/signal boundary: none.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct BoundarySpec {
     pub label: Option<String>,
@@ -222,7 +222,7 @@ pub struct BoundarySpec {
     pub delay: Option<DistSpec>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct MessagesSection {
     /// Keep messages that arrive before the receiver waits (otherwise they are lost, spec §5.3).
@@ -255,7 +255,7 @@ pub enum SignalScope {
     Global,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ModelSection {
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -264,7 +264,7 @@ pub struct ModelSection {
     pub files: Option<Vec<String>>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SimulationSection {
     #[serde(default = "default_seed")]
@@ -353,7 +353,7 @@ impl TimeUnit {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ArrivalSpec {
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -362,7 +362,7 @@ pub struct ArrivalSpec {
     pub triggers: Vec<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ResourceSpec {
     pub count: u32,
@@ -372,7 +372,7 @@ pub struct ResourceSpec {
     pub calendar: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ActivitySpec {
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -384,7 +384,7 @@ pub struct ActivitySpec {
     pub resource: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct GatewaySpec {
     #[serde(default, skip_serializing_if = "Option::is_none")]

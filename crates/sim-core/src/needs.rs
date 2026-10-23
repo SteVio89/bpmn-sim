@@ -141,6 +141,16 @@ pub fn default_pool(project: &Project, n: &FlowNode) -> Option<String> {
         .or_else(|| project.participant_name(&n.process).map(str::to_string))
 }
 
+/// Whether arrivals can start cases at `n`: a none or timer start event at the top level of
+/// a process.
+pub fn is_arrival_start(n: &FlowNode) -> bool {
+    n.kind == NodeKind::StartEvent
+        && n.parent.is_none()
+        && n.event_defs
+            .iter()
+            .all(|d| matches!(d, EventDef::None | EventDef::Timer))
+}
+
 /// The key under which `map` configures element `q`: its qualified id, or its bare id when
 /// that is unique in the project.
 pub fn key_of<T>(map: &BTreeMap<String, T>, project: &Project, q: &QId) -> Option<String> {
@@ -203,6 +213,22 @@ impl Scenario {
             .any(|d| d.inputs.contains_key(input))
     }
 
+    /// Indices of the arrival generators that fire start event `q`.
+    pub fn arrivals_of(&self, project: &Project, q: &QId) -> Vec<usize> {
+        let full = q.to_string();
+        let unique = project.nodes().filter(|n| n.id.id == q.id).count() == 1;
+        self.arrivals
+            .iter()
+            .enumerate()
+            .filter(|(_, a)| {
+                a.triggers
+                    .iter()
+                    .any(|t| *t == full || (unique && *t == q.id))
+            })
+            .map(|(i, _)| i)
+            .collect()
+    }
+
     /// The needs of `n` that the scenario does not cover yet.
     pub fn missing(&self, project: &Project, n: &FlowNode) -> Vec<Need> {
         needs(project, n)
@@ -235,124 +261,11 @@ impl Scenario {
     pub fn update_from_model(&mut self, project: &Project) -> Update {
         let mut u = Update::default();
         for n in project.nodes() {
-            let missing = self.missing(project, n);
-            if !missing.is_empty() {
+            let (added, pool) = self.fill(project, n);
+            if added {
                 u.added.push(n.id.clone());
             }
-            let key = n.id.to_string();
-            for need in missing {
-                match need {
-                    Need::Duration => {
-                        self.activities.insert(
-                            key.clone(),
-                            ActivitySpec {
-                                label: n.name.clone(),
-                                duration: fixed(600.0),
-                                fixed_cost: 0.0,
-                                resource: None,
-                            },
-                        );
-                    }
-                    Need::Branching { inclusive } => {
-                        // Inclusive: each non-default flow taken half of the time; XOR: equal shares.
-                        let flows: Vec<&QId> = n
-                            .outgoing
-                            .iter()
-                            .filter(|f| !inclusive || n.default_flow.as_ref() != Some(*f))
-                            .collect();
-                        let p = if inclusive {
-                            0.5
-                        } else {
-                            1.0 / flows.len() as f64
-                        };
-                        self.gateways.insert(
-                            key.clone(),
-                            GatewaySpec {
-                                label: n.name.clone(),
-                                probabilities: flows.iter().map(|f| (f.id.clone(), p)).collect(),
-                            },
-                        );
-                    }
-                    Need::Delay => {
-                        self.events.insert(
-                            key.clone(),
-                            EventSpec {
-                                label: n.name.clone(),
-                                delay: fixed(3600.0),
-                            },
-                        );
-                    }
-                    Need::Boundary { probability } => {
-                        let entry = key_of(&self.boundary, project, &n.id).unwrap_or(key.clone());
-                        let b = self.boundary.entry(entry).or_insert(BoundarySpec {
-                            label: n.name.clone(),
-                            probability: None,
-                            delay: None,
-                        });
-                        if probability {
-                            b.probability.get_or_insert(0.1);
-                            b.delay.get_or_insert(fixed(600.0));
-                        } else {
-                            b.delay.get_or_insert(fixed(3600.0));
-                        }
-                    }
-                    Need::InstanceCount => {
-                        self.multi_instance.insert(
-                            key.clone(),
-                            MultiInstanceSpec {
-                                label: n.name.clone(),
-                                count: CountSpec::Fixed(3),
-                            },
-                        );
-                    }
-                    Need::Repeat => {
-                        self.loops.insert(
-                            key.clone(),
-                            LoopSpec {
-                                label: n.name.clone(),
-                                repeat_probability: 0.2,
-                            },
-                        );
-                    }
-                    Need::DecisionInputs { decision, inputs } => {
-                        for i in inputs {
-                            if !self.has_decision_input(&i) {
-                                self.decisions
-                                    .entry(decision.clone())
-                                    .or_default()
-                                    .inputs
-                                    .insert(
-                                        i,
-                                        InputSpec::Number(NumberSpec::Uniform {
-                                            min: 0.0,
-                                            max: 100.0,
-                                        }),
-                                    );
-                            }
-                        }
-                    }
-                }
-            }
-            if matches!(n.kind, NodeKind::Task(k) if k != TaskKind::Receive) {
-                let spec =
-                    key_of(&self.activities, project, &n.id).and_then(|k| self.activities.get(&k));
-                let pool = spec
-                    .and_then(|s| s.resource.clone())
-                    .or_else(|| default_pool(project, n));
-                if let Some(p) = pool
-                    && !self.resources.contains_key(&p)
-                {
-                    self.resources.insert(
-                        p.clone(),
-                        ResourceSpec {
-                            count: 1,
-                            cost_per_hour: 0.0,
-                            calendar: None,
-                        },
-                    );
-                    u.pools_added.push(p);
-                }
-            }
+            u.pools_added.extend(pool);
         }
         if self.arrivals.is_empty() {
             let main = self
@@ -362,14 +275,7 @@ impl Scenario {
                 .or_else(|| project.files.keys().next().cloned());
             let triggers: Vec<String> = project
                 .nodes()
-                .filter(|n| {
-                    n.kind == NodeKind::StartEvent
-                        && n.parent.is_none()
-                        && Some(&n.id.file) == main.as_ref()
-                        && n.event_defs
-                            .iter()
-                            .all(|d| matches!(d, EventDef::None | EventDef::Timer))
-                })
+                .filter(|n| is_arrival_start(n) && Some(&n.id.file) == main.as_ref())
                 .map(|n| n.id.to_string())
                 .collect();
             self.arrivals.push(ArrivalSpec {
@@ -381,6 +287,130 @@ impl Scenario {
         }
         u.orphaned = self.orphans(project);
         u
+    }
+
+    /// Give element `n` placeholder entries for the parameters it is missing and add the
+    /// resource pool it uses if there is none. Returns whether entries were added and the
+    /// pool that was added.
+    pub fn fill(&mut self, project: &Project, n: &FlowNode) -> (bool, Option<String>) {
+        let missing = self.missing(project, n);
+        let added = !missing.is_empty();
+        let mut added_pool = None;
+        let key = n.id.to_string();
+        for need in missing {
+            match need {
+                Need::Duration => {
+                    self.activities.insert(
+                        key.clone(),
+                        ActivitySpec {
+                            label: n.name.clone(),
+                            duration: fixed(600.0),
+                            fixed_cost: 0.0,
+                            resource: None,
+                        },
+                    );
+                }
+                Need::Branching { inclusive } => {
+                    // Inclusive: each non-default flow taken half of the time; XOR: equal shares.
+                    let flows: Vec<&QId> = n
+                        .outgoing
+                        .iter()
+                        .filter(|f| !inclusive || n.default_flow.as_ref() != Some(*f))
+                        .collect();
+                    let p = if inclusive {
+                        0.5
+                    } else {
+                        1.0 / flows.len() as f64
+                    };
+                    self.gateways.insert(
+                        key.clone(),
+                        GatewaySpec {
+                            label: n.name.clone(),
+                            probabilities: flows.iter().map(|f| (f.id.clone(), p)).collect(),
+                        },
+                    );
+                }
+                Need::Delay => {
+                    self.events.insert(
+                        key.clone(),
+                        EventSpec {
+                            label: n.name.clone(),
+                            delay: fixed(3600.0),
+                        },
+                    );
+                }
+                Need::Boundary { probability } => {
+                    let entry = key_of(&self.boundary, project, &n.id).unwrap_or(key.clone());
+                    let b = self.boundary.entry(entry).or_insert(BoundarySpec {
+                        label: n.name.clone(),
+                        probability: None,
+                        delay: None,
+                    });
+                    if probability {
+                        b.probability.get_or_insert(0.1);
+                        b.delay.get_or_insert(fixed(600.0));
+                    } else {
+                        b.delay.get_or_insert(fixed(3600.0));
+                    }
+                }
+                Need::InstanceCount => {
+                    self.multi_instance.insert(
+                        key.clone(),
+                        MultiInstanceSpec {
+                            label: n.name.clone(),
+                            count: CountSpec::Fixed(3),
+                        },
+                    );
+                }
+                Need::Repeat => {
+                    self.loops.insert(
+                        key.clone(),
+                        LoopSpec {
+                            label: n.name.clone(),
+                            repeat_probability: 0.2,
+                        },
+                    );
+                }
+                Need::DecisionInputs { decision, inputs } => {
+                    for i in inputs {
+                        if !self.has_decision_input(&i) {
+                            self.decisions
+                                .entry(decision.clone())
+                                .or_default()
+                                .inputs
+                                .insert(
+                                    i,
+                                    InputSpec::Number(NumberSpec::Uniform {
+                                        min: 0.0,
+                                        max: 100.0,
+                                    }),
+                                );
+                        }
+                    }
+                }
+            }
+        }
+        if matches!(n.kind, NodeKind::Task(k) if k != TaskKind::Receive) {
+            let spec =
+                key_of(&self.activities, project, &n.id).and_then(|k| self.activities.get(&k));
+            let pool = spec
+                .and_then(|s| s.resource.clone())
+                .or_else(|| default_pool(project, n));
+            if let Some(p) = pool
+                && !self.resources.contains_key(&p)
+            {
+                self.resources.insert(
+                    p.clone(),
+                    ResourceSpec {
+                        count: 1,
+                        cost_per_hour: 0.0,
+                        calendar: None,
+                    },
+                );
+                added_pool = Some(p);
+            }
+        }
+        (added, added_pool)
     }
 
     /// Entries (as `section.key`) whose element does not exist in the project.
