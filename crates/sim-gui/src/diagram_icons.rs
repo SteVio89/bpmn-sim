@@ -28,6 +28,11 @@ pub enum Icon {
     Manual,
     /// Collapsed marker (call activity).
     Plus,
+    /// Multi-instance markers: three vertical (parallel) or horizontal (sequential) bars.
+    MultiParallel,
+    MultiSequential,
+    /// Standard loop marker: a circular arrow.
+    Loop,
 }
 
 fn polygon(painter: &Painter, pts: Vec<Pos2>, fill: Color32, stroke: Stroke) {
@@ -186,6 +191,42 @@ pub fn draw(painter: &Painter, icon: Icon, c: Pos2, s: f32, ink: Color32, paper:
             painter.rect_stroke(r, 0.0, st, eframe::egui::StrokeKind::Middle);
             painter.line_segment([p(-0.25, 0.0), p(0.25, 0.0)], st);
             painter.line_segment([p(0.0, -0.25), p(0.0, 0.25)], st);
+        }
+        Icon::MultiParallel | Icon::MultiSequential => {
+            let bar = Stroke::new(st.width * 1.6, ink);
+            for k in [-0.25, 0.0, 0.25] {
+                let line = if icon == Icon::MultiParallel {
+                    [p(k, -0.32), p(k, 0.32)]
+                } else {
+                    [p(-0.32, k), p(0.32, k)]
+                };
+                painter.line_segment(line, bar);
+            }
+        }
+        Icon::Loop => {
+            // An open circle from the top round to the left, with an arrow head at its end.
+            let n = 24;
+            let arc: Vec<Pos2> = (0..=n)
+                .map(|i| {
+                    let a = -PI / 2.0 + 1.6 * PI * i as f32 / n as f32;
+                    c + Vec2::angled(a) * 0.3 * s
+                })
+                .collect();
+            let end = arc[n];
+            painter.add(Shape::line(arc, st));
+            let a = -PI / 2.0 + 1.6 * PI;
+            let tangent = Vec2::angled(a + PI / 2.0);
+            let normal = Vec2::angled(a);
+            polygon(
+                painter,
+                vec![
+                    end + tangent * 0.14 * s,
+                    end + normal * 0.1 * s,
+                    end - normal * 0.1 * s,
+                ],
+                ink,
+                st,
+            );
         }
     }
 }

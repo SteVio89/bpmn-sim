@@ -484,3 +484,252 @@ fn the_token_game_catches_thrown_errors_too() {
         g.log
     );
 }
+
+// ---------------------------------------------------------------- multi-instance and loops
+
+/// `T` (10 min, one resource `Clerk` with `clerks` people) carries `looping`.
+fn looped(looping: &str) -> Project {
+    model(&format!(
+        r#"
+        <bpmn:startEvent id="Start"/>
+        <bpmn:task id="T">{looping}</bpmn:task>
+        <bpmn:endEvent id="E"/>
+        <bpmn:sequenceFlow id="F0" sourceRef="Start" targetRef="T"/>
+        <bpmn:sequenceFlow id="F1" sourceRef="T" targetRef="E"/>"#
+    ))
+}
+
+fn clerks(n: u32, extra: &str) -> String {
+    base(
+        1,
+        &format!(
+            "[resources.Clerk]\ncount = {n}\n[activities.T]\nduration = {{ dist = \"fixed\", value = \"10m\" }}\nresource = \"Clerk\"\n{extra}"
+        ),
+    )
+}
+
+const PARALLEL: &str = r#"<bpmn:multiInstanceLoopCharacteristics/>"#;
+const SEQUENTIAL: &str = r#"<bpmn:multiInstanceLoopCharacteristics isSequential="true"/>"#;
+
+#[test]
+fn parallel_instances_run_at_once_and_compete_for_resources() {
+    let p = looped(PARALLEL);
+    // Four instances, two clerks: two rounds of 10 minutes.
+    let r = run(&p, &clerks(2, "[multi_instance.T]\ncount = 4\n"));
+    assert_eq!(r.cases_completed, 1);
+    assert_eq!(runs(&r, "T"), 4);
+    assert_eq!(ends(&r, "E"), 1);
+    assert!((r.case_cycle_time.mean - 1200.0).abs() < 1e-9);
+    // Enough clerks: all at once.
+    let r = run(&p, &clerks(4, "[multi_instance.T]\ncount = 4\n"));
+    assert!((r.case_cycle_time.mean - 600.0).abs() < 1e-9);
+}
+
+#[test]
+fn sequential_instances_run_one_after_the_other() {
+    let r = run(
+        &looped(SEQUENTIAL),
+        &clerks(4, "[multi_instance.T]\ncount = 3\n"),
+    );
+    assert_eq!(runs(&r, "T"), 3);
+    assert!((r.case_cycle_time.mean - 1800.0).abs() < 1e-9);
+}
+
+#[test]
+fn zero_instances_pass_straight_through() {
+    let r = run(
+        &looped(PARALLEL),
+        &clerks(1, "[multi_instance.T]\ncount = 0\n"),
+    );
+    assert_eq!((r.cases_completed, runs(&r, "T")), (1, 0));
+    assert_eq!(r.case_cycle_time.mean, 0.0);
+}
+
+#[test]
+fn the_count_comes_from_the_model_or_from_a_distribution() {
+    let p = looped(
+        r#"<bpmn:multiInstanceLoopCharacteristics><bpmn:loopCardinality>= 5</bpmn:loopCardinality></bpmn:multiInstanceLoopCharacteristics>"#,
+    );
+    assert_eq!(runs(&run(&p, &clerks(5, "")), "T"), 5);
+    // The scenario overrides the model.
+    assert_eq!(
+        runs(&run(&p, &clerks(5, "[multi_instance.T]\ncount = 2\n")), "T"),
+        2
+    );
+    // A uniform count draws whole numbers with equal chances.
+    let s = base(
+        3000,
+        "[activities.T]\nduration = { dist = \"fixed\", value = \"1m\" }\n[multi_instance.T]\ncount = { dist = \"uniform\", min = 1, max = 3 }\n",
+    );
+    let r = run(&looped(PARALLEL), &s);
+    let mean = runs(&r, "T") as f64 / 3000.0;
+    assert!((mean - 2.0).abs() < 0.06, "mean count {mean}");
+}
+
+#[test]
+fn a_multi_instance_activity_without_a_count_is_a_binding_error() {
+    let e = bind_err(&looped(PARALLEL), &clerks(1, ""));
+    assert!(e.contains("needs a [multi_instance] entry"), "{e}");
+    let e = bind_err(&looped(""), &clerks(1, "[multi_instance.T]\ncount = 2\n"));
+    assert!(e.contains("is not a multi-instance activity"), "{e}");
+}
+
+#[test]
+fn the_input_collection_can_come_from_a_decision() {
+    // `Items` (business rule, COLLECT) produces the list `parts`; `T` runs once per element.
+    let mut p = model(
+        r#"
+        <bpmn:startEvent id="Start"/>
+        <bpmn:businessRuleTask id="Items">
+          <bpmn:extensionElements>
+            <zeebe:calledDecision xmlns:zeebe="http://camunda.org/schema/zeebe/1.0" decisionId="parts" resultVariable="parts"/>
+          </bpmn:extensionElements>
+        </bpmn:businessRuleTask>
+        <bpmn:task id="T">
+          <bpmn:multiInstanceLoopCharacteristics>
+            <bpmn:extensionElements>
+              <zeebe:loopCharacteristics xmlns:zeebe="http://camunda.org/schema/zeebe/1.0" inputCollection="= parts" inputElement="part"/>
+            </bpmn:extensionElements>
+          </bpmn:multiInstanceLoopCharacteristics>
+        </bpmn:task>
+        <bpmn:endEvent id="E"/>
+        <bpmn:sequenceFlow id="F0" sourceRef="Start" targetRef="Items"/>
+        <bpmn:sequenceFlow id="F1" sourceRef="Items" targetRef="T"/>
+        <bpmn:sequenceFlow id="F2" sourceRef="T" targetRef="E"/>"#,
+    );
+    p.add_dmn_source(
+        "parts.dmn",
+        r#"<definitions xmlns="https://www.omg.org/spec/DMN/20191111/MODEL/" id="DD" namespace="x">
+          <decision id="parts" name="Parts">
+            <decisionTable id="T" hitPolicy="COLLECT">
+              <input id="I"><inputExpression id="IE" typeRef="number"><text>size</text></inputExpression></input>
+              <output id="O" name="part" typeRef="string"/>
+              <rule id="R1"><inputEntry id="R1I"><text>-</text></inputEntry><outputEntry id="R1O"><text>"frame"</text></outputEntry></rule>
+              <rule id="R2"><inputEntry id="R2I"><text>&gt; 50</text></inputEntry><outputEntry id="R2O"><text>"motor"</text></outputEntry></rule>
+              <rule id="R3"><inputEntry id="R3I"><text>&gt; 80</text></inputEntry><outputEntry id="R3O"><text>"sensor"</text></outputEntry></rule>
+            </decisionTable>
+          </decision>
+        </definitions>"#,
+    )
+    .unwrap();
+    let s = base(
+        1,
+        &format!(
+            "{}{}[decisions.parts.inputs]\nsize = {{ dist = \"fixed\", value = 90.0 }}\n",
+            fixed("Items", 1),
+            fixed("T", 1)
+        ),
+    );
+    assert_eq!(runs(&run(&p, &s), "T"), 3);
+    // The skeleton leaves the count to the decision.
+    assert!(Scenario::skeleton(&p, None).multi_instance.is_empty());
+}
+
+#[test]
+fn a_boundary_timer_cancels_every_instance() {
+    let p = model(&format!(
+        r#"
+        <bpmn:startEvent id="Start"/>
+        <bpmn:task id="T">{PARALLEL}</bpmn:task>
+        <bpmn:boundaryEvent id="B" attachedToRef="T"><bpmn:timerEventDefinition/></bpmn:boundaryEvent>
+        <bpmn:endEvent id="E"/><bpmn:endEvent id="E_late"/>
+        <bpmn:sequenceFlow id="F0" sourceRef="Start" targetRef="T"/>
+        <bpmn:sequenceFlow id="F1" sourceRef="T" targetRef="E"/>
+        <bpmn:sequenceFlow id="F2" sourceRef="B" targetRef="E_late"/>"#
+    ));
+    let r = run(
+        &p,
+        &clerks(
+            1,
+            "[multi_instance.T]\ncount = 3\n[boundary.B]\ndelay = { dist = \"fixed\", value = \"15m\" }\n",
+        ),
+    );
+    // One clerk: the first instance finishes at 10 min, the second is cut off at 15 min.
+    assert_eq!(runs(&r, "T"), 1);
+    assert_eq!(r.activities[&q("T")].cancelled, 2);
+    assert_eq!((ends(&r, "E"), ends(&r, "E_late")), (0, 1));
+    assert_eq!(r.boundary_fired[&q("B")], 1);
+}
+
+#[test]
+fn an_error_in_one_instance_of_a_subprocess_cancels_them_all() {
+    let p = model_with(
+        r#"
+        <bpmn:startEvent id="Start"/>
+        <bpmn:subProcess id="Sub">
+          <bpmn:multiInstanceLoopCharacteristics/>
+          <bpmn:startEvent id="S_start"/><bpmn:task id="Work"/>
+          <bpmn:exclusiveGateway id="X"/>
+          <bpmn:endEvent id="S_end"/>
+          <bpmn:endEvent id="ErrEnd"><bpmn:errorEventDefinition errorRef="Err_A"/></bpmn:endEvent>
+          <bpmn:sequenceFlow id="S0" sourceRef="S_start" targetRef="Work"/>
+          <bpmn:sequenceFlow id="S1" sourceRef="Work" targetRef="X"/>
+          <bpmn:sequenceFlow id="S_ok" sourceRef="X" targetRef="S_end"/>
+          <bpmn:sequenceFlow id="S_err" sourceRef="X" targetRef="ErrEnd"/>
+        </bpmn:subProcess>
+        <bpmn:boundaryEvent id="B_A" attachedToRef="Sub"><bpmn:errorEventDefinition errorRef="Err_A"/></bpmn:boundaryEvent>
+        <bpmn:endEvent id="E_ok"/><bpmn:endEvent id="E_err"/>
+        <bpmn:sequenceFlow id="F0" sourceRef="Start" targetRef="Sub"/>
+        <bpmn:sequenceFlow id="F1" sourceRef="Sub" targetRef="E_ok"/>
+        <bpmn:sequenceFlow id="F2" sourceRef="B_A" targetRef="E_err"/>"#,
+        ERRORS,
+    );
+    let s = base(
+        400,
+        &format!(
+            "{}[multi_instance.Sub]\ncount = 3\n[gateways.X]\nprobabilities = {{ S_ok = 0.8, S_err = 0.2 }}\n",
+            fixed("Work", 10)
+        ),
+    );
+    let r = run(&p, &s);
+    assert_eq!(r.cases_completed, 400);
+    assert!(r.stuck.is_empty(), "{:?}", r.stuck);
+    // The subprocess fails when any of its three instances fails: 1 - 0.8^3 = 0.488.
+    let failed = ends(&r, "E_err") as f64 / 400.0;
+    assert!((failed - 0.488).abs() < 0.07, "failed share {failed}");
+    assert_eq!(ends(&r, "E_err") + ends(&r, "E_ok"), 400);
+}
+
+#[test]
+fn a_loop_repeats_with_its_probability_up_to_the_maximum() {
+    let p = looped(r#"<bpmn:standardLoopCharacteristics loopMaximum="3"/>"#);
+    let s = |prob: f64| {
+        base(
+            2000,
+            &format!("{}[loops.T]\nrepeat_probability = {prob}\n", fixed("T", 1)),
+        )
+    };
+    // Always repeat: capped at three runs per case.
+    assert_eq!(runs(&run(&p, &s(1.0)), "T"), 6000);
+    // Repeat with 0.5: 1 + 0.5 + 0.25 = 1.75 runs on average.
+    let mean = runs(&run(&p, &s(0.5)), "T") as f64 / 2000.0;
+    assert!((mean - 1.75).abs() < 0.06, "mean runs {mean}");
+    // Test before: the first run is decided too (0.5 + 0.25 + 0.125).
+    let p = looped(r#"<bpmn:standardLoopCharacteristics testBefore="true" loopMaximum="3"/>"#);
+    let mean = runs(&run(&p, &s(0.5)), "T") as f64 / 2000.0;
+    assert!((mean - 0.875).abs() < 0.06, "mean runs {mean}");
+}
+
+#[test]
+fn an_endless_loop_is_rejected() {
+    let e = bind_err(
+        &looped("<bpmn:standardLoopCharacteristics/>"),
+        &base(
+            1,
+            &format!("{}[loops.T]\nrepeat_probability = 1.0\n", fixed("T", 1)),
+        ),
+    );
+    assert!(e.contains("never ends"), "{e}");
+}
+
+#[test]
+fn the_skeleton_gives_multi_instance_and_loop_activities_an_entry() {
+    let s = Scenario::skeleton(&looped(PARALLEL), None);
+    assert!(s.multi_instance.contains_key("m.bpmn#T"));
+    let s = Scenario::skeleton(&looped("<bpmn:standardLoopCharacteristics/>"), None);
+    assert!(s.loops.contains_key("m.bpmn#T"));
+    // And it binds as written.
+    let toml = s.to_toml().unwrap();
+    let p = looped("<bpmn:standardLoopCharacteristics/>");
+    Scenario::from_toml(&toml).unwrap().bind(&p).unwrap();
+}

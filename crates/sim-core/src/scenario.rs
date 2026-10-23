@@ -51,6 +51,39 @@ pub struct Scenario {
     /// Decision id -> how its inputs are sampled.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub decisions: BTreeMap<String, DecisionSpec>,
+    /// Multi-instance activity -> number of instances.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub multi_instance: BTreeMap<String, MultiInstanceSpec>,
+    /// Activity with a standard loop -> how often it repeats.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub loops: BTreeMap<String, LoopSpec>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MultiInstanceSpec {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
+    pub count: CountSpec,
+}
+
+/// A number of instances: `count = 3` or a distribution of plain numbers (rounded; a uniform
+/// distribution draws whole numbers from `min` to `max` with equal chances).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum CountSpec {
+    Fixed(u32),
+    Dist(NumberSpec),
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LoopSpec {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
+    /// Chance that the activity runs again after an iteration (and, with `testBefore`, that
+    /// it runs at all).
+    pub repeat_probability: f64,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -419,6 +452,8 @@ pub struct BoundModel<'p> {
     pub conditions: BTreeMap<QId, ConditionCfg>,
     /// Activities and events with conditional outgoing flows.
     pub activity_splits: BTreeMap<QId, ActivitySplitCfg>,
+    /// Multi-instance and looping activities.
+    pub loops: BTreeMap<QId, LoopCfg>,
     /// Business rule task -> its evaluable decision.
     pub decisions: BTreeMap<QId, BoundDecision>,
     pub buffer_unconsumed: bool,
@@ -455,6 +490,61 @@ pub enum SplitRule {
     Conditions(Vec<(QId, crate::feel::Expr)>),
     /// `[gateways]` probabilities, each flow drawn independently.
     Probabilities(Vec<(QId, f64)>),
+}
+
+#[derive(Debug, Clone)]
+pub enum LoopCfg {
+    /// Multi-instance: `count` instances, one after another or all at once.
+    Multi { sequential: bool, count: Count },
+    /// Standard loop: after each iteration (and, with `test_before`, before the first) the
+    /// activity runs (again) with probability `repeat`, at most `maximum` times.
+    Standard {
+        repeat: f64,
+        test_before: bool,
+        maximum: Option<u32>,
+    },
+}
+
+/// Where the number of instances of a multi-instance activity comes from.
+#[derive(Debug, Clone)]
+pub enum Count {
+    Sample(CountDist),
+    /// An instance variable set by a decision: the length of a list, or a number.
+    Variable(String),
+}
+
+#[derive(Debug, Clone)]
+pub enum CountDist {
+    /// Rounded to the nearest whole number, at least 0.
+    Rounded(Dist),
+    /// Whole numbers from `.0` to `.1`, all equally likely.
+    Uniform(u32, u32),
+}
+
+impl CountDist {
+    pub fn sample<R: rand::Rng + ?Sized>(&self, rng: &mut R) -> u32 {
+        use rand::RngExt;
+        match *self {
+            CountDist::Rounded(ref d) => d.sample(rng).round() as u32,
+            CountDist::Uniform(lo, hi) => rng.random_range(lo..=hi),
+        }
+    }
+}
+
+impl CountSpec {
+    fn to_dist(&self) -> Result<CountDist, String> {
+        match self {
+            CountSpec::Fixed(n) => Ok(CountDist::Rounded(Dist::Fixed(f64::from(*n)))),
+            CountSpec::Dist(NumberSpec::Uniform { min, max }) => {
+                let (lo, hi) = (min.ceil().max(0.0), max.floor());
+                if hi < lo {
+                    return Err(format!("uniform: no whole number between {min} and {max}"));
+                }
+                Ok(CountDist::Uniform(lo as u32, hi as u32))
+            }
+            CountSpec::Dist(n) => n.to_dist().map(CountDist::Rounded),
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -1130,6 +1220,135 @@ impl Scenario {
             );
         }
 
+        // Multi-instance activities and standard loops.
+        let mut mi_specs: BTreeMap<QId, &MultiInstanceSpec> = BTreeMap::new();
+        for (key, spec) in &self.multi_instance {
+            match resolve(project, key, "activity") {
+                Ok(q)
+                    if matches!(
+                        project.node(&q).and_then(|n| n.looping.as_ref()),
+                        Some(Looping::MultiInstance { .. })
+                    ) =>
+                {
+                    mi_specs.insert(q, spec);
+                }
+                Ok(q) => errors.push(format!(
+                    "[multi_instance.{key}]: '{q}' is not a multi-instance activity"
+                )),
+                Err(e) => errors.push(format!("[multi_instance]: {e}")),
+            }
+        }
+        let mut loop_specs: BTreeMap<QId, &LoopSpec> = BTreeMap::new();
+        for (key, spec) in &self.loops {
+            match resolve(project, key, "activity") {
+                Ok(q)
+                    if matches!(
+                        project.node(&q).and_then(|n| n.looping.as_ref()),
+                        Some(Looping::Standard { .. })
+                    ) =>
+                {
+                    loop_specs.insert(q, spec);
+                }
+                Ok(q) => errors.push(format!(
+                    "[loops.{key}]: '{q}' is not an activity with a standard loop"
+                )),
+                Err(e) => errors.push(format!("[loops]: {e}")),
+            }
+        }
+        // A FEEL expression that is just a variable name (`= items`, `items`).
+        let variable = |text: &str| {
+            let t = text.trim().trim_start_matches('=').trim();
+            (!t.is_empty()
+                && t.chars()
+                    .all(|c| c.is_alphanumeric() || c == '_' || c == '.'))
+            .then(|| t.to_string())
+        };
+        let mut loops = BTreeMap::new();
+        for n in &nodes {
+            let name = format!("{} ({})", n.id, n.label());
+            match &n.looping {
+                None => {}
+                Some(Looping::MultiInstance {
+                    sequential,
+                    cardinality,
+                    input_collection,
+                    completion_condition,
+                }) => {
+                    if completion_condition.is_some() {
+                        warnings.push(format!(
+                            "{name}: the completion condition is ignored, all instances run"
+                        ));
+                    }
+                    // The scenario first, then a number in the model, then a variable that a
+                    // decision sets (the collection, or the cardinality expression).
+                    let literal = cardinality
+                        .as_deref()
+                        .and_then(|c| c.trim().trim_start_matches('=').trim().parse::<u32>().ok());
+                    let from_decision = input_collection
+                        .iter()
+                        .chain(cardinality)
+                        .filter_map(|c| variable(c))
+                        .find(|v| produced.contains(v));
+                    let count = match (mi_specs.get(&n.id), literal, from_decision) {
+                        (Some(spec), _, _) => match spec.count.to_dist() {
+                            Ok(d) => Count::Sample(d),
+                            Err(e) => {
+                                errors.push(format!("[multi_instance] {}: count: {e}", n.id));
+                                continue;
+                            }
+                        },
+                        (None, Some(k), _) => {
+                            Count::Sample(CountDist::Rounded(Dist::Fixed(f64::from(k))))
+                        }
+                        (None, None, Some(v)) => Count::Variable(v),
+                        (None, None, None) => {
+                            errors.push(format!(
+                                "{name}: multi-instance activity needs a [multi_instance] entry with a count"
+                            ));
+                            continue;
+                        }
+                    };
+                    loops.insert(
+                        n.id.clone(),
+                        LoopCfg::Multi {
+                            sequential: *sequential,
+                            count,
+                        },
+                    );
+                }
+                Some(Looping::Standard {
+                    test_before,
+                    maximum,
+                    ..
+                }) => {
+                    let Some(spec) = loop_specs.get(&n.id) else {
+                        errors.push(format!(
+                            "{name}: loop activity needs a [loops] entry with a repeat_probability"
+                        ));
+                        continue;
+                    };
+                    let p = spec.repeat_probability;
+                    if !(0.0..=1.0).contains(&p) {
+                        errors.push(format!(
+                            "{name}: repeat_probability must be between 0 and 1"
+                        ));
+                    } else if p >= 1.0 && maximum.is_none() {
+                        errors.push(format!(
+                            "{name}: repeat_probability 1 without a loopMaximum never ends"
+                        ));
+                    }
+                    loops.insert(
+                        n.id.clone(),
+                        LoopCfg::Standard {
+                            repeat: p,
+                            test_before: *test_before,
+                            maximum: *maximum,
+                        },
+                    );
+                }
+            }
+        }
+
         // Split probabilities: XOR splits need one per flow summing to 1; inclusive (OR) splits
         // take each flow independently with its probability, except the default flow.
         let mut gateways = BTreeMap::new();
@@ -1377,6 +1596,7 @@ impl Scenario {
             inclusive,
             conditions,
             activity_splits,
+            loops,
             decisions,
             buffer_unconsumed: messages.buffer_unconsumed,
             signal_scope: sim.signal_scope,
@@ -1559,6 +1779,52 @@ impl Scenario {
         let mut events = BTreeMap::new();
         let mut boundary = BTreeMap::new();
         let mut skeleton_decisions = BTreeMap::new();
+        let mut multi_instance = BTreeMap::new();
+        let mut loops = BTreeMap::new();
+        // Variables a decision sets: a multi-instance activity counting one needs no entry.
+        let decided: Vec<&str> = project
+            .dmn
+            .values()
+            .flat_map(|f| f.decisions.values())
+            .filter_map(|d| d.table.as_ref())
+            .flat_map(|t| t.outputs.iter().map(String::as_str))
+            .chain(project.nodes().filter_map(|n| n.result_variable.as_deref()))
+            .collect();
+        for n in project.nodes() {
+            match &n.looping {
+                Some(Looping::MultiInstance {
+                    cardinality,
+                    input_collection,
+                    ..
+                }) => {
+                    let bare = |t: &String| t.trim().trim_start_matches('=').trim().to_string();
+                    let known = cardinality.iter().any(|c| bare(c).parse::<u32>().is_ok())
+                        || input_collection
+                            .iter()
+                            .chain(cardinality)
+                            .any(|c| decided.contains(&bare(c).as_str()));
+                    if !known {
+                        multi_instance.insert(
+                            n.id.to_string(),
+                            MultiInstanceSpec {
+                                label: n.name.clone(),
+                                count: CountSpec::Fixed(3),
+                            },
+                        );
+                    }
+                }
+                Some(Looping::Standard { .. }) => {
+                    loops.insert(
+                        n.id.to_string(),
+                        LoopSpec {
+                            label: n.name.clone(),
+                            repeat_probability: 0.2,
+                        },
+                    );
+                }
+                None => {}
+            }
+        }
         for n in project.nodes() {
             if let Some(table) = n
                 .called_decision
@@ -1711,6 +1977,8 @@ impl Scenario {
             boundary,
             decisions: skeleton_decisions,
             messages: None,
+            multi_instance,
+            loops,
         }
     }
 

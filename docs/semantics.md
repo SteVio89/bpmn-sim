@@ -161,3 +161,19 @@ Kept up to date with the implementation (spec §5, §11). Each entry notes the m
 - **Uncaught.** An uncaught error leaves its token at the end event, reported as stuck with the state `uncaught error '<code>'` (Camunda raises an incident). An uncaught escalation has no effect.
 - **Probabilities as well.** On tasks, error and escalation boundary events still need a `[boundary]` entry (`probability`, `delay`): nothing in the model throws there, so they stand for failures the model does not show. On subprocesses and call activities the entry is optional and adds such failures on top of thrown errors; whichever comes first wins. The skeleton only writes entries for those on tasks.
 - **Manual game.** The same rules; the log says which boundary event caught the error or escalation, or that an error was not caught (its token stays at the end event).
+
+## M9: multi-instance activities and loops
+
+- **Model.** `multiInstanceLoopCharacteristics` (`isSequential`, `loopCardinality`, `completionCondition`, `zeebe:loopCharacteristics inputCollection`) and `standardLoopCharacteristics` (`testBefore`, `loopMaximum`, `loopCondition`) are read for tasks, embedded subprocesses and call activities.
+- **Number of instances**, first that applies:
+  1. `[multi_instance.<id>] count = 3`, or a distribution of plain numbers: `count = { dist = "uniform", min = 1, max = 5 }` draws whole numbers from 1 to 5 with equal chances; other distributions are rounded to the nearest whole number (at least 0).
+  2. `loopCardinality` if it is a whole number (`5` or `= 5`).
+  3. `inputCollection` (or `loopCardinality`) if it is a variable name that a decision sets: the length of the list (a COLLECT result), or the number. Anything else counts as 0 instances.
+  Otherwise binding fails. `completionCondition` is ignored with a warning: all instances run.
+- **Execution.** The token waits at the activity while its instances run, each as a token of its own that runs the activity once (a task with its own duration, resource and cost; a subprocess scope; a called instance). Parallel instances start together and compete for resources; sequential ones start one after the other. The token leaves along the outgoing flows when the last instance is done; with 0 instances it passes straight through. Activity statistics count every instance as a run. Process variables are shared; there is no per-instance `inputElement`.
+- **Standard loop.** `[loops.<id>] repeat_probability = p` is required (`loopCondition` is not evaluated): after each iteration the activity runs again with probability p, at most `loopMaximum` times. With `testBefore="true"` the first iteration is decided the same way, so the activity may not run at all. p = 1 without `loopMaximum` is a binding error.
+- **Boundary events** of a multi-instance or loop activity are armed once, for the activity as a whole. An interrupting one cancels every running and queued instance; an error thrown inside one instance of a subprocess is caught by the activity's boundary event and cancels all of them.
+- **Skeleton.** Multi-instance activities without a whole-number cardinality or a decided collection get `count = 3`; loop activities get `repeat_probability = 0.2`.
+- **Manual game.** A multi-instance or loop activity is played once; the log says so.
+- **Diagram.** Three vertical bars (parallel), three horizontal bars (sequential) or a circular arrow (loop) at the bottom of the activity.
+- **Event log.** Activity records carry the token that ran them, so the replay shows each instance of a parallel task in its own state.

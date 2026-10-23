@@ -58,6 +58,8 @@ fn percentile(sorted: &[f64], q: f64) -> f64 {
 pub struct ActivityRecord {
     pub case: u64,
     pub instance: u64,
+    /// Token that ran the task (tells the instances of a multi-instance task apart).
+    pub token: u64,
     pub activity: QId,
     pub resource: Option<String>,
     /// Time the token arrived at the task.

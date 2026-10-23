@@ -155,10 +155,12 @@ pub fn token_positions(
             },
             None if gone.is_some() => continue,
             None => {
-                let rec = r
-                    .records
-                    .iter()
-                    .find(|x| x.instance == instance && x.activity == *node && x.queued == e.time);
+                let rec = r.records.iter().find(|x| {
+                    x.instance == instance
+                        && x.token == token
+                        && x.activity == *node
+                        && x.queued == e.time
+                });
                 match rec {
                     Some(x) if t < x.start => TokenPlace::Waiting { node: node.clone() },
                     Some(x) if t < x.end => TokenPlace::Working { node: node.clone() },

@@ -448,6 +448,7 @@ impl Parser<'_> {
             called_decision,
             result_variable,
             default_flow: n.attribute("default").map(|d| self.qid(d)),
+            looping: looping(n),
             incoming: Vec::new(),
             outgoing: Vec::new(),
         })
@@ -541,6 +542,39 @@ fn zeebe_attr(n: Node, element: &str, attr: &str) -> Option<String> {
         })
         .and_then(|c| c.attribute(attr))
         .map(str::to_string)
+}
+
+/// The loop characteristics of an activity, if any.
+fn looping(n: Node) -> Option<Looping> {
+    let text = |c: Node, local: &str| {
+        bpmn_children(c)
+            .find(|x| x.tag_name().name() == local)
+            .and_then(|x| x.text())
+            .map(|t| t.trim().to_string())
+            .filter(|t| !t.is_empty())
+    };
+    let c = bpmn_children(n).find(|c| {
+        matches!(
+            c.tag_name().name(),
+            "multiInstanceLoopCharacteristics" | "standardLoopCharacteristics"
+        )
+    })?;
+    Some(
+        if c.tag_name().name() == "multiInstanceLoopCharacteristics" {
+            Looping::MultiInstance {
+                sequential: c.attribute("isSequential") == Some("true"),
+                cardinality: text(c, "loopCardinality"),
+                input_collection: zeebe_attr(c, "loopCharacteristics", "inputCollection"),
+                completion_condition: text(c, "completionCondition"),
+            }
+        } else {
+            Looping::Standard {
+                test_before: c.attribute("testBefore") == Some("true"),
+                maximum: c.attribute("loopMaximum").and_then(|m| m.parse().ok()),
+                condition: text(c, "loopCondition"),
+            }
+        },
+    )
 }
 
 fn task_kind(local: &str) -> TaskKind {

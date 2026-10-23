@@ -118,6 +118,8 @@ pub struct FlowNode {
     pub result_variable: Option<String>,
     /// Gateways and activities: `default` flow.
     pub default_flow: Option<QId>,
+    /// Activities: multi-instance or standard loop characteristics.
+    pub looping: Option<Looping>,
     pub incoming: Vec<QId>,
     pub outgoing: Vec<QId>,
 }
@@ -127,6 +129,26 @@ impl FlowNode {
     pub fn label(&self) -> &str {
         self.name.as_deref().unwrap_or(&self.id.id)
     }
+}
+
+/// `multiInstanceLoopCharacteristics` or `standardLoopCharacteristics` of an activity.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Looping {
+    MultiInstance {
+        sequential: bool,
+        /// `loopCardinality` text.
+        cardinality: Option<String>,
+        /// `zeebe:loopCharacteristics inputCollection`.
+        input_collection: Option<String>,
+        /// `completionCondition` text.
+        completion_condition: Option<String>,
+    },
+    Standard {
+        test_before: bool,
+        maximum: Option<u32>,
+        /// `loopCondition` text.
+        condition: Option<String>,
+    },
 }
 
 #[derive(Debug, Clone)]

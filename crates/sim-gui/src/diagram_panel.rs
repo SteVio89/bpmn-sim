@@ -17,7 +17,8 @@ use sim_core::diagram::{
     token_positions,
 };
 use sim_core::{
-    ArtifactKind, BpmnFile, EventDef, FlowNode, NodeKind, Project, QId, ReplicationResult, TaskKind,
+    ArtifactKind, BpmnFile, EventDef, FlowNode, Looping, NodeKind, Project, QId, ReplicationResult,
+    TaskKind,
 };
 
 use crate::app::App;
@@ -952,6 +953,28 @@ fn draw(
                             fill,
                         );
                     }
+                }
+                // Loop / multi-instance marker at the bottom centre (left of a "+" marker).
+                let marker = match &n.looping {
+                    Some(Looping::MultiInstance { sequential, .. }) => Some(if *sequential {
+                        Icon::MultiSequential
+                    } else {
+                        Icon::MultiParallel
+                    }),
+                    Some(Looping::Standard { .. }) => Some(Icon::Loop),
+                    None => None,
+                };
+                if let Some(m) = marker {
+                    let s = 16.0 * zoom;
+                    let shift = if call { s * 1.1 } else { 0.0 };
+                    diagram_icons::draw(
+                        &painter,
+                        m,
+                        r.center_bottom() - Vec2::new(shift, 4.0 * zoom + s * 0.45),
+                        s,
+                        ink,
+                        fill,
+                    );
                 }
             }
         }

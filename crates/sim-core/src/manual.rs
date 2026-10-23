@@ -581,6 +581,18 @@ impl Game {
                 let inst = self.tokens[&tok].inst;
                 self.set(tok, &node_id, TokenState::Passing);
                 let def = n.event_defs.first().cloned();
+                // Without a scenario there is no number of instances: one run stands for all.
+                match &n.looping {
+                    Some(Looping::MultiInstance { .. }) => self.log.push(format!(
+                        "'{}' is a multi-instance activity; it is played once",
+                        n.label()
+                    )),
+                    Some(Looping::Standard { .. }) => self.log.push(format!(
+                        "'{}' is a loop activity; it is played once",
+                        n.label()
+                    )),
+                    None => {}
+                }
                 match &n.kind {
                     NodeKind::EndEvent if self.stop_at_events && Self::throws(&n) => {
                         self.set(tok, &node_id, TokenState::Ready);

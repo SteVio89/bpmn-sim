@@ -63,12 +63,26 @@ struct Token {
     /// Instance started by this token while it sits at a call activity.
     child_instance: Option<usize>,
     subs: Vec<usize>,
+    /// One iteration of a multi-instance or looping activity: it runs the activity once and
+    /// then ends in its scope instead of leaving along the outgoing flows.
+    iteration: bool,
 }
 
-/// An embedded subprocess activation; `parent` is the token waiting at the subprocess node.
+/// An embedded subprocess activation, or the iterations of a multi-instance or looping
+/// activity (`repeat`); `parent` is the token waiting at the activity.
 struct Scope {
     node: QId,
     parent: u64,
+    repeat: Option<Repeat>,
+}
+
+/// Iterations of a multi-instance (`total`) or standard loop (`chance`, `maximum`) activity.
+struct Repeat {
+    sequential: bool,
+    total: Option<u32>,
+    chance: f64,
+    maximum: Option<u32>,
+    started: u32,
 }
 
 enum SubKind {
@@ -406,9 +420,17 @@ impl<'a> Engine<'a> {
                 run: None,
                 child_instance: None,
                 subs: Vec::new(),
+                iteration: false,
             },
         );
         id
+    }
+
+    fn is_iteration(&self, inst: usize, tok: u64) -> bool {
+        self.instances[inst]
+            .tokens
+            .get(&tok)
+            .is_some_and(|t| t.iteration)
     }
 
     fn trace(&mut self, inst: usize, tok: u64, kind: TraceKind) {
@@ -476,6 +498,12 @@ impl<'a> Engine<'a> {
                 },
             );
             let first_def = node.event_defs.first();
+            if let Some(cfg) = m.loops.get(&node_id)
+                && !self.is_iteration(inst, tok)
+            {
+                self.start_iterations(inst, tok, node, cfg, &mut work);
+                continue;
+            }
             match &node.kind {
                 NodeKind::EndEvent => {
                     self.throw(inst, node);
@@ -723,6 +751,11 @@ impl<'a> Engine<'a> {
 
     /// Send a token out of `node`: XOR picks one flow, everything else takes all flows.
     fn route(&mut self, inst: usize, tok: u64, node: &FlowNode, work: &mut Vec<Work>) {
+        if self.is_iteration(inst, tok) {
+            // One iteration is done; the activity itself moves on when all are.
+            self.consume(inst, tok, work);
+            return;
+        }
         if let Some(cfg) = self.m.activity_splits.get(&node.id) {
             let vars = &self.instances[inst].variables;
             let mut taken: Vec<&QId> = match &cfg.rule {
@@ -878,6 +911,10 @@ impl<'a> Engine<'a> {
                 .any(|x| x.scope == Some(sc))
         {
             let (parent, node_id) = (self.scopes[sc].parent, self.scopes[sc].node.clone());
+            if self.alive(inst, parent) && self.next_iteration(sc) {
+                self.spawn_iteration(inst, sc, 1, work);
+                return;
+            }
             if self.alive(inst, parent)
                 && let Some(node) = self.m.project.node(&node_id)
             {
@@ -891,11 +928,121 @@ impl<'a> Engine<'a> {
         }
     }
 
+    /// A token arrives at a multi-instance or looping activity: it waits there while the
+    /// iterations run in a scope of their own (all at once, or one after the other).
+    fn start_iterations(
+        &mut self,
+        inst: usize,
+        tok: u64,
+        node: &FlowNode,
+        cfg: &crate::scenario::LoopCfg,
+        work: &mut Vec<Work>,
+    ) {
+        use crate::scenario::{Count, LoopCfg};
+        let repeat = match cfg {
+            LoopCfg::Multi { sequential, count } => {
+                let n = match count {
+                    Count::Sample(d) => d.sample(&mut self.rng),
+                    Count::Variable(v) => match self.instances[inst].variables.get(v) {
+                        Some(Value::List(items)) => items.len() as u32,
+                        Some(Value::Num(x)) => x.round().max(0.0) as u32,
+                        _ => 0,
+                    },
+                };
+                Repeat {
+                    sequential: *sequential,
+                    total: Some(n),
+                    chance: 0.0,
+                    maximum: None,
+                    started: 0,
+                }
+            }
+            LoopCfg::Standard {
+                repeat, maximum, ..
+            } => Repeat {
+                sequential: true,
+                total: None,
+                chance: *repeat,
+                maximum: *maximum,
+                started: 0,
+            },
+        };
+        let sc = self.scopes.len();
+        self.scopes.push(Scope {
+            node: node.id.clone(),
+            parent: tok,
+            repeat: Some(repeat),
+        });
+        // A loop that tests before the first iteration may not run at all.
+        let first = match cfg {
+            LoopCfg::Standard {
+                test_before: true, ..
+            } => self.next_iteration(sc),
+            _ => self.scopes[sc]
+                .repeat
+                .as_ref()
+                .is_some_and(|r| r.total != Some(0) && r.maximum != Some(0)),
+        };
+        if !first {
+            self.set_token(inst, tok, &node.id, "passing");
+            self.route(inst, tok, node, work);
+            return;
+        }
+        let state = match cfg {
+            LoopCfg::Multi { .. } => "running multi-instance activity",
+            LoopCfg::Standard { .. } => "running loop activity",
+        };
+        self.set_token(inst, tok, &node.id, state);
+        if let Some(t) = self.instances[inst].tokens.get_mut(&tok) {
+            t.child_scope = Some(sc);
+        }
+        self.arm_boundaries(inst, tok, node);
+        let count = match &self.scopes[sc].repeat {
+            Some(r) if !r.sequential => r.total.unwrap_or(1),
+            _ => 1,
+        };
+        self.spawn_iteration(inst, sc, count, work);
+    }
+
+    /// Whether a sequential multi-instance or loop activity runs another iteration.
+    fn next_iteration(&mut self, sc: usize) -> bool {
+        let Some(r) = &self.scopes[sc].repeat else {
+            return false;
+        };
+        if r.maximum.is_some_and(|m| r.started >= m) {
+            return false;
+        }
+        match r.total {
+            Some(total) => r.sequential && r.started < total,
+            None => {
+                let chance = r.chance;
+                self.rng.random::<f64>() < chance
+            }
+        }
+    }
+
+    fn spawn_iteration(&mut self, inst: usize, sc: usize, count: u32, work: &mut Vec<Work>) {
+        let node = self.scopes[sc].node.clone();
+        let mut items = Vec::new();
+        for _ in 0..count {
+            if let Some(r) = self.scopes[sc].repeat.as_mut() {
+                r.started += 1;
+            }
+            let t = self.new_token(inst, &node, "starting", Some(sc));
+            if let Some(x) = self.instances[inst].tokens.get_mut(&t) {
+                x.iteration = true;
+            }
+            items.push((t, node.clone(), None));
+        }
+        work.extend(items.into_iter().rev());
+    }
+
     fn enter_scope(&mut self, inst: usize, tok: u64, node: &FlowNode, work: &mut Vec<Work>) {
         let sc = self.scopes.len();
         self.scopes.push(Scope {
             node: node.id.clone(),
             parent: tok,
+            repeat: None,
         });
         self.set_token(inst, tok, &node.id, "inside embedded subprocess");
         if let Some(t) = self.instances[inst].tokens.get_mut(&tok) {
@@ -1091,6 +1238,11 @@ impl<'a> Engine<'a> {
 
     /// Start the boundary events attached to an activity the token has just entered.
     fn arm_boundaries(&mut self, inst: usize, tok: u64, activity: &FlowNode) {
+        // The boundary events of a multi-instance or looping activity watch all iterations
+        // together: they are armed on the token waiting at the activity, not per iteration.
+        if self.is_iteration(inst, tok) {
+            return;
+        }
         let boundaries = self
             .boundaries_of
             .get(&activity.id)
@@ -1144,10 +1296,17 @@ impl<'a> Engine<'a> {
     ) -> Option<(usize, u64, QId)> {
         let (mut i, mut t) = (inst, tok);
         loop {
-            let (owner_inst, owner) = match self.instances[i].tokens.get(&t)?.scope {
+            let (owner_inst, mut owner) = match self.instances[i].tokens.get(&t)?.scope {
                 Some(sc) => (i, self.scopes[sc].parent),
                 None => self.instances[i].parent?,
             };
+            // An iteration's boundary events belong to the whole activity.
+            let o = self.instances[owner_inst].tokens.get(&owner)?;
+            if o.iteration
+                && let Some(sc) = o.scope
+            {
+                owner = self.scopes[sc].parent;
+            }
             let activity = &self.instances[owner_inst].tokens.get(&owner)?.node;
             let codes: Vec<(&QId, Option<&str>)> = self
                 .boundaries_of
@@ -1384,6 +1543,7 @@ impl<'a> Engine<'a> {
         self.records.push(ActivityRecord {
             case: case as u64,
             instance: inst as u64,
+            token: tok,
             activity: node_id.clone(),
             resource: cfg.pool.clone(),
             queued,
@@ -1494,9 +1654,9 @@ impl<'a> Engine<'a> {
         }
         self.runs[id].state = RunState::Cancelled;
         let m = self.m;
-        let (inst, node_id, queued, start) = {
+        let (inst, tok, node_id, queued, start) = {
             let r = &self.runs[id];
-            (r.instance, r.node.clone(), r.queued, r.start)
+            (r.instance, r.token, r.node.clone(), r.queued, r.start)
         };
         let Some(cfg) = m.activities.get(&node_id) else {
             return;
@@ -1522,6 +1682,7 @@ impl<'a> Engine<'a> {
         self.records.push(ActivityRecord {
             case: case as u64,
             instance: inst as u64,
+            token: tok,
             activity: node_id,
             resource: cfg.pool.clone(),
             queued,
