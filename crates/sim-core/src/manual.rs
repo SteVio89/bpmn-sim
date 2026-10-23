@@ -2,7 +2,7 @@
 //! needs no decision happens immediately; the player starts cases at start events, chooses the
 //! outgoing flows of XOR / inclusive splits, decides which event of an event-based gateway
 //! happens, fires catch events that nothing in the model triggers (timers, unsent messages,
-//! signals) and boundary events, and, optionally, completes tasks.
+//! signals) and boundary events, and completes tasks (unless `stop_at_tasks` is switched off).
 //!
 //! The semantics follow the timed engine (scopes, call activities, message groups, joins).
 
@@ -14,7 +14,7 @@ use crate::project::Project;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TokenState {
-    /// At a task, waiting to be completed by the player (only with `stop_at_tasks`).
+    /// At a task, waiting to be completed by the player (with `stop_at_tasks`, the default).
     AtTask,
     /// At an XOR (`multiple == false`) or inclusive split, waiting for a choice.
     Choose {
@@ -121,7 +121,7 @@ impl Game {
             .collect();
         Self {
             project,
-            stop_at_tasks: false,
+            stop_at_tasks: true,
             insts: Vec::new(),
             tokens: BTreeMap::new(),
             next_token: 0,

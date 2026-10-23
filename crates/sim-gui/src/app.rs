@@ -737,17 +737,35 @@ mod tests {
             app.diagram
                 .to_screen(b.x + b.width / 2.0, b.y + b.height / 2.0)
         };
-        // Click the start event: the token runs to the XOR split and waits.
+        let at = |app: &App| -> Vec<String> {
+            app.diagram
+                .manual
+                .as_ref()
+                .unwrap()
+                .game
+                .tokens()
+                .iter()
+                .map(|t| t.node.id.clone())
+                .collect()
+        };
+        // Click the start event: the token moves to the first task and waits there.
         let p = center(&app, "Start");
         click_at(&mut app, &ctx, p);
-        let game = &app.diagram.manual.as_ref().unwrap().game;
-        assert_eq!(game.tokens().len(), 1);
-        assert_eq!(game.tokens()[0].node.id, "Split");
-        // Click the middle of the "simple" flow: the case runs to its end.
+        assert_eq!(at(&app), ["Task_Intake"]);
+        // Click the task to complete it: the token goes on to the XOR split.
+        let p = center(&app, "Task_Intake");
+        click_at(&mut app, &ctx, p);
+        assert_eq!(at(&app), ["Split"]);
+        // Click the middle of the "simple" flow, then complete the remaining tasks.
         let edge = &shapes.edges[&QId::new("v13-model.bpmn", "Flow_simple")];
         let (a, b) = (edge[1], edge[2]);
         let p = app.diagram.to_screen((a.0 + b.0) / 2.0, (a.1 + b.1) / 2.0);
         click_at(&mut app, &ctx, p);
+        assert_eq!(at(&app), ["Task_Simple"]);
+        for task in ["Task_Simple", "Task_Close"] {
+            let p = center(&app, task);
+            click_at(&mut app, &ctx, p);
+        }
         let game = &app.diagram.manual.as_ref().unwrap().game;
         assert!(game.tokens().is_empty(), "{:?}", game.tokens());
         assert_eq!(game.finished().len(), 1);

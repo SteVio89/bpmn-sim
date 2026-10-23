@@ -12,8 +12,11 @@ fn fixture(name: &str) -> PathBuf {
         .join(name)
 }
 
+/// A game that runs through tasks by itself, so the tests can focus on the decisions.
 fn game(name: &str) -> Game {
-    Game::new(Arc::new(Project::open_main(&fixture(name)).unwrap()))
+    let mut g = Game::new(Arc::new(Project::open_main(&fixture(name)).unwrap()));
+    g.stop_at_tasks = false;
+    g
 }
 
 fn q(file: &str, id: &str) -> QId {
@@ -85,6 +88,14 @@ fn and_split_and_join_run_by_themselves() {
     choose(&mut g, f, &["Flow_complex"]);
     assert!(g.tokens().is_empty());
     assert_eq!(g.finished().len(), 1);
+}
+
+#[test]
+fn tasks_wait_for_the_player_by_default() {
+    let g = Game::new(Arc::new(
+        Project::open_main(&fixture("v13-model.bpmn")).unwrap(),
+    ));
+    assert!(g.stop_at_tasks);
 }
 
 #[test]
