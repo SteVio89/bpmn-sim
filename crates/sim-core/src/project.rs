@@ -139,6 +139,49 @@ impl Project {
             .and_then(|p| p.name.as_deref())
     }
 
+    /// The nodes that get a token when the top level of `process` (`scope` = `None`, as for a
+    /// call) or the embedded subprocess `scope` starts (BPMN §13.3.4): its none start events,
+    /// or, if it has no start event at all, every activity and gateway without incoming
+    /// sequence flows. Event subprocesses never start this way.
+    pub fn start_nodes(&self, process: &QId, scope: Option<&QId>) -> Vec<QId> {
+        let children: Vec<&FlowNode> = self
+            .nodes()
+            .filter(|n| n.process == *process && n.parent.as_ref() == scope)
+            .collect();
+        if children.iter().any(|n| n.kind == NodeKind::StartEvent) {
+            return children
+                .iter()
+                .filter(|n| {
+                    n.kind == NodeKind::StartEvent
+                        && n.event_defs.iter().all(|d| matches!(d, EventDef::None))
+                })
+                .map(|n| n.id.clone())
+                .collect();
+        }
+        children
+            .iter()
+            .filter(|n| {
+                !n.kind.is_event()
+                    && !matches!(n.kind, NodeKind::Unsupported(_))
+                    && !n.triggered_by_event
+                    && n.incoming.is_empty()
+            })
+            .map(|n| n.id.clone())
+            .collect()
+    }
+
+    /// Whether `n` lies (at any depth) inside an event subprocess.
+    pub fn in_event_subprocess(&self, n: &FlowNode) -> bool {
+        let mut parent = n.parent.as_ref();
+        while let Some(p) = parent.and_then(|p| self.node(p)) {
+            if p.triggered_by_event {
+                return true;
+            }
+            parent = p.parent.as_ref();
+        }
+        false
+    }
+
     /// The outgoing flows of an activity or event (not a gateway) that has conditional
     /// outgoing flows: those are taken when their condition holds, the default flow when none
     /// holds, every other flow always. `None` without a conditional outgoing flow.

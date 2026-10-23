@@ -434,6 +434,9 @@ impl Parser<'_> {
             (None, None)
         };
 
+        let triggered_by_event =
+            kind == NodeKind::SubProcess && n.attribute("triggeredByEvent") == Some("true");
+
         Ok(FlowNode {
             id: self.qid(id),
             name: n.attribute("name").map(str::to_string),
@@ -449,6 +452,8 @@ impl Parser<'_> {
             result_variable,
             default_flow: n.attribute("default").map(|d| self.qid(d)),
             looping: looping(n),
+            triggered_by_event,
+            instantiate: n.attribute("instantiate") == Some("true"),
             incoming: Vec::new(),
             outgoing: Vec::new(),
         })

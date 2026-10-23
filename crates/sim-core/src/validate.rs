@@ -45,7 +45,14 @@ pub fn validate(project: &Project) -> Vec<Issue> {
         })
     };
 
-    let reachable = reachable_nodes(project);
+    let implicit = implicit_starts(project);
+    let reachable = reachable_nodes(project, &implicit);
+    // Scopes without a start event may also leave out end events (BPMN §10.5.2, §10.5.3).
+    let startless: BTreeSet<(&QId, Option<&QId>)> = implicit
+        .iter()
+        .filter_map(|id| project.node(id))
+        .map(|n| (&n.process, n.parent.as_ref()))
+        .collect();
     let incoming_msg: std::collections::BTreeSet<&QId> = project
         .files
         .values()
@@ -61,11 +68,38 @@ pub fn validate(project: &Project) -> Vec<Issue> {
         let is_link_throw = n.event_defs.iter().any(|d| matches!(d, EventDef::Link(_)))
             && n.kind == NodeKind::IntermediateThrowEvent;
 
-        if !n.kind.is_event() && n.incoming.is_empty() {
-            push(Severity::Warning, n, "has no incoming sequence flow".into());
+        let instantiating_gateway = n.kind == NodeKind::EventBasedGateway
+            && (n.instantiate || (n.incoming.is_empty() && !implicit.contains(&n.id)));
+        if n.triggered_by_event {
+            push(
+                Severity::Warning,
+                n,
+                "event subprocesses are not supported yet".into(),
+            );
+        } else if instantiating_gateway {
+            push(
+                Severity::Warning,
+                n,
+                "event-based gateways that start a process are not supported; only start events start one".into(),
+            );
+        } else {
+            if !n.kind.is_event() && n.incoming.is_empty() && !implicit.contains(&n.id) {
+                push(Severity::Warning, n, "has no incoming sequence flow".into());
+            }
+            if n.kind != NodeKind::EndEvent
+                && !is_link_throw
+                && n.outgoing.is_empty()
+                && !startless.contains(&(&n.process, n.parent.as_ref()))
+            {
+                push(Severity::Warning, n, "has no outgoing sequence flow".into());
+            }
         }
-        if n.kind != NodeKind::EndEvent && !is_link_throw && n.outgoing.is_empty() {
-            push(Severity::Warning, n, "has no outgoing sequence flow".into());
+        if n.instantiate && n.kind == NodeKind::Task(TaskKind::Receive) {
+            push(
+                Severity::Warning,
+                n,
+                "receive tasks that start a process (instantiate) are not supported; only start events start one".into(),
+            );
         }
 
         if n.kind == NodeKind::IntermediateCatchEvent && !reachable.contains(&n.id) {
@@ -168,8 +202,33 @@ fn link_catch<'a>(project: &'a Project, process: &QId, name: &str) -> Option<&'a
     })
 }
 
-/// Nodes reachable from any start event via sequence flows, link jumps and boundary events.
-fn reachable_nodes(project: &Project) -> BTreeSet<QId> {
+/// Activities and gateways that start their subprocess or called process because it has no
+/// start event (`Project::start_nodes`).
+fn implicit_starts(project: &Project) -> BTreeSet<QId> {
+    let scopes = project
+        .nodes()
+        .filter_map(|n| n.called_element.as_ref())
+        .filter_map(|c| project.processes.get(c))
+        .map(|p| (p, None))
+        .chain(
+            project
+                .nodes()
+                .filter(|n| n.kind == NodeKind::SubProcess)
+                .map(|n| (&n.process, Some(&n.id))),
+        );
+    scopes
+        .flat_map(|(p, scope)| project.start_nodes(p, scope))
+        .filter(|id| {
+            project
+                .node(id)
+                .is_some_and(|n| n.kind != NodeKind::StartEvent)
+        })
+        .collect()
+}
+
+/// Nodes reachable from any start event (or implicit start) via sequence flows, link jumps
+/// and boundary events.
+fn reachable_nodes(project: &Project, implicit: &BTreeSet<QId>) -> BTreeSet<QId> {
     let flows: BTreeMap<&QId, &SequenceFlow> = project
         .files
         .values()
@@ -180,6 +239,7 @@ fn reachable_nodes(project: &Project) -> BTreeSet<QId> {
         .nodes()
         .filter(|n| n.kind == NodeKind::StartEvent)
         .map(|n| n.id.clone())
+        .chain(implicit.iter().cloned())
         .collect();
 
     while let Some(id) = stack.pop() {

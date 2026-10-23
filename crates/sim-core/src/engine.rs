@@ -224,10 +224,10 @@ impl<'a> Engine<'a> {
                     .or_default()
                     .push(n.id.clone());
             }
+            if n.kind == NodeKind::SubProcess {
+                sub_starts.insert(n.id.clone(), m.project.start_nodes(&n.process, Some(&n.id)));
+            }
             if n.kind == NodeKind::StartEvent {
-                if let Some(p) = &n.parent {
-                    sub_starts.entry(p.clone()).or_default().push(n.id.clone());
-                }
                 for d in &n.event_defs {
                     if let EventDef::Signal(name) = d {
                         signal_starts
@@ -1128,17 +1128,7 @@ impl<'a> Engine<'a> {
         else {
             return;
         };
-        let starts: Vec<QId> = m
-            .project
-            .nodes()
-            .filter(|n| {
-                n.process == *process
-                    && n.parent.is_none()
-                    && n.kind == NodeKind::StartEvent
-                    && n.event_defs.iter().all(|d| matches!(d, EventDef::None))
-            })
-            .map(|n| n.id.clone())
-            .collect();
+        let starts = m.project.start_nodes(process, None);
         let case = self.instances[inst].case;
         let group = self.groups.len();
         self.groups.push(case);

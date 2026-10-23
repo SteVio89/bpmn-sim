@@ -120,6 +120,10 @@ pub struct FlowNode {
     pub default_flow: Option<QId>,
     /// Activities: multi-instance or standard loop characteristics.
     pub looping: Option<Looping>,
+    /// Subprocesses: `triggeredByEvent` (an event subprocess).
+    pub triggered_by_event: bool,
+    /// Receive tasks and event-based gateways: `instantiate`.
+    pub instantiate: bool,
     pub incoming: Vec<QId>,
     pub outgoing: Vec<QId>,
 }

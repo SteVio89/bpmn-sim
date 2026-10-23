@@ -705,15 +705,7 @@ impl Game {
                         if let Some(t) = self.tokens.get_mut(&tok) {
                             t.child_scope = Some(sc);
                         }
-                        let starts: Vec<QId> = self
-                            .project
-                            .nodes()
-                            .filter(|c| {
-                                c.parent.as_ref() == Some(&node_id)
-                                    && c.kind == NodeKind::StartEvent
-                            })
-                            .map(|c| c.id.clone())
-                            .collect();
+                        let starts = self.project.start_nodes(&n.process, Some(&node_id));
                         for s in starts.into_iter().rev() {
                             let nt = self.new_token(inst, &s, Some(sc));
                             work.push((nt, s, None));
@@ -734,19 +726,7 @@ impl Game {
                                 self.route(tok, &n, None, &mut work);
                             }
                             Some(p) => {
-                                let starts: Vec<QId> = self
-                                    .project
-                                    .nodes()
-                                    .filter(|c| {
-                                        c.process == p
-                                            && c.parent.is_none()
-                                            && c.kind == NodeKind::StartEvent
-                                            && c.event_defs
-                                                .iter()
-                                                .all(|d| matches!(d, EventDef::None))
-                                    })
-                                    .map(|c| c.id.clone())
-                                    .collect();
+                                let starts = self.project.start_nodes(&p, None);
                                 let group = self.groups;
                                 self.groups += 1;
                                 self.set(tok, &node_id, TokenState::InCall);

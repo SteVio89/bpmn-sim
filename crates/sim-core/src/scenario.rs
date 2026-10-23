@@ -854,9 +854,11 @@ impl Scenario {
         }
 
         // Element support and per-element configuration for every instantiated process.
+        // Elements inside an event subprocess are left out: the event subprocess itself is
+        // reported as unsupported.
         let nodes: Vec<&FlowNode> = project
             .nodes()
-            .filter(|n| processes.contains(&n.process))
+            .filter(|n| processes.contains(&n.process) && !project.in_event_subprocess(n))
             .collect();
         for n in &nodes {
             if let Some(why) = unsupported(n) {
@@ -898,14 +900,9 @@ impl Scenario {
                         n.called_element.as_deref().unwrap_or("(none)")
                     )),
                     Some(p) => {
-                        if !project.nodes().any(|c| {
-                            c.process == *p
-                                && c.parent.is_none()
-                                && c.kind == NodeKind::StartEvent
-                                && c.event_defs.iter().all(|d| matches!(d, EventDef::None))
-                        }) {
+                        if project.start_nodes(p, None).is_empty() {
                             errors.push(format!(
-                                "{} ({}): called process '{}' has no none start event",
+                                "{} ({}): called process '{}' has no none start event (nor, without any start event, an activity or gateway without incoming flows)",
                                 n.id,
                                 n.label(),
                                 p.id
@@ -915,14 +912,11 @@ impl Scenario {
                 }
             }
             if n.kind == NodeKind::SubProcess
-                && !nodes.iter().any(|c| {
-                    c.parent.as_ref() == Some(&n.id)
-                        && c.kind == NodeKind::StartEvent
-                        && c.event_defs.iter().all(|d| matches!(d, EventDef::None))
-                })
+                && !n.triggered_by_event
+                && project.start_nodes(&n.process, Some(&n.id)).is_empty()
             {
                 errors.push(format!(
-                    "{} ({}): embedded subprocess has no none start event",
+                    "{} ({}): embedded subprocess has no none start event (nor, without any start event, an activity or gateway without incoming flows)",
                     n.id,
                     n.label()
                 ));
@@ -1666,6 +1660,9 @@ fn unsupported(n: &FlowNode) -> Option<String> {
     let todo = |what: &str, m: &str| Some(format!("{what} is not supported yet ({m})"));
     let single = |ok: fn(&EventDef) -> bool| n.event_defs.len() == 1 && ok(&n.event_defs[0]);
     match &n.kind {
+        NodeKind::SubProcess if n.triggered_by_event => {
+            Some("event subprocesses are not supported yet".into())
+        }
         NodeKind::Task(_)
         | NodeKind::ExclusiveGateway
         | NodeKind::ParallelGateway
