@@ -433,6 +433,11 @@ fn vertical_text(painter: &egui::Painter, c: Pos2, text: String, font: FontId, c
     painter.add(TextShape::new(pos, galley, color).with_angle(-FRAC_PI_2));
 }
 
+/// Complex gateways are not simulated (they stay `Unsupported`) but are drawn as gateways.
+fn is_complex_gateway(k: &NodeKind) -> bool {
+    matches!(k, NodeKind::Unsupported(name) if name == "complexGateway")
+}
+
 /// The marker of a task, or the symbol of an event.
 fn icon_of(n: &FlowNode) -> Option<Icon> {
     let throwing = matches!(
@@ -848,7 +853,7 @@ fn draw(
                 }
                 name_label(&painter, id, r.center_bottom() + Vec2::new(0.0, 2.0), label);
             }
-            k if k.is_gateway() => {
+            k if k.is_gateway() || is_complex_gateway(k) => {
                 let c = r.center();
                 let (hw, hh) = (r.width() / 2.0, r.height() / 2.0);
                 let diamond = vec![
@@ -880,6 +885,14 @@ fn draw(
                             })
                             .collect();
                         painter.add(Shape::closed_line(pent, thin));
+                    }
+                    k if is_complex_gateway(k) => {
+                        // Asterisk: a cross and an ×.
+                        let d = s * 0.75;
+                        painter.line_segment([c - Vec2::new(s, 0.0), c + Vec2::new(s, 0.0)], bold);
+                        painter.line_segment([c - Vec2::new(0.0, s), c + Vec2::new(0.0, s)], bold);
+                        painter.line_segment([c - Vec2::new(d, d), c + Vec2::new(d, d)], bold);
+                        painter.line_segment([c - Vec2::new(d, -d), c + Vec2::new(d, -d)], bold);
                     }
                     _ => {
                         let d = s * 0.75;
