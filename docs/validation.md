@@ -101,3 +101,13 @@ Differences to expect when comparing with QBP / BIMP: how a tool treats the warm
 whether durations are cut off at 0, and the exact definition of utilisation (this simulator:
 busy time ÷ (resources × observation window); the window ends when the last event of the run is
 processed, see `docs/semantics.md`).
+
+## Looking at the GUI without a display
+
+`crates/sim-gui/src/snapshot.rs` renders egui frames on the CPU (no GPU, no window) into PNG files.
+The ignored test `screenshots` writes the diagram view of several fixtures:
+
+    SIM_GUI_SNAPSHOT_DIR=/some/dir cargo test -p sim-gui -- --ignored screenshots
+
+This is how the diagram drawing was checked during development; it is no replacement for trying
+the real window (fonts and anti-aliasing differ slightly).

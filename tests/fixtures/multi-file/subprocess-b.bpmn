@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL" xmlns:zeebe="http://camunda.org/schema/zeebe/1.0" xmlns:modeler="http://camunda.org/schema/modeler/1.0" modeler:executionPlatform="Camunda Cloud" id="Defs_B">
+<bpmn:definitions xmlns:bpmndi="http://www.omg.org/spec/BPMN/20100524/DI" xmlns:dc="http://www.omg.org/spec/DD/20100524/DC" xmlns:di="http://www.omg.org/spec/DD/20100524/DI" xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL" xmlns:zeebe="http://camunda.org/schema/zeebe/1.0" xmlns:modeler="http://camunda.org/schema/modeler/1.0" modeler:executionPlatform="Camunda Cloud" id="Defs_B">
   <bpmn:dataStore id="DS_B" name="Archive"/>
   <bpmn:collaboration id="Collab_B">
     <bpmn:participant id="Part_Sub" name="Sub B" processRef="Process_SubB"/>
@@ -33,4 +33,33 @@
     <bpmn:sequenceFlow id="Flow_6" sourceRef="Task_Check" targetRef="Join"/>
     <bpmn:sequenceFlow id="Flow_7" sourceRef="Join" targetRef="End_1"/>
   </bpmn:process>
+  <bpmndi:BPMNDiagram id="Diagram_1">
+    <bpmndi:BPMNPlane id="Plane_1" bpmnElement="Collab_B">
+      <bpmndi:BPMNShape id="Part_Sub_di" bpmnElement="Part_Sub"><dc:Bounds x="100" y="40" width="1138" height="320"/></bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Lane_1_di" bpmnElement="Lane_1"><dc:Bounds x="130" y="40" width="1108" height="160"/></bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Lane_2_di" bpmnElement="Lane_2"><dc:Bounds x="130" y="200" width="1108" height="160"/></bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Start_1_di" bpmnElement="Start_1"><dc:Bounds x="182" y="102" width="36" height="36"/></bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Task_Analyse_di" bpmnElement="Task_Analyse"><dc:Bounds x="310" y="80" width="100" height="80"/></bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Gateway_Check_di" bpmnElement="Gateway_Check"><dc:Bounds x="495" y="95" width="50" height="50"/></bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Split_di" bpmnElement="Split"><dc:Bounds x="655" y="95" width="50" height="50"/></bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Task_Review_di" bpmnElement="Task_Review"><dc:Bounds x="790" y="240" width="100" height="80"/></bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Join_di" bpmnElement="Join"><dc:Bounds x="975" y="95" width="50" height="50"/></bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="End_1_di" bpmnElement="End_1"><dc:Bounds x="1142" y="102" width="36" height="36"/></bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Task_Check_di" bpmnElement="Task_Check"><dc:Bounds x="790" y="80" width="100" height="80"/></bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Throw_Retry_di" bpmnElement="Throw_Retry"><dc:Bounds x="662" y="197" width="36" height="36"/></bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Catch_Retry_di" bpmnElement="Catch_Retry"><dc:Bounds x="182" y="197" width="36" height="36"/></bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Part_Ext_di" bpmnElement="Part_Ext"><dc:Bounds x="100" y="400" width="600" height="80"/></bpmndi:BPMNShape>
+      <bpmndi:BPMNEdge id="Flow_1_di" bpmnElement="Flow_1"><di:waypoint x="218" y="120"/><di:waypoint x="310" y="120"/></bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_2_di" bpmnElement="Flow_2"><di:waypoint x="410" y="120"/><di:waypoint x="495" y="120"/></bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_ok_di" bpmnElement="Flow_ok"><di:waypoint x="545" y="120"/><di:waypoint x="655" y="120"/></bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_retry_di" bpmnElement="Flow_retry"><di:waypoint x="545" y="120"/><di:waypoint x="603.5" y="120"/><di:waypoint x="603.5" y="215"/><di:waypoint x="662" y="215"/></bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_loop_di" bpmnElement="Flow_loop"><di:waypoint x="218" y="215"/><di:waypoint x="264" y="215"/><di:waypoint x="264" y="120"/><di:waypoint x="310" y="120"/></bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_3_di" bpmnElement="Flow_3"><di:waypoint x="705" y="120"/><di:waypoint x="747.5" y="120"/><di:waypoint x="747.5" y="280"/><di:waypoint x="790" y="280"/></bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_4_di" bpmnElement="Flow_4"><di:waypoint x="705" y="120"/><di:waypoint x="790" y="120"/></bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_5_di" bpmnElement="Flow_5"><di:waypoint x="890" y="280"/><di:waypoint x="932.5" y="280"/><di:waypoint x="932.5" y="120"/><di:waypoint x="975" y="120"/></bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_6_di" bpmnElement="Flow_6"><di:waypoint x="890" y="120"/><di:waypoint x="975" y="120"/></bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_7_di" bpmnElement="Flow_7"><di:waypoint x="1025" y="120"/><di:waypoint x="1142" y="120"/></bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="MF_Req_di" bpmnElement="MF_Req"><di:waypoint x="360" y="120"/><di:waypoint x="360" y="400"/></bpmndi:BPMNEdge>
+    </bpmndi:BPMNPlane>
+  </bpmndi:BPMNDiagram>
 </bpmn:definitions>

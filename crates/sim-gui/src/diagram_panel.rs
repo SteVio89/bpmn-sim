@@ -1,18 +1,23 @@
 //! Diagram view (spec §7.5): the BPMNDI layout drawn with the egui painter, with pan and zoom,
-//! a heat-map overlay and token replay from the event log.
+//! a heat-map overlay, token replay from the event log, and navigation into called processes.
 
 use std::collections::BTreeMap;
+use std::f32::consts::FRAC_PI_2;
 
 use eframe::egui::{
-    self, Align2, Color32, FontId, Pos2, Rect, Sense, Shape, Stroke, StrokeKind, Ui, Vec2,
+    self, Align2, Color32, CursorIcon, FontId, Pos2, Rect, Sense, Shape, Stroke, StrokeKind, Ui,
+    Vec2, epaint::TextShape,
 };
 use sim_core::diagram::{HeatMetric, Occupancy, heat, snapshot};
-use sim_core::{BpmnFile, EventDef, NodeKind, Project, QId, ReplicationResult};
+use sim_core::{BpmnFile, EventDef, FlowNode, NodeKind, Project, QId, ReplicationResult, TaskKind};
 
 use crate::app::App;
+use crate::diagram_icons::{self, Icon};
 
 pub struct DiagramView {
     pub file: Option<String>,
+    /// Files we came from by opening call activities (for "Back").
+    pub history: Vec<String>,
     pub zoom: f32,
     pub pan: Vec2,
     pub fit: bool,
@@ -20,12 +25,15 @@ pub struct DiagramView {
     pub replay: bool,
     pub playing: bool,
     pub time: f64,
+    /// Screen area of the last drawn diagram.
+    pub area: Rect,
 }
 
 impl Default for DiagramView {
     fn default() -> Self {
         Self {
             file: None,
+            history: Vec::new(),
             zoom: 1.0,
             pan: Vec2::ZERO,
             fit: true,
@@ -33,7 +41,23 @@ impl Default for DiagramView {
             replay: false,
             playing: false,
             time: 0.0,
+            area: Rect::NOTHING,
         }
+    }
+}
+
+impl DiagramView {
+    /// Screen position of a diagram coordinate (as last drawn).
+    #[cfg(test)]
+    pub fn to_screen(&self, x: f64, y: f64) -> Pos2 {
+        self.area.min + self.pan + Vec2::new(x as f32, y as f32) * self.zoom
+    }
+
+    fn open(&mut self, file: String) {
+        if let Some(current) = self.file.replace(file) {
+            self.history.push(current);
+        }
+        self.fit = true;
     }
 }
 
@@ -56,6 +80,12 @@ fn heat_color(f: f32) -> Color32 {
     Color32::from_rgba_unmultiplied((r * 230.0) as u8, (g * 200.0) as u8, 60, 170)
 }
 
+/// The file whose diagram shows the process a call activity calls.
+fn called_file<'p>(project: &'p Project, n: &FlowNode) -> Option<(&'p QId, &'p BpmnFile)> {
+    let q = project.processes.get(n.called_element.as_ref()?)?;
+    Some((q, project.files.get(&q.file)?))
+}
+
 pub fn show(app: &mut App, ui: &mut Ui) {
     let project = app.ws.project.clone();
     let files: Vec<String> = project
@@ -71,12 +101,23 @@ pub fn show(app: &mut App, ui: &mut Ui) {
     let v = &mut app.diagram;
     if v.file.as_ref().is_none_or(|f| !files.contains(f)) {
         v.file = files.first().cloned();
+        v.history.clear();
         v.fit = true;
     }
     let result = app.results.as_ref().and_then(|r| r.data.get(app.rep));
     let unit = app.results.as_ref().map_or(60.0, |r| r.unit.seconds());
 
     ui.horizontal(|ui| {
+        if let Some(back) = v.history.last().cloned()
+            && ui
+                .button(format!("◀ {back}"))
+                .on_hover_text("Back to the calling diagram")
+                .clicked()
+        {
+            v.history.pop();
+            v.file = Some(back);
+            v.fit = true;
+        }
         let current = v.file.clone().unwrap_or_default();
         egui::ComboBox::from_id_salt("diagram-file")
             .selected_text(&current)
@@ -84,6 +125,7 @@ pub fn show(app: &mut App, ui: &mut Ui) {
                 for f in &files {
                     if ui.selectable_label(*f == current, f).clicked() {
                         v.file = Some(f.clone());
+                        v.history.clear();
                         v.fit = true;
                     }
                 }
@@ -144,13 +186,23 @@ pub fn show(app: &mut App, ui: &mut Ui) {
         (true, Some(r)) => snapshot(r, v.time),
         _ => BTreeMap::new(),
     };
-    let hovered = draw(ui, v, &project, file, &heat_values, &occupancy);
-    if let (Some(id), Some(r)) = (hovered, result) {
-        tooltip(ui, &project, r, &id, unit);
+    let legend = !heat_values.is_empty();
+    let (hovered, clicked) = draw(ui, v, &project, file, &heat_values, &occupancy);
+    if let Some(id) = &hovered {
+        tooltip(ui, &project, result, id, unit);
     }
-    if !heat_values.is_empty() {
+    if let Some(n) = clicked.as_ref().and_then(|id| project.node(id)) {
+        match called_file(&project, n) {
+            Some((_, f)) if !f.diagram.shapes.is_empty() => v.open(f.name.clone()),
+            Some((q, f)) => {
+                app.status = format!("{} ({}) has no diagram information", q.id, f.name)
+            }
+            None => {}
+        }
+    }
+    if legend {
         let max = heat_values.values().cloned().fold(0.0, f64::max);
-        let shown = match v.metric {
+        let shown = match app.diagram.metric {
             Some(HeatMetric::Waiting | HeatMetric::Processing) => format!("{:.2}", max / unit),
             Some(HeatMetric::Utilisation) => format!("{:.0} %", max * 100.0),
             _ => format!("{max:.0}"),
@@ -159,7 +211,46 @@ pub fn show(app: &mut App, ui: &mut Ui) {
     }
 }
 
-/// Draw the diagram; returns the element under the pointer.
+/// Text rotated by -90° (reading upwards), centred at `c`.
+fn vertical_text(painter: &egui::Painter, c: Pos2, text: String, font: FontId, color: Color32) {
+    let galley = painter.layout_no_wrap(text, font, color);
+    let size = galley.size();
+    let pos = Pos2::new(c.x - size.y / 2.0, c.y + size.x / 2.0);
+    painter.add(TextShape::new(pos, galley, color).with_angle(-FRAC_PI_2));
+}
+
+/// The marker of a task, or the symbol of an event.
+fn icon_of(n: &FlowNode) -> Option<Icon> {
+    let throwing = matches!(
+        n.kind,
+        NodeKind::EndEvent | NodeKind::IntermediateThrowEvent
+    );
+    match &n.kind {
+        NodeKind::Task(k) => match k {
+            TaskKind::User => Some(Icon::User),
+            TaskKind::Service => Some(Icon::Service),
+            TaskKind::Send => Some(Icon::Message { filled: true }),
+            TaskKind::Receive => Some(Icon::Message { filled: false }),
+            TaskKind::Script => Some(Icon::Script),
+            TaskKind::BusinessRule => Some(Icon::BusinessRule),
+            TaskKind::Manual => Some(Icon::Manual),
+            TaskKind::Task => None,
+        },
+        k if k.is_event() => match n.event_defs.first()? {
+            EventDef::Message(_) => Some(Icon::Message { filled: throwing }),
+            EventDef::Timer => Some(Icon::Timer),
+            EventDef::Signal(_) => Some(Icon::Signal { filled: throwing }),
+            EventDef::Link(_) => Some(Icon::Link { filled: throwing }),
+            EventDef::Error => Some(Icon::Error),
+            EventDef::Escalation => Some(Icon::Escalation),
+            EventDef::Terminate => Some(Icon::Terminate),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+/// Draw the diagram; returns the element under the pointer and a clicked call activity.
 fn draw(
     ui: &mut Ui,
     v: &mut DiagramView,
@@ -167,10 +258,11 @@ fn draw(
     file: &BpmnFile,
     heat_values: &BTreeMap<QId, f64>,
     occupancy: &BTreeMap<QId, Occupancy>,
-) -> Option<QId> {
+) -> (Option<QId>, Option<QId>) {
     let size = ui.available_size().max(Vec2::new(200.0, 200.0));
     let (response, painter) = ui.allocate_painter(size, Sense::click_and_drag());
     let area = response.rect;
+    v.area = area;
     let d = &file.diagram;
 
     // World bounding box.
@@ -222,14 +314,15 @@ fn draw(
             })
         })
     };
+    let header = 30.0 * zoom; // width of the name band of pools and lanes
 
     painter.rect_filled(area, 0.0, paper);
 
-    // Pools and lanes first (they are containers).
+    // Pools and lanes first (they are containers); names read upwards in their header band.
     for (id, b) in &d.shapes {
-        let is_pool = file.participants.contains_key(id);
-        let is_lane = file.lanes.contains_key(id);
-        if !is_pool && !is_lane {
+        let pool = file.participants.get(id);
+        let lane = file.lanes.get(id);
+        if pool.is_none() && lane.is_none() {
             continue;
         }
         let r = rect_of(b);
@@ -237,84 +330,107 @@ fn draw(
             painter.rect_filled(r, 0.0, c.gamma_multiply(0.35));
         }
         painter.rect_stroke(r, 0.0, thin, StrokeKind::Inside);
-        let name = if is_pool {
-            file.participants.get(id).and_then(|p| p.name.clone())
-        } else {
-            file.lanes.get(id).cloned()
-        };
-        if let Some(n) = name {
-            painter.text(
-                r.left_center() + Vec2::new(4.0 * zoom, 0.0),
-                Align2::LEFT_CENTER,
-                n,
-                font.clone(),
-                ink,
+        // A pool with lanes has its band left of the lanes; draw the band border for pools.
+        if pool.is_some() {
+            painter.line_segment(
+                [
+                    Pos2::new(r.left() + header, r.top()),
+                    Pos2::new(r.left() + header, r.bottom()),
+                ],
+                thin,
             );
+        }
+        let name = pool.and_then(|p| p.name.clone()).or_else(|| lane.cloned());
+        if let Some(n) = name {
+            let c = Pos2::new(r.left() + header / 2.0, r.center().y);
+            vertical_text(&painter, c, n, font.clone(), ink);
         }
     }
 
     // Flows.
     for (id, points) in &d.edges {
         let pts: Vec<Pos2> = points.iter().map(|(x, y)| to_screen(*x, *y)).collect();
+        let (Some(first), Some(last)) = (pts.first(), pts.last()) else {
+            continue;
+        };
+        let before = &pts[pts.len().saturating_sub(2)];
+        let dir = (*last - *before).normalized() * 9.0 * zoom.clamp(0.5, 2.0);
+        let side = Vec2::new(-dir.y, dir.x) * 0.5;
+        let head = vec![*last, *last - dir + side, *last - dir - side];
         if file.message_flows.contains_key(id) {
-            painter.extend(Shape::dashed_line(
-                &pts,
-                Stroke::new(1.0, ink.gamma_multiply(0.7)),
-                6.0 * zoom,
-                4.0 * zoom,
-            ));
+            // Message flow: dashed, small circle at the start, open arrow head.
+            let grey = Stroke::new(1.0, ink.gamma_multiply(0.7));
+            painter.extend(Shape::dashed_line(&pts, grey, 6.0 * zoom, 4.0 * zoom));
+            painter.circle(*first, 3.0 * zoom.clamp(0.5, 2.0), paper, grey);
+            painter.add(Shape::convex_polygon(head, paper, grey));
         } else {
             painter.add(Shape::line(pts.clone(), thin));
-        }
-        if let [.., a, b] = pts.as_slice() {
-            let dir = (*b - *a).normalized() * 8.0 * zoom.min(2.0);
-            let side = Vec2::new(-dir.y, dir.x) * 0.5;
-            painter.add(Shape::convex_polygon(
-                vec![*b, *b - dir + side, *b - dir - side],
-                ink,
-                Stroke::NONE,
-            ));
+            painter.add(Shape::convex_polygon(head, ink, Stroke::NONE));
         }
     }
 
     // Flow nodes.
     let pointer = response.hover_pos();
     let mut hovered = None;
-    for (id, b) in &d.shapes {
-        let Some(n) = project.node(id) else { continue };
+    // Boundary events last, so they sit on top of their activity's border.
+    let mut order: Vec<(&QId, &sim_core::Bounds, &FlowNode)> = d
+        .shapes
+        .iter()
+        .filter_map(|(id, b)| project.node(id).map(|n| (id, b, n)))
+        .collect();
+    order.sort_by_key(|(_, _, n)| n.kind == NodeKind::BoundaryEvent);
+    for (id, b, n) in order {
         let r = rect_of(b);
         if pointer.is_some_and(|p| r.contains(p)) {
+            // Inner elements (drawn later) win over an enclosing subprocess.
             hovered = Some(id.clone());
         }
         let fill = heat_of(id).unwrap_or(paper);
         let label = n.name.clone().unwrap_or_default();
+        let icon = icon_of(n);
         match &n.kind {
             k if k.is_event() => {
+                let radius = r.width().min(r.height()) / 2.0;
                 let end = *k == NodeKind::EndEvent;
-                let stroke = Stroke::new(if end { 3.0 } else { 1.0 } * zoom.clamp(0.5, 2.0), ink);
-                painter.circle(r.center(), r.width().min(r.height()) / 2.0, fill, stroke);
-                if matches!(
-                    k,
-                    NodeKind::IntermediateCatchEvent
-                        | NodeKind::IntermediateThrowEvent
-                        | NodeKind::BoundaryEvent
-                ) {
-                    painter.circle_stroke(
-                        r.center(),
-                        r.width().min(r.height()) / 2.0 - 3.0 * zoom,
+                let w = if end { 3.0 } else { 1.0 } * zoom.clamp(0.5, 2.0);
+                let stroke = Stroke::new(w, ink);
+                if *k == NodeKind::BoundaryEvent && !n.cancel_activity {
+                    // Non-interrupting: dashed rings.
+                    painter.circle_filled(r.center(), radius, fill);
+                    let ring = |rad: f32| -> Vec<Pos2> {
+                        (0..=40)
+                            .map(|i| {
+                                r.center()
+                                    + Vec2::angled(i as f32 / 40.0 * std::f32::consts::TAU) * rad
+                            })
+                            .collect()
+                    };
+                    painter.extend(Shape::dashed_line(
+                        &ring(radius),
                         thin,
-                    );
+                        3.0 * zoom,
+                        2.0 * zoom,
+                    ));
+                    painter.extend(Shape::dashed_line(
+                        &ring(radius - 3.0 * zoom),
+                        thin,
+                        3.0 * zoom,
+                        2.0 * zoom,
+                    ));
+                } else {
+                    painter.circle(r.center(), radius, fill, stroke);
+                    if matches!(
+                        k,
+                        NodeKind::IntermediateCatchEvent
+                            | NodeKind::IntermediateThrowEvent
+                            | NodeKind::BoundaryEvent
+                    ) {
+                        painter.circle_stroke(r.center(), radius - 3.0 * zoom, thin);
+                    }
                 }
-                let symbol = match n.event_defs.first() {
-                    Some(EventDef::Message(_)) => "✉",
-                    Some(EventDef::Timer) => "⏱",
-                    Some(EventDef::Signal(_)) => "△",
-                    Some(EventDef::Link(_)) => "➜",
-                    Some(EventDef::Terminate) => "●",
-                    Some(EventDef::Error) => "⚡",
-                    _ => "",
-                };
-                painter.text(r.center(), Align2::CENTER_CENTER, symbol, font.clone(), ink);
+                if let Some(i) = icon {
+                    diagram_icons::draw(&painter, i, r.center(), radius * 1.3, ink, fill);
+                }
                 if !label.is_empty() {
                     painter.text(
                         r.center_bottom() + Vec2::new(0.0, 2.0),
@@ -335,19 +451,35 @@ fn draw(
                     c - Vec2::new(hw, 0.0),
                 ];
                 painter.add(Shape::convex_polygon(diamond, fill, thin));
-                let symbol = match k {
-                    NodeKind::ParallelGateway => "+",
-                    NodeKind::InclusiveGateway => "○",
-                    NodeKind::EventBasedGateway => "⬠",
-                    _ => "×",
-                };
-                painter.text(
-                    c,
-                    Align2::CENTER_CENTER,
-                    symbol,
-                    FontId::proportional((18.0 * zoom).clamp(6.0, 40.0)),
-                    ink,
-                );
+                let s = hw.min(hh) * 0.45;
+                let bold = Stroke::new((3.0 * zoom).clamp(1.0, 5.0), ink);
+                match k {
+                    NodeKind::ParallelGateway => {
+                        painter.line_segment([c - Vec2::new(s, 0.0), c + Vec2::new(s, 0.0)], bold);
+                        painter.line_segment([c - Vec2::new(0.0, s), c + Vec2::new(0.0, s)], bold);
+                    }
+                    NodeKind::InclusiveGateway => {
+                        painter.circle_stroke(c, s, bold);
+                    }
+                    NodeKind::EventBasedGateway => {
+                        painter.circle_stroke(c, s * 1.15, thin);
+                        painter.circle_stroke(c, s * 0.95, thin);
+                        let pent: Vec<Pos2> = (0..5)
+                            .map(|i| {
+                                c + Vec2::angled(
+                                    -FRAC_PI_2 + i as f32 * std::f32::consts::TAU / 5.0,
+                                ) * s
+                                    * 0.6
+                            })
+                            .collect();
+                        painter.add(Shape::closed_line(pent, thin));
+                    }
+                    _ => {
+                        let d = s * 0.75;
+                        painter.line_segment([c - Vec2::new(d, d), c + Vec2::new(d, d)], bold);
+                        painter.line_segment([c - Vec2::new(d, -d), c + Vec2::new(d, -d)], bold);
+                    }
+                }
                 if !label.is_empty() {
                     painter.text(
                         r.center_bottom() + Vec2::new(0.0, 2.0),
@@ -360,22 +492,17 @@ fn draw(
             }
             _ => {
                 let rounding = 8.0 * zoom;
-                let stroke = Stroke::new(
-                    if n.kind == NodeKind::CallActivity {
-                        3.0
-                    } else {
-                        1.0
-                    },
-                    ink,
-                );
-                // Expanded subprocesses only get an outline: their content is drawn on top.
-                let fill = if n.kind == NodeKind::SubProcess {
-                    Color32::TRANSPARENT
-                } else {
-                    fill
-                };
-                painter.rect(r, rounding, fill, stroke, StrokeKind::Inside);
+                let call = n.kind == NodeKind::CallActivity;
+                let stroke = Stroke::new(if call { 3.0 } else { 1.0 } * zoom.clamp(0.5, 1.5), ink);
                 if n.kind == NodeKind::SubProcess {
+                    // Expanded subprocess: only an outline, its content is drawn on top.
+                    painter.rect(
+                        r,
+                        rounding,
+                        Color32::TRANSPARENT,
+                        stroke,
+                        StrokeKind::Inside,
+                    );
                     painter.text(
                         r.left_top() + Vec2::splat(4.0 * zoom),
                         Align2::LEFT_TOP,
@@ -384,9 +511,35 @@ fn draw(
                         ink,
                     );
                 } else {
-                    let galley =
-                        painter.layout(label, font.clone(), ink, (r.width() - 6.0).max(10.0));
+                    painter.rect(r, rounding, fill, stroke, StrokeKind::Inside);
+                    let galley = painter.layout(
+                        label,
+                        font.clone(),
+                        ink,
+                        (r.width() - 8.0 * zoom).max(10.0),
+                    );
                     painter.galley(r.center() - galley.size() / 2.0, galley, ink);
+                    let s = 18.0 * zoom;
+                    if let Some(i) = icon {
+                        diagram_icons::draw(
+                            &painter,
+                            i,
+                            r.left_top() + Vec2::new(4.0 * zoom + s / 2.0, 4.0 * zoom + s / 2.0),
+                            s,
+                            ink,
+                            fill,
+                        );
+                    }
+                    if call {
+                        diagram_icons::draw(
+                            &painter,
+                            Icon::Plus,
+                            r.center_bottom() - Vec2::new(0.0, 4.0 * zoom + s * 0.4),
+                            s,
+                            ink,
+                            fill,
+                        );
+                    }
                 }
             }
         }
@@ -409,12 +562,25 @@ fn draw(
             badge(20.0, o.waiting, Color32::from_rgb(230, 130, 20));
         }
     }
-    hovered
+
+    // A call activity whose process has a diagram can be opened with a click.
+    let openable = hovered
+        .as_ref()
+        .and_then(|id| project.node(id))
+        .filter(|n| n.kind == NodeKind::CallActivity && called_file(project, n).is_some());
+    if openable.is_some() {
+        ui.ctx().set_cursor_icon(CursorIcon::PointingHand);
+    }
+    let clicked = if response.clicked() {
+        openable.map(|n| n.id.clone())
+    } else {
+        None
+    };
+    (hovered, clicked)
 }
 
-fn tooltip(ui: &Ui, project: &Project, r: &ReplicationResult, id: &QId, unit: f64) {
+fn tooltip(ui: &Ui, project: &Project, r: Option<&ReplicationResult>, id: &QId, unit: f64) {
     let Some(n) = project.node(id) else { return };
-    let a = r.activities.get(id);
     egui::Tooltip::always_open(
         ui.ctx().clone(),
         ui.layer_id(),
@@ -423,7 +589,21 @@ fn tooltip(ui: &Ui, project: &Project, r: &ReplicationResult, id: &QId, unit: f6
     )
     .show(|ui| {
         ui.label(format!("{} ({})", n.label(), id));
-        if let Some(a) = a {
+        if n.kind == NodeKind::CallActivity {
+            match called_file(project, n) {
+                Some((q, f)) if !f.diagram.shapes.is_empty() => {
+                    ui.label(format!("click to open {} ({})", q.id, f.name));
+                }
+                Some((q, f)) => {
+                    ui.label(format!("calls {} ({}, no diagram)", q.id, f.name));
+                }
+                None => {
+                    ui.label("called process not loaded");
+                }
+            }
+        }
+        let Some(r) = r else { return };
+        if let Some(a) = r.activities.get(id) {
             ui.label(format!("runs {}, cancelled {}", a.runs, a.cancelled));
             ui.label(format!(
                 "waiting {:.2}, processing {:.2}",

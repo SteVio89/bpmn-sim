@@ -473,6 +473,96 @@ mod tests {
         frames(&mut app, &ctx, 2);
     }
 
+    /// Writes screenshots of the diagram view to `$SIM_GUI_SNAPSHOT_DIR` (run with
+    /// `cargo test -p sim-gui -- --ignored screenshots`).
+    #[test]
+    #[ignore]
+    fn screenshots() {
+        let Some(dir) = std::env::var_os("SIM_GUI_SNAPSHOT_DIR") else {
+            return;
+        };
+        let dir = std::path::PathBuf::from(dir);
+        for (name, fixture) in [
+            ("v13", "v13-model.bpmn"),
+            ("main", "multi-file/main.bpmn"),
+            ("sub-b", "multi-file/subprocess-b.bpmn"),
+            ("event-gateway", "event-gateway.bpmn"),
+            ("task-types", "task-types.bpmn"),
+        ] {
+            let ctx = egui::Context::default();
+            let mut r = crate::snapshot::Renderer::new(1400, 800);
+            let mut app = App::default();
+            app.ws.open(&fixtures().join(fixture));
+            app.tab = Tab::Diagram;
+            let mut out = None;
+            for _ in 0..4 {
+                out = Some(r.frame(&ctx, r.input(), |ui| app.draw(ui)));
+            }
+            r.save(&ctx, out.unwrap(), &dir.join(format!("diagram-{name}.png")));
+            if name == "task-types" {
+                // Close-up of the markers.
+                app.diagram.zoom = 2.6;
+                app.diagram.pan = egui::vec2(
+                    10.0 - 100.0 * 2.6,
+                    app.diagram.area.height() / 2.0 - 120.0 * 2.6,
+                );
+                let out = r.frame(&ctx, r.input(), |ui| app.draw(ui));
+                r.save(&ctx, out, &dir.join("diagram-task-types-zoom.png"));
+                app.diagram.pan.x -= 1250.0;
+                let out = r.frame(&ctx, r.input(), |ui| app.draw(ui));
+                r.save(&ctx, out, &dir.join("diagram-task-types-zoom2.png"));
+                app.diagram.pan.x -= 1250.0;
+                let out = r.frame(&ctx, r.input(), |ui| app.draw(ui));
+                r.save(&ctx, out, &dir.join("diagram-task-types-zoom3.png"));
+                app.diagram.pan.x -= 1250.0;
+                let out = r.frame(&ctx, r.input(), |ui| app.draw(ui));
+                r.save(&ctx, out, &dir.join("diagram-task-types-zoom4.png"));
+            }
+        }
+    }
+
+    #[test]
+    fn clicking_a_call_activity_opens_the_called_diagram() {
+        let ctx = egui::Context::default();
+        let mut app = App::default();
+        app.ws.open(&fixtures().join("multi-file/main.bpmn"));
+        app.tab = Tab::Diagram;
+        for _ in 0..3 {
+            frame_with(&mut app, &ctx, vec![]);
+        }
+        assert_eq!(app.diagram.file.as_deref(), Some("main.bpmn"));
+        let click = |app: &mut App, p: egui::Pos2| {
+            let button = |pressed| egui::Event::PointerButton {
+                pos: p,
+                button: egui::PointerButton::Primary,
+                pressed,
+                modifiers: egui::Modifiers::NONE,
+            };
+            frame_with(app, &ctx, vec![egui::Event::PointerMoved(p)]);
+            frame_with(app, &ctx, vec![button(true)]);
+            frame_with(app, &ctx, vec![button(false)]);
+            frame_with(app, &ctx, vec![]);
+        };
+        let b = app.ws.project.files["main.bpmn"].diagram.shapes[&QId::new("main.bpmn", "Call_A")];
+        let p = app
+            .diagram
+            .to_screen(b.x + b.width / 2.0, b.y + b.height / 2.0);
+        click(&mut app, p);
+        assert_eq!(app.diagram.file.as_deref(), Some("subprocess-a.bpmn"));
+        assert_eq!(app.diagram.history, ["main.bpmn"]);
+        assert!(
+            !app.diagram.fit,
+            "the called diagram was fitted to the view"
+        );
+
+        // Clicking a plain task does nothing.
+        let t = app.ws.project.files["subprocess-a.bpmn"].diagram.shapes
+            [&QId::new("subprocess-a.bpmn", "Task_Check")];
+        let p = app.diagram.to_screen(t.x + 10.0, t.y + 10.0);
+        click(&mut app, p);
+        assert_eq!(app.diagram.file.as_deref(), Some("subprocess-a.bpmn"));
+    }
+
     #[test]
     fn folder_open_remove_and_errors() {
         let mut app = App::default();

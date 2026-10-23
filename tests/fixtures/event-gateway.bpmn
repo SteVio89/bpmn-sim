@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL" id="D">
+<bpmn:definitions xmlns:bpmndi="http://www.omg.org/spec/BPMN/20100524/DI" xmlns:dc="http://www.omg.org/spec/DD/20100524/DC" xmlns:di="http://www.omg.org/spec/DD/20100524/DI" xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL" id="D">
   <bpmn:message id="M" name="Answer"/>
   <bpmn:signal id="S" name="Go"/>
   <bpmn:collaboration id="C">
@@ -41,4 +41,39 @@
     <bpmn:sequenceFlow id="C0" sourceRef="Start_C" targetRef="Task_C"/>
     <bpmn:sequenceFlow id="C1" sourceRef="Task_C" targetRef="End_C"/>
   </bpmn:process>
+  <bpmndi:BPMNDiagram id="Diagram_1">
+    <bpmndi:BPMNPlane id="Plane_1" bpmnElement="C">
+      <bpmndi:BPMNShape id="PA_di" bpmnElement="PA"><dc:Bounds x="100" y="40" width="658" height="318"/></bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Start_A_di" bpmnElement="Start_A"><dc:Bounds x="182" y="102" width="36" height="36"/></bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Ebg_di" bpmnElement="Ebg"><dc:Bounds x="335" y="95" width="50" height="50"/></bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Catch_Msg_di" bpmnElement="Catch_Msg"><dc:Bounds x="502" y="102" width="36" height="36"/></bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="End_M_di" bpmnElement="End_M"><dc:Bounds x="662" y="102" width="36" height="36"/></bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Wait_Timer_di" bpmnElement="Wait_Timer"><dc:Bounds x="502" y="197" width="36" height="36"/></bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="End_T_di" bpmnElement="End_T"><dc:Bounds x="662" y="197" width="36" height="36"/></bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Catch_Sig_di" bpmnElement="Catch_Sig"><dc:Bounds x="502" y="292" width="36" height="36"/></bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="End_S_di" bpmnElement="End_S"><dc:Bounds x="662" y="292" width="36" height="36"/></bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="PB_di" bpmnElement="PB"><dc:Bounds x="100" y="398" width="658" height="160"/></bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Start_B_di" bpmnElement="Start_B"><dc:Bounds x="182" y="460" width="36" height="36"/></bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Task_B_di" bpmnElement="Task_B"><dc:Bounds x="310" y="438" width="100" height="80"/></bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Throw_Msg_di" bpmnElement="Throw_Msg"><dc:Bounds x="502" y="460" width="36" height="36"/></bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="End_B_di" bpmnElement="End_B"><dc:Bounds x="662" y="460" width="36" height="36"/></bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="PC_di" bpmnElement="PC"><dc:Bounds x="100" y="598" width="498" height="160"/></bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Start_C_di" bpmnElement="Start_C"><dc:Bounds x="182" y="660" width="36" height="36"/></bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Task_C_di" bpmnElement="Task_C"><dc:Bounds x="310" y="638" width="100" height="80"/></bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="End_C_di" bpmnElement="End_C"><dc:Bounds x="502" y="660" width="36" height="36"/></bpmndi:BPMNShape>
+      <bpmndi:BPMNEdge id="A0_di" bpmnElement="A0"><di:waypoint x="218" y="120"/><di:waypoint x="335" y="120"/></bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="A1_di" bpmnElement="A1"><di:waypoint x="385" y="120"/><di:waypoint x="502" y="120"/></bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="A2_di" bpmnElement="A2"><di:waypoint x="385" y="120"/><di:waypoint x="443.5" y="120"/><di:waypoint x="443.5" y="215"/><di:waypoint x="502" y="215"/></bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="A3_di" bpmnElement="A3"><di:waypoint x="385" y="120"/><di:waypoint x="443.5" y="120"/><di:waypoint x="443.5" y="310"/><di:waypoint x="502" y="310"/></bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="A4_di" bpmnElement="A4"><di:waypoint x="538" y="120"/><di:waypoint x="662" y="120"/></bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="A5_di" bpmnElement="A5"><di:waypoint x="538" y="215"/><di:waypoint x="662" y="215"/></bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="A6_di" bpmnElement="A6"><di:waypoint x="538" y="310"/><di:waypoint x="662" y="310"/></bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="B0_di" bpmnElement="B0"><di:waypoint x="218" y="478"/><di:waypoint x="310" y="478"/></bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="B1_di" bpmnElement="B1"><di:waypoint x="410" y="478"/><di:waypoint x="502" y="478"/></bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="B2_di" bpmnElement="B2"><di:waypoint x="538" y="478"/><di:waypoint x="662" y="478"/></bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="C0_di" bpmnElement="C0"><di:waypoint x="218" y="678"/><di:waypoint x="310" y="678"/></bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="C1_di" bpmnElement="C1"><di:waypoint x="410" y="678"/><di:waypoint x="502" y="678"/></bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="MF_di" bpmnElement="MF"><di:waypoint x="520" y="478"/><di:waypoint x="520" y="120"/></bpmndi:BPMNEdge>
+    </bpmndi:BPMNPlane>
+  </bpmndi:BPMNDiagram>
 </bpmn:definitions>

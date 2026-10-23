@@ -1,0 +1,72 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<bpmn:definitions xmlns:bpmndi="http://www.omg.org/spec/BPMN/20100524/DI" xmlns:dc="http://www.omg.org/spec/DD/20100524/DC" xmlns:di="http://www.omg.org/spec/DD/20100524/DI" xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL" id="Defs_Types">
+  <bpmn:signal id="S" name="Go"/>
+  <bpmn:collaboration id="Collab">
+    <bpmn:participant id="Part_Types" name="All markers" processRef="Process_Types"/>
+  </bpmn:collaboration>
+  <bpmn:process id="Process_Types">
+    <bpmn:startEvent id="Start" name="Start"/>
+    <bpmn:task id="Task_Plain" name="Task"/>
+    <bpmn:userTask id="Task_User" name="User task"/>
+    <bpmn:serviceTask id="Task_Service" name="Service task"/>
+    <bpmn:scriptTask id="Task_Script" name="Script task"/>
+    <bpmn:manualTask id="Task_Manual" name="Manual task"/>
+    <bpmn:businessRuleTask id="Task_Rule" name="Business rule task"/>
+    <bpmn:sendTask id="Task_Send" name="Send task"/>
+    <bpmn:receiveTask id="Task_Receive" name="Receive task"/>
+    <bpmn:intermediateCatchEvent id="Timer" name="Timer"><bpmn:timerEventDefinition/></bpmn:intermediateCatchEvent>
+    <bpmn:intermediateThrowEvent id="Signal" name="Signal"><bpmn:signalEventDefinition signalRef="S"/></bpmn:intermediateThrowEvent>
+    <bpmn:inclusiveGateway id="Or" name="OR"/>
+    <bpmn:eventBasedGateway id="Ebg" name="Event-based"/>
+    <bpmn:endEvent id="End" name="Terminate"><bpmn:terminateEventDefinition/></bpmn:endEvent>
+    <bpmn:boundaryEvent id="Escalate" attachedToRef="Task_Service" cancelActivity="false"><bpmn:escalationEventDefinition/></bpmn:boundaryEvent>
+    <bpmn:boundaryEvent id="Fail" attachedToRef="Task_Script"><bpmn:errorEventDefinition/></bpmn:boundaryEvent>
+    <bpmn:sequenceFlow id="F1" sourceRef="Start" targetRef="Task_Plain"/>
+    <bpmn:sequenceFlow id="F2" sourceRef="Task_Plain" targetRef="Task_User"/>
+    <bpmn:sequenceFlow id="F3" sourceRef="Task_User" targetRef="Task_Service"/>
+    <bpmn:sequenceFlow id="F4" sourceRef="Task_Service" targetRef="Task_Script"/>
+    <bpmn:sequenceFlow id="F5" sourceRef="Task_Script" targetRef="Task_Manual"/>
+    <bpmn:sequenceFlow id="F6" sourceRef="Task_Manual" targetRef="Task_Rule"/>
+    <bpmn:sequenceFlow id="F7" sourceRef="Task_Rule" targetRef="Task_Send"/>
+    <bpmn:sequenceFlow id="F8" sourceRef="Task_Send" targetRef="Task_Receive"/>
+    <bpmn:sequenceFlow id="F9" sourceRef="Task_Receive" targetRef="Timer"/>
+    <bpmn:sequenceFlow id="F10" sourceRef="Timer" targetRef="Signal"/>
+    <bpmn:sequenceFlow id="F11" sourceRef="Signal" targetRef="Or"/>
+    <bpmn:sequenceFlow id="F12" sourceRef="Or" targetRef="Ebg"/>
+    <bpmn:sequenceFlow id="F13" sourceRef="Ebg" targetRef="End"/>
+  </bpmn:process>
+  <bpmndi:BPMNDiagram id="Diagram_1">
+    <bpmndi:BPMNPlane id="Plane_1" bpmnElement="Collab">
+      <bpmndi:BPMNShape id="Part_Types_di" bpmnElement="Part_Types"><dc:Bounds x="100" y="40" width="2258" height="168"/></bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Start_di" bpmnElement="Start"><dc:Bounds x="182" y="102" width="36" height="36"/></bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Task_Plain_di" bpmnElement="Task_Plain"><dc:Bounds x="310" y="80" width="100" height="80"/></bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Task_User_di" bpmnElement="Task_User"><dc:Bounds x="470" y="80" width="100" height="80"/></bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Task_Service_di" bpmnElement="Task_Service"><dc:Bounds x="630" y="80" width="100" height="80"/></bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Task_Script_di" bpmnElement="Task_Script"><dc:Bounds x="790" y="80" width="100" height="80"/></bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Task_Manual_di" bpmnElement="Task_Manual"><dc:Bounds x="950" y="80" width="100" height="80"/></bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Task_Rule_di" bpmnElement="Task_Rule"><dc:Bounds x="1110" y="80" width="100" height="80"/></bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Task_Send_di" bpmnElement="Task_Send"><dc:Bounds x="1270" y="80" width="100" height="80"/></bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Task_Receive_di" bpmnElement="Task_Receive"><dc:Bounds x="1430" y="80" width="100" height="80"/></bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Timer_di" bpmnElement="Timer"><dc:Bounds x="1622" y="102" width="36" height="36"/></bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Signal_di" bpmnElement="Signal"><dc:Bounds x="1782" y="102" width="36" height="36"/></bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Or_di" bpmnElement="Or"><dc:Bounds x="1935" y="95" width="50" height="50"/></bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Ebg_di" bpmnElement="Ebg"><dc:Bounds x="2095" y="95" width="50" height="50"/></bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="End_di" bpmnElement="End"><dc:Bounds x="2262" y="102" width="36" height="36"/></bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Escalate_di" bpmnElement="Escalate"><dc:Bounds x="700" y="142" width="36" height="36"/></bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Fail_di" bpmnElement="Fail"><dc:Bounds x="860" y="142" width="36" height="36"/></bpmndi:BPMNShape>
+      <bpmndi:BPMNEdge id="F1_di" bpmnElement="F1"><di:waypoint x="218" y="120"/><di:waypoint x="310" y="120"/></bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="F2_di" bpmnElement="F2"><di:waypoint x="410" y="120"/><di:waypoint x="470" y="120"/></bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="F3_di" bpmnElement="F3"><di:waypoint x="570" y="120"/><di:waypoint x="630" y="120"/></bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="F4_di" bpmnElement="F4"><di:waypoint x="730" y="120"/><di:waypoint x="790" y="120"/></bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="F5_di" bpmnElement="F5"><di:waypoint x="890" y="120"/><di:waypoint x="950" y="120"/></bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="F6_di" bpmnElement="F6"><di:waypoint x="1050" y="120"/><di:waypoint x="1110" y="120"/></bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="F7_di" bpmnElement="F7"><di:waypoint x="1210" y="120"/><di:waypoint x="1270" y="120"/></bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="F8_di" bpmnElement="F8"><di:waypoint x="1370" y="120"/><di:waypoint x="1430" y="120"/></bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="F9_di" bpmnElement="F9"><di:waypoint x="1530" y="120"/><di:waypoint x="1622" y="120"/></bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="F10_di" bpmnElement="F10"><di:waypoint x="1658" y="120"/><di:waypoint x="1782" y="120"/></bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="F11_di" bpmnElement="F11"><di:waypoint x="1818" y="120"/><di:waypoint x="1935" y="120"/></bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="F12_di" bpmnElement="F12"><di:waypoint x="1985" y="120"/><di:waypoint x="2095" y="120"/></bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="F13_di" bpmnElement="F13"><di:waypoint x="2145" y="120"/><di:waypoint x="2262" y="120"/></bpmndi:BPMNEdge>
+    </bpmndi:BPMNPlane>
+  </bpmndi:BPMNDiagram>
+</bpmn:definitions>

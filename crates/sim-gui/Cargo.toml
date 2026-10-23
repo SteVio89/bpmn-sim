@@ -12,3 +12,6 @@ rfd = "0.17.2"
 serde_json = "1.0.154"
 sim-core = { version = "0.1.0", path = "../sim-core" }
 toml = "1.1.8"
+
+[dev-dependencies]
+png = "0.18.1"

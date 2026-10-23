@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL" xmlns:zeebe="http://camunda.org/schema/zeebe/1.0" xmlns:modeler="http://camunda.org/schema/modeler/1.0" modeler:executionPlatform="Camunda Cloud" id="Defs_Main">
+<bpmn:definitions xmlns:bpmndi="http://www.omg.org/spec/BPMN/20100524/DI" xmlns:dc="http://www.omg.org/spec/DD/20100524/DC" xmlns:di="http://www.omg.org/spec/DD/20100524/DI" xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL" xmlns:zeebe="http://camunda.org/schema/zeebe/1.0" xmlns:modeler="http://camunda.org/schema/modeler/1.0" modeler:executionPlatform="Camunda Cloud" id="Defs_Main">
   <bpmn:message id="Msg_Order" name="Order"/>
   <bpmn:message id="Msg_Rush" name="Rush"/>
   <bpmn:message id="Msg_Bill" name="Bill"/>
@@ -55,4 +55,48 @@
     <bpmn:sequenceFlow id="B2" sourceRef="Call_B" targetRef="Task_Invoice"/>
     <bpmn:sequenceFlow id="B3" sourceRef="Task_Invoice" targetRef="End_Billing"/>
   </bpmn:process>
+  <bpmndi:BPMNDiagram id="Diagram_1">
+    <bpmndi:BPMNPlane id="Plane_1" bpmnElement="Collab_Main">
+      <bpmndi:BPMNShape id="Part_Customer_di" bpmnElement="Part_Customer"><dc:Bounds x="100" y="40" width="818" height="160"/></bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="TimerStart_di" bpmnElement="TimerStart"><dc:Bounds x="182" y="102" width="36" height="36"/></bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Task_PlaceOrder_di" bpmnElement="Task_PlaceOrder"><dc:Bounds x="310" y="80" width="100" height="80"/></bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Task_PlaceRush_di" bpmnElement="Task_PlaceRush"><dc:Bounds x="470" y="80" width="100" height="80"/></bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Wait_Invoice_di" bpmnElement="Wait_Invoice"><dc:Bounds x="630" y="80" width="100" height="80"/></bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="End_Customer_di" bpmnElement="End_Customer"><dc:Bounds x="822" y="102" width="36" height="36"/></bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Part_Ops_di" bpmnElement="Part_Ops"><dc:Bounds x="100" y="240" width="818" height="318"/></bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="MStart_Order_di" bpmnElement="MStart_Order"><dc:Bounds x="182" y="302" width="36" height="36"/></bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Task_Prepare_di" bpmnElement="Task_Prepare"><dc:Bounds x="310" y="280" width="100" height="80"/></bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Call_A_di" bpmnElement="Call_A"><dc:Bounds x="470" y="280" width="100" height="80"/></bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Throw_Prepared_di" bpmnElement="Throw_Prepared"><dc:Bounds x="662" y="302" width="36" height="36"/></bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="End_Ops_Bill_di" bpmnElement="End_Ops_Bill"><dc:Bounds x="822" y="302" width="36" height="36"/></bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="MStart_Rush_di" bpmnElement="MStart_Rush"><dc:Bounds x="182" y="397" width="36" height="36"/></bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Task_Rush2_di" bpmnElement="Task_Rush2"><dc:Bounds x="310" y="375" width="100" height="80"/></bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="End_Rush_di" bpmnElement="End_Rush"><dc:Bounds x="502" y="397" width="36" height="36"/></bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="End_Rush_Short_di" bpmnElement="End_Rush_Short"><dc:Bounds x="502" y="492" width="36" height="36"/></bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Sig_Boundary_di" bpmnElement="Sig_Boundary"><dc:Bounds x="380" y="437" width="36" height="36"/></bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Part_Billing_di" bpmnElement="Part_Billing"><dc:Bounds x="100" y="598" width="658" height="160"/></bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="MStart_Bill_di" bpmnElement="MStart_Bill"><dc:Bounds x="182" y="660" width="36" height="36"/></bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Call_B_di" bpmnElement="Call_B"><dc:Bounds x="310" y="638" width="100" height="80"/></bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Task_Invoice_di" bpmnElement="Task_Invoice"><dc:Bounds x="470" y="638" width="100" height="80"/></bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="End_Billing_di" bpmnElement="End_Billing"><dc:Bounds x="662" y="660" width="36" height="36"/></bpmndi:BPMNShape>
+      <bpmndi:BPMNEdge id="C1_di" bpmnElement="C1"><di:waypoint x="218" y="120"/><di:waypoint x="310" y="120"/></bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="C2_di" bpmnElement="C2"><di:waypoint x="410" y="120"/><di:waypoint x="470" y="120"/></bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="C3_di" bpmnElement="C3"><di:waypoint x="570" y="120"/><di:waypoint x="630" y="120"/></bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="C4_di" bpmnElement="C4"><di:waypoint x="730" y="120"/><di:waypoint x="822" y="120"/></bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="O1_di" bpmnElement="O1"><di:waypoint x="218" y="320"/><di:waypoint x="310" y="320"/></bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="O2_di" bpmnElement="O2"><di:waypoint x="410" y="320"/><di:waypoint x="470" y="320"/></bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="O3_di" bpmnElement="O3"><di:waypoint x="570" y="320"/><di:waypoint x="662" y="320"/></bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="O4_di" bpmnElement="O4"><di:waypoint x="698" y="320"/><di:waypoint x="822" y="320"/></bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="R1_di" bpmnElement="R1"><di:waypoint x="218" y="415"/><di:waypoint x="310" y="415"/></bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="R2_di" bpmnElement="R2"><di:waypoint x="410" y="415"/><di:waypoint x="502" y="415"/></bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="R3_di" bpmnElement="R3"><di:waypoint x="416" y="455"/><di:waypoint x="459" y="455"/><di:waypoint x="459" y="510"/><di:waypoint x="502" y="510"/></bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="B1_di" bpmnElement="B1"><di:waypoint x="218" y="678"/><di:waypoint x="310" y="678"/></bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="B2_di" bpmnElement="B2"><di:waypoint x="410" y="678"/><di:waypoint x="470" y="678"/></bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="B3_di" bpmnElement="B3"><di:waypoint x="570" y="678"/><di:waypoint x="662" y="678"/></bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="MF_Order_di" bpmnElement="MF_Order"><di:waypoint x="360" y="120"/><di:waypoint x="200" y="320"/></bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="MF_Rush_di" bpmnElement="MF_Rush"><di:waypoint x="520" y="120"/><di:waypoint x="200" y="415"/></bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="MF_Bill_di" bpmnElement="MF_Bill"><di:waypoint x="840" y="320"/><di:waypoint x="200" y="678"/></bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="MF_Invoice_di" bpmnElement="MF_Invoice"><di:waypoint x="520" y="678"/><di:waypoint x="680" y="120"/></bpmndi:BPMNEdge>
+    </bpmndi:BPMNPlane>
+  </bpmndi:BPMNDiagram>
 </bpmn:definitions>
