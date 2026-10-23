@@ -578,6 +578,7 @@ mod tests {
             ("sub-b", "multi-file/subprocess-b.bpmn"),
             ("event-gateway", "event-gateway.bpmn"),
             ("task-types", "task-types.bpmn"),
+            ("event-subprocess", "event-subprocess.bpmn"),
         ] {
             let ctx = egui::Context::default();
             let mut r = crate::snapshot::Renderer::new(1400, 800);

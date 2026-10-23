@@ -1,0 +1,23 @@
+# Orders take 1 to 3 days to handle. After a day the customer gets a reminder (non-interrupting);
+# after two days the order is cancelled (interrupting).
+[simulation]
+seed = 1
+replications = 5
+cases = 500
+time_unit = "hours"
+
+[[arrivals]]
+inter_arrival = { dist = "exponential", mean = "4h" }
+triggers = ["Start"]
+
+[activities.Task_Handle]
+duration = { dist = "uniform", min = "24h", max = "72h" }
+[activities.Task_Cancel]
+duration = { dist = "fixed", value = "10m" }
+[activities.Task_Remind]
+duration = { dist = "fixed", value = "5m" }
+
+[events.Start_Reminder]
+delay = { dist = "fixed", value = "24h" }
+[events.Start_Timeout]
+delay = { dist = "fixed", value = "48h" }

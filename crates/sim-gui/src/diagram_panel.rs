@@ -815,8 +815,9 @@ fn draw(
                 let end = *k == NodeKind::EndEvent;
                 let w = if end { 3.0 } else { 1.0 } * zoom.clamp(0.5, 2.0);
                 let stroke = Stroke::new(w, ink);
-                if *k == NodeKind::BoundaryEvent && !n.cancel_activity {
-                    // Non-interrupting: dashed rings.
+                if matches!(k, NodeKind::BoundaryEvent | NodeKind::StartEvent) && !n.cancel_activity
+                {
+                    // Non-interrupting: dashed rings (one for an event subprocess's start event).
                     painter.circle_filled(r.center(), radius, fill);
                     let ring = |rad: f32| -> Vec<Pos2> {
                         (0..=40)
@@ -832,12 +833,14 @@ fn draw(
                         3.0 * zoom,
                         2.0 * zoom,
                     ));
-                    painter.extend(Shape::dashed_line(
-                        &ring(radius - 3.0 * zoom),
-                        thin,
-                        3.0 * zoom,
-                        2.0 * zoom,
-                    ));
+                    if *k == NodeKind::BoundaryEvent {
+                        painter.extend(Shape::dashed_line(
+                            &ring(radius - 3.0 * zoom),
+                            thin,
+                            3.0 * zoom,
+                            2.0 * zoom,
+                        ));
+                    }
                 } else {
                     painter.circle(r.center(), radius, fill, stroke);
                     if matches!(
@@ -907,15 +910,26 @@ fn draw(
                 let rounding = 8.0 * zoom;
                 let call = n.kind == NodeKind::CallActivity;
                 let stroke = Stroke::new(if call { 3.0 } else { 1.0 } * zoom.clamp(0.5, 1.5), ink);
+                if n.kind == NodeKind::SubProcess && n.triggered_by_event {
+                    // Event subprocess: a dotted outline.
+                    painter.extend(Shape::dashed_line(
+                        &rounded_outline(r, rounding),
+                        stroke,
+                        1.5 * zoom.max(0.5),
+                        2.5 * zoom.max(0.5),
+                    ));
+                }
                 if n.kind == NodeKind::SubProcess {
                     // Expanded subprocess: only an outline, its content is drawn on top.
-                    painter.rect(
-                        r,
-                        rounding,
-                        Color32::TRANSPARENT,
-                        stroke,
-                        StrokeKind::Inside,
-                    );
+                    if !n.triggered_by_event {
+                        painter.rect(
+                            r,
+                            rounding,
+                            Color32::TRANSPARENT,
+                            stroke,
+                            StrokeKind::Inside,
+                        );
+                    }
                     painter.text(
                         r.left_top() + Vec2::splat(4.0 * zoom),
                         Align2::LEFT_TOP,
@@ -1346,4 +1360,24 @@ fn follow_manual_focus(v: &mut DiagramView, project: &Project) {
     v.history = m.game.focus_calls().into_iter().map(|c| c.file).collect();
     v.file = Some(target);
     v.fit = true;
+}
+
+/// The closed outline of a rectangle with rounded corners, as points.
+fn rounded_outline(r: Rect, rounding: f32) -> Vec<Pos2> {
+    let k = rounding.min(r.width() / 2.0).min(r.height() / 2.0);
+    let corners = [
+        (r.right_top() + Vec2::new(-k, k), -0.25),
+        (r.right_bottom() + Vec2::new(-k, -k), 0.0),
+        (r.left_bottom() + Vec2::new(k, -k), 0.25),
+        (r.left_top() + Vec2::new(k, k), 0.5),
+    ];
+    let mut pts = Vec::new();
+    for (c, start) in corners {
+        for i in 0..=6 {
+            let turn = (start + i as f32 / 24.0) * std::f32::consts::TAU;
+            pts.push(c + Vec2::angled(turn) * k);
+        }
+    }
+    pts.push(pts[0]);
+    pts
 }
