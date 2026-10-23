@@ -24,6 +24,7 @@ pub enum ResultsTab {
     Activities,
     Resources,
     Problems,
+    Replications,
 }
 
 pub struct RunResults {
@@ -268,6 +269,58 @@ mod tests {
         for t in [
             ResultsTab::Summary,
             ResultsTab::Activities,
+            ResultsTab::Problems,
+        ] {
+            app.results_tab = t;
+            frames(&mut app, &ctx, 2);
+        }
+    }
+
+    #[test]
+    fn calendars_horizon_and_replications_draw_and_run() {
+        use sim_core::calendar::CalendarSpec;
+        let ctx = egui::Context::default();
+        let mut app = App::default();
+        app.ws.open(&fixtures().join("v5-and.bpmn"));
+        app.regenerate_skeleton();
+        app.scenario.calendars.insert(
+            "office".into(),
+            CalendarSpec {
+                days: ["mon", "tue", "wed", "thu", "fri"]
+                    .map(String::from)
+                    .to_vec(),
+                hours: "09:00-17:00".into(),
+            },
+        );
+        app.scenario.resources.get_mut("TeamA").unwrap().calendar = Some("office".into());
+        app.scenario.simulation.replications = 3;
+        app.scenario.simulation.cases = None;
+        app.scenario.simulation.horizon = Some("30d".into());
+        app.scenario.simulation.start = Some("2026-03-02T08:00".into());
+        app.tab = Tab::Scenario;
+        frames(&mut app, &ctx, 2);
+        app.start_run(&ctx);
+        let deadline = Instant::now() + Duration::from_secs(20);
+        while app.results.is_none() {
+            assert!(
+                Instant::now() < deadline && app.run_error.is_none(),
+                "{:?}",
+                app.run_error
+            );
+            std::thread::sleep(Duration::from_millis(10));
+            frames(&mut app, &ctx, 1);
+        }
+        assert!(
+            app.results
+                .as_ref()
+                .unwrap()
+                .data
+                .iter()
+                .all(|r| r.horizon_reached)
+        );
+        for t in [
+            ResultsTab::Summary,
+            ResultsTab::Replications,
             ResultsTab::Problems,
         ] {
             app.results_tab = t;

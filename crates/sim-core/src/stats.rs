@@ -64,6 +64,8 @@ pub struct ActivityRecord {
     pub queued: f64,
     pub start: f64,
     pub end: f64,
+    /// Working time actually spent (differs from `end - start` when a calendar paused the task).
+    pub work: f64,
     pub cost: f64,
     /// Cut short by an interrupting boundary event or a terminate end event; `start` equals
     /// `end` if the task never got its resource.
@@ -75,7 +77,7 @@ impl ActivityRecord {
         self.start - self.queued
     }
     pub fn processing(&self) -> f64 {
-        self.end - self.start
+        self.work
     }
 }
 
@@ -184,6 +186,11 @@ pub struct ReplicationResult {
     /// Tokens consumed per end event.
     pub end_events: BTreeMap<QId, u64>,
     pub stuck: Vec<StuckToken>,
+    /// Tokens still alive when the horizon cut the run off (instead of `stuck`).
+    pub unfinished: Vec<StuckToken>,
+    pub horizon_reached: bool,
+    /// Unix timestamp (UTC) of simulation time 0.
+    pub start_epoch: i64,
     pub messages: Vec<MessageRecord>,
     pub messages_lost: u64,
     pub undelivered: Vec<UndeliveredMessage>,

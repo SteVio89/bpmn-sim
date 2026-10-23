@@ -8,7 +8,8 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-use crate::dist::{Dist, DistSpec};
+use crate::calendar::{Calendar, CalendarSpec, SimClock};
+use crate::dist::{Dist, DistSpec, parse_duration};
 use crate::model::*;
 use crate::project::Project;
 
@@ -38,8 +39,8 @@ pub struct Scenario {
     #[serde(default)]
     pub gateways: BTreeMap<String, GatewaySpec>,
     // Sections of later milestones: accepted, reported as "not supported yet".
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub calendars: Option<toml::Value>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub calendars: BTreeMap<String, CalendarSpec>,
     /// Catch events whose trigger comes from outside the model (delay until they fire).
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub events: BTreeMap<String, EventSpec>,
@@ -117,8 +118,13 @@ pub struct SimulationSection {
     pub replications: u32,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cases: Option<u64>,
+    /// Stop the run at this simulation time (e.g. "365d"). With `cases` too, whichever comes first.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub horizon: Option<String>,
+    /// Real date and time of simulation time 0 (UTC), default Monday 2024-01-01 00:00. It decides
+    /// which weekday the calendars start on and the timestamps of exports.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub start: Option<String>,
     #[serde(default)]
     pub warm_up_cases: u64,
     #[serde(default = "default_time_unit")]
@@ -148,6 +154,7 @@ impl Default for SimulationSection {
             replications: default_replications(),
             cases: None,
             horizon: None,
+            start: None,
             warm_up_cases: 0,
             time_unit: default_time_unit(),
             signal_scope: SignalScope::Case,
@@ -237,6 +244,9 @@ pub struct SimParams {
     pub cases: u64,
     pub warm_up_cases: u64,
     pub time_unit: TimeUnit,
+    /// Stop at this simulation time.
+    pub horizon: Option<f64>,
+    pub clock: SimClock,
 }
 
 #[derive(Debug, Clone)]
@@ -259,6 +269,7 @@ pub struct ActivityCfg {
 pub struct PoolDef {
     pub count: u32,
     pub cost_per_hour: f64,
+    pub calendar: Option<Calendar>,
 }
 
 /// Everything the engine needs, fully resolved and validated.
@@ -319,14 +330,6 @@ impl Scenario {
         let mut errors: Vec<String> = Vec::new();
         let mut warnings: Vec<String> = Vec::new();
 
-        for (name, present) in [
-            ("[calendars]", self.calendars.is_some()),
-            ("simulation.horizon", self.simulation.horizon.is_some()),
-        ] {
-            if present {
-                warnings.push(format!("{name} is not supported yet and is ignored"));
-            }
-        }
         if let Some(m) = &self.model {
             let loaded = |f: &String| project.files.contains_key(f) || project.dmn.contains_key(f);
             if let Some(main) = &m.main
@@ -340,10 +343,33 @@ impl Scenario {
         }
 
         let sim = &self.simulation;
-        let cases = match sim.cases {
-            Some(c) if c > 0 => c,
+        let horizon = match sim.horizon.as_deref().map(parse_duration) {
+            None => None,
+            Some(Ok(h)) if h > 0.0 => Some(h),
+            Some(Ok(_)) => {
+                errors.push("simulation.horizon must be positive".into());
+                None
+            }
+            Some(Err(e)) => {
+                errors.push(format!("simulation.horizon: {e}"));
+                None
+            }
+        };
+        let clock = match sim.start.as_deref().map(SimClock::parse) {
+            None => SimClock::default(),
+            Some(Ok(c)) => c,
+            Some(Err(e)) => {
+                errors.push(format!("simulation.{e}"));
+                SimClock::default()
+            }
+        };
+        let cases = match (sim.cases, horizon) {
+            (Some(c), _) if c > 0 => c,
+            (None, Some(_)) => u64::MAX,
             _ => {
-                errors.push("simulation.cases must be set to a positive number".into());
+                errors.push(
+                    "set simulation.cases to a positive number (or a simulation.horizon)".into(),
+                );
                 0
             }
         };
@@ -354,21 +380,39 @@ impl Scenario {
             errors.push("simulation.warm_up_cases must be smaller than simulation.cases".into());
         }
 
+        let mut calendars = BTreeMap::new();
+        for (name, spec) in &self.calendars {
+            match Calendar::new(name, spec, clock) {
+                Ok(c) => {
+                    calendars.insert(name.clone(), c);
+                }
+                Err(e) => errors.push(e),
+            }
+        }
+
         let mut pools = BTreeMap::new();
         for (name, r) in &self.resources {
             if r.count == 0 {
                 errors.push(format!("resource '{name}': count must be at least 1"));
             }
-            if r.calendar.is_some() {
-                warnings.push(format!(
-                    "resource '{name}': calendars are not supported yet"
-                ));
-            }
+            let calendar = match &r.calendar {
+                None => None,
+                Some(c) => {
+                    let found = calendars.get(c).cloned();
+                    if found.is_none() && !self.calendars.contains_key(c) {
+                        errors.push(format!(
+                            "resource '{name}': calendar '{c}' is not defined under [calendars]"
+                        ));
+                    }
+                    found
+                }
+            };
             pools.insert(
                 name.clone(),
                 PoolDef {
                     count: r.count,
                     cost_per_hour: r.cost_per_hour,
+                    calendar,
                 },
             );
         }
@@ -895,6 +939,8 @@ impl Scenario {
                 cases,
                 warm_up_cases: sim.warm_up_cases,
                 time_unit: sim.time_unit,
+                horizon,
+                clock,
             },
             arrivals,
             pools,
@@ -1166,7 +1212,7 @@ impl Scenario {
             resources,
             activities,
             gateways,
-            calendars: None,
+            calendars: BTreeMap::new(),
             events,
             boundary,
             messages: None,

@@ -1,4 +1,5 @@
 use eframe::egui::{self, ComboBox, DragValue, Id, RichText, Ui};
+use sim_core::calendar::CalendarSpec;
 use sim_core::scenario::{
     ActivitySpec, ArrivalSpec, GatewaySpec, ResourceSpec, SignalScope, SimulationSection, TimeUnit,
 };
@@ -64,6 +65,7 @@ pub fn show(app: &mut App, ui: &mut Ui) {
 
     let project = app.ws.project.clone();
     let pools: Vec<String> = app.scenario.resources.keys().cloned().collect();
+    let calendar_names: Vec<String> = app.scenario.calendars.keys().cloned().collect();
     let starts: Vec<String> = project
         .nodes()
         .filter(|n| n.kind == NodeKind::StartEvent)
@@ -137,6 +139,56 @@ pub fn show(app: &mut App, ui: &mut Ui) {
                 }
             });
 
+        egui::CollapsingHeader::new("Calendars").show(ui, |ui| {
+            let mut remove = None;
+            for (name, c) in s.calendars.iter_mut() {
+                ui.group(|ui| {
+                    ui.horizontal(|ui| {
+                        ui.label(RichText::new(name.as_str()).strong());
+                        if ui.small_button("remove").clicked() {
+                            remove = Some(name.clone());
+                        }
+                    });
+                    ui.horizontal(|ui| {
+                        for day in ["mon", "tue", "wed", "thu", "fri", "sat", "sun"] {
+                            let mut on = c.days.iter().any(|d| d.eq_ignore_ascii_case(day));
+                            if ui.checkbox(&mut on, day).changed() {
+                                c.days.retain(|d| !d.eq_ignore_ascii_case(day));
+                                if on {
+                                    c.days.push(day.to_string());
+                                }
+                            }
+                        }
+                    });
+                    ui.horizontal(|ui| {
+                        ui.label("hours");
+                        ui.text_edit_singleline(&mut c.hours)
+                            .on_hover_text("e.g. 09:00-12:00,13:00-17:00");
+                    });
+                });
+            }
+            if let Some(n) = remove {
+                s.calendars.remove(&n);
+            }
+            let id = ui.scope_id().with("new-calendar");
+            let mut name: String = ui.data_mut(|d| d.get_temp(id)).unwrap_or_default();
+            ui.horizontal(|ui| {
+                ui.text_edit_singleline(&mut name);
+                if ui.button("Add calendar").clicked() && !name.trim().is_empty() {
+                    s.calendars
+                        .entry(name.trim().to_string())
+                        .or_insert(CalendarSpec {
+                            days: ["mon", "tue", "wed", "thu", "fri"]
+                                .map(String::from)
+                                .to_vec(),
+                            hours: "09:00-17:00".into(),
+                        });
+                    name.clear();
+                }
+            });
+            ui.data_mut(|d| d.insert_temp(id, name));
+        });
+
         egui::CollapsingHeader::new("Resources")
             .default_open(true)
             .show(ui, |ui| {
@@ -145,6 +197,7 @@ pub fn show(app: &mut App, ui: &mut Ui) {
                     ui.label(RichText::new("pool").strong());
                     ui.label(RichText::new("count").strong());
                     ui.label(RichText::new("cost / hour").strong());
+                    ui.label(RichText::new("calendar").strong());
                     ui.end_row();
                     for (name, r) in s.resources.iter_mut() {
                         ui.label(name);
@@ -154,6 +207,15 @@ pub fn show(app: &mut App, ui: &mut Ui) {
                                 .speed(0.5)
                                 .range(0.0..=f64::MAX),
                         );
+                        let shown = r.calendar.clone().unwrap_or_else(|| "(always open)".into());
+                        ComboBox::from_id_salt(("cal", name))
+                            .selected_text(shown)
+                            .show_ui(ui, |ui| {
+                                ui.selectable_value(&mut r.calendar, None, "(always open)");
+                                for c in &calendar_names {
+                                    ui.selectable_value(&mut r.calendar, Some(c.clone()), c);
+                                }
+                            });
                         if ui.small_button("remove").clicked() {
                             remove = Some(name.clone());
                         }
@@ -363,7 +425,22 @@ pub fn simulation_editor(ui: &mut Ui, s: &mut SimulationSection) {
             .add(DragValue::new(&mut cases).range(0..=100_000_000u64))
             .changed()
         {
-            s.cases = Some(cases);
+            s.cases = (cases > 0).then_some(cases);
+        }
+        ui.end_row();
+        ui.label("horizon (e.g. 365d)");
+        let mut horizon = s.horizon.clone().unwrap_or_default();
+        if ui.text_edit_singleline(&mut horizon).changed() {
+            s.horizon = (!horizon.trim().is_empty()).then(|| horizon.trim().to_string());
+        }
+        ui.end_row();
+        ui.label("start (UTC date and time)");
+        let mut start = s.start.clone().unwrap_or_default();
+        if ui
+            .add(egui::TextEdit::singleline(&mut start).hint_text("2024-01-01T00:00"))
+            .changed()
+        {
+            s.start = (!start.trim().is_empty()).then(|| start.trim().to_string());
         }
         ui.end_row();
         ui.label("warm-up cases");

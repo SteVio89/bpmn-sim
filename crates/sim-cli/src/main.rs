@@ -2,11 +2,15 @@ use std::path::Path;
 use std::process::ExitCode;
 
 use anyhow::{Context, Result, bail};
-use sim_core::{Project, ReplicationResult, Scenario, Severity, run_replications, validate};
+use sim_core::{
+    AggregateResult, Estimate, Project, ReplicationResult, Scenario, Severity, aggregate, export,
+    run_replications, validate,
+};
 
 const USAGE: &str = "usage:
   sim-cli check <model.bpmn | folder>...
-  sim-cli run <model.bpmn | folder> --scenario <file.toml> [--seed N] [--json <out.json>]";
+  sim-cli run <model.bpmn | folder> --scenario <file.toml> [--seed N] [--json <out.json>]
+              [--summary-csv <f>] [--aggregate-csv <f>] [--event-log <f.csv>] [--xes <f.xes>]";
 
 fn main() -> ExitCode {
     match run() {
@@ -65,7 +69,8 @@ fn check(paths: &[String]) -> Result<bool> {
 }
 
 fn simulate(args: &[String]) -> Result<bool> {
-    let (mut model, mut scenario, mut seed, mut json) = (None, None, None, None);
+    let (mut model, mut scenario, mut seed) = (None, None, None);
+    let mut outputs: Vec<(&'static str, String)> = Vec::new();
     let mut it = args.iter();
     while let Some(a) = it.next() {
         let mut value = |flag: &str| {
@@ -76,7 +81,11 @@ fn simulate(args: &[String]) -> Result<bool> {
         match a.as_str() {
             "--scenario" => scenario = Some(value("--scenario")?),
             "--seed" => seed = Some(value("--seed")?.parse::<u64>().context("--seed")?),
-            "--json" => json = Some(value("--json")?),
+            "--json" => outputs.push(("json", value("--json")?)),
+            "--summary-csv" => outputs.push(("summary", value("--summary-csv")?)),
+            "--aggregate-csv" => outputs.push(("aggregate", value("--aggregate-csv")?)),
+            "--event-log" => outputs.push(("log", value("--event-log")?)),
+            "--xes" => outputs.push(("xes", value("--xes")?)),
             _ if model.is_none() => model = Some(a.clone()),
             _ => bail!("unexpected argument '{a}'\n{USAGE}"),
         }
@@ -106,9 +115,22 @@ fn simulate(args: &[String]) -> Result<bool> {
     for r in &results {
         print_result(r, bound.sim.time_unit.seconds(), bound.sim.time_unit.name());
     }
-    if let Some(path) = json {
-        std::fs::write(&path, serde_json::to_string_pretty(&results)?)
-            .with_context(|| format!("writing {path}"))?;
+    if results.len() > 1 {
+        print_aggregate(
+            &aggregate(&results),
+            bound.sim.time_unit.seconds(),
+            bound.sim.time_unit.name(),
+        );
+    }
+    for (kind, path) in outputs {
+        let content = match kind {
+            "json" => serde_json::to_string_pretty(&results)?,
+            "summary" => export::summary_csv(&project, &results),
+            "aggregate" => export::aggregate_csv(&project, &aggregate(&results)),
+            "log" => export::event_log_csv(&project, &results),
+            _ => export::event_log_xes(&project, &results),
+        };
+        std::fs::write(&path, content).with_context(|| format!("writing {path}"))?;
     }
     Ok(results.iter().all(|r| r.stuck.is_empty()))
 }
@@ -164,6 +186,12 @@ fn print_result(r: &ReplicationResult, unit: f64, unit_name: &str) {
     for (id, n) in &r.end_events {
         println!("  end event {id}: {n}");
     }
+    if r.horizon_reached {
+        println!(
+            "stopped at the horizon; {} token(s) still unfinished (not a deadlock)",
+            r.unfinished.len()
+        );
+    }
     if !r.stuck.is_empty() {
         println!(
             "PROBLEM: {} token(s) stuck at the end of the run:",
@@ -180,5 +208,40 @@ fn print_result(r: &ReplicationResult, unit: f64, unit_name: &str) {
                 s.case, s.process, s.element, s.state
             );
         }
+    }
+}
+
+fn print_aggregate(a: &AggregateResult, unit: f64, unit_name: &str) {
+    let pm = |e: &Estimate, scale: f64| match e.ci95 {
+        Some(c) => format!("{:.2} +- {:.2}", e.mean / scale, c / scale),
+        None => format!("{:.2}", e.mean / scale),
+    };
+    println!(
+        "== {} replications: mean +- 95% confidence interval ==",
+        a.replications
+    );
+    println!("cases completed: {}", pm(&a.cases_completed, 1.0));
+    println!(
+        "cycle time mean ({unit_name}): {}",
+        pm(&a.case_cycle_time_mean, unit)
+    );
+    println!(
+        "cycle time p90 ({unit_name}): {}",
+        pm(&a.case_cycle_time_p90, unit)
+    );
+    println!("case cost: {}", pm(&a.case_cost_mean, 1.0));
+    for (id, x) in &a.activities {
+        println!(
+            "  activity {id}: wait {} {unit_name}, processing {} {unit_name}, runs {}",
+            pm(&x.waiting_mean, unit),
+            pm(&x.processing_mean, unit),
+            pm(&x.runs, 1.0)
+        );
+    }
+    for (name, x) in &a.resources {
+        println!(
+            "  resource {name}: utilisation {} %",
+            pm(&x.utilisation, 0.01)
+        );
     }
 }

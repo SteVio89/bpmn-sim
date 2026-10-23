@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL" id="Defs_V13">
+  <bpmn:collaboration id="Collab">
+    <bpmn:participant id="Part_Support" name="Support" processRef="Process_V13"/>
+  </bpmn:collaboration>
+  <bpmn:process id="Process_V13">
+    <bpmn:laneSet id="LS">
+      <bpmn:lane id="Lane_Clerks" name="Clerks">
+        <bpmn:flowNodeRef>Task_Intake</bpmn:flowNodeRef>
+        <bpmn:flowNodeRef>Task_Simple</bpmn:flowNodeRef>
+        <bpmn:flowNodeRef>Task_Review</bpmn:flowNodeRef>
+      </bpmn:lane>
+      <bpmn:lane id="Lane_Experts" name="Experts">
+        <bpmn:flowNodeRef>Task_Check</bpmn:flowNodeRef>
+        <bpmn:flowNodeRef>Task_Close</bpmn:flowNodeRef>
+      </bpmn:lane>
+    </bpmn:laneSet>
+    <bpmn:startEvent id="Start" name="Request received"/>
+    <bpmn:task id="Task_Intake" name="Intake"/>
+    <bpmn:exclusiveGateway id="Split" name="Complex?"/>
+    <bpmn:task id="Task_Simple" name="Handle simple request"/>
+    <bpmn:parallelGateway id="And_Split"/>
+    <bpmn:task id="Task_Check" name="Technical check"/>
+    <bpmn:task id="Task_Review" name="Document review"/>
+    <bpmn:parallelGateway id="And_Join"/>
+    <bpmn:exclusiveGateway id="Join"/>
+    <bpmn:task id="Task_Close" name="Close request"/>
+    <bpmn:endEvent id="End" name="Request closed"/>
+    <bpmn:sequenceFlow id="F1" sourceRef="Start" targetRef="Task_Intake"/>
+    <bpmn:sequenceFlow id="F2" sourceRef="Task_Intake" targetRef="Split"/>
+    <bpmn:sequenceFlow id="Flow_simple" name="simple" sourceRef="Split" targetRef="Task_Simple"/>
+    <bpmn:sequenceFlow id="Flow_complex" name="complex" sourceRef="Split" targetRef="And_Split"/>
+    <bpmn:sequenceFlow id="F5" sourceRef="Task_Simple" targetRef="Join"/>
+    <bpmn:sequenceFlow id="F6" sourceRef="And_Split" targetRef="Task_Check"/>
+    <bpmn:sequenceFlow id="F7" sourceRef="And_Split" targetRef="Task_Review"/>
+    <bpmn:sequenceFlow id="F8" sourceRef="Task_Check" targetRef="And_Join"/>
+    <bpmn:sequenceFlow id="F9" sourceRef="Task_Review" targetRef="And_Join"/>
+    <bpmn:sequenceFlow id="F10" sourceRef="And_Join" targetRef="Join"/>
+    <bpmn:sequenceFlow id="F11" sourceRef="Join" targetRef="Task_Close"/>
+    <bpmn:sequenceFlow id="F12" sourceRef="Task_Close" targetRef="End"/>
+  </bpmn:process>
+</bpmn:definitions>

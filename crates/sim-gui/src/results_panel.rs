@@ -37,6 +37,27 @@ pub fn show(app: &mut App, ui: &mut Ui) {
                 &mut app.status,
             );
         }
+        if ui.button("Export event log XES…").clicked() {
+            save(
+                ui,
+                "event-log.xes",
+                || Ok(export::event_log_xes(&res.project, &res.data)),
+                &mut app.status,
+            );
+        }
+        if res.data.len() > 1 && ui.button("Export aggregate CSV…").clicked() {
+            save(
+                ui,
+                "aggregate.csv",
+                || {
+                    Ok(export::aggregate_csv(
+                        &res.project,
+                        &sim_core::aggregate(&res.data),
+                    ))
+                },
+                &mut app.status,
+            );
+        }
         if ui.button("Export event log CSV…").clicked() {
             save(
                 ui,
@@ -53,6 +74,7 @@ pub fn show(app: &mut App, ui: &mut Ui) {
             (ResultsTab::Activities, "Activities"),
             (ResultsTab::Resources, "Resources"),
             (ResultsTab::Problems, "Problems"),
+            (ResultsTab::Replications, "Replications"),
         ] {
             ui.selectable_value(&mut app.results_tab, t, n);
         }
@@ -83,6 +105,12 @@ pub fn show(app: &mut App, ui: &mut Ui) {
                 );
                 row("mean case cost", format!("{:.2}", r.case_cost.mean));
                 row("stuck tokens", r.stuck.len().to_string());
+                if r.horizon_reached {
+                    row(
+                        "stopped at horizon",
+                        format!("{} token(s) unfinished", r.unfinished.len()),
+                    );
+                }
             });
             if !r.processes.is_empty() {
                 ui.heading("Process instances");
@@ -201,7 +229,14 @@ pub fn show(app: &mut App, ui: &mut Ui) {
                 .include_y(100.0)
                 .show(ui, |p| p.bar_chart(BarChart::new("utilisation", bars)));
         }
+        ResultsTab::Replications => replications(ui, &res.data, res.unit.seconds(), uname),
         ResultsTab::Problems => {
+            if r.horizon_reached {
+                ui.label(format!(
+                    "The run was cut off at the horizon; {} token(s) were still unfinished (not a deadlock).",
+                    r.unfinished.len()
+                ));
+            }
             if r.stuck.is_empty() {
                 ui.label("No stuck instances: every token reached an end event.");
             } else {
@@ -334,4 +369,55 @@ fn save(
             Err(e) => format!("Export failed: {e}"),
         };
     }
+}
+
+/// Mean and 95% confidence interval across replications.
+fn replications(ui: &mut Ui, data: &[ReplicationResult], unit: f64, uname: &str) {
+    if data.len() < 2 {
+        ui.label("Run at least 2 replications to get confidence intervals.");
+        return;
+    }
+    let a = sim_core::aggregate(data);
+    let pm = |e: &sim_core::Estimate, scale: f64| match e.ci95 {
+        Some(c) => format!("{:.2} ± {:.2}", e.mean / scale, c / scale),
+        None => format!("{:.2}", e.mean / scale),
+    };
+    ui.label(format!(
+        "{} replications, mean ± half width of the 95% confidence interval",
+        a.replications
+    ));
+    egui::Grid::new("agg").striped(true).show(ui, |ui| {
+        let mut row = |k: String, v: String| {
+            ui.label(k);
+            ui.label(v);
+            ui.end_row();
+        };
+        row("cases completed".into(), pm(&a.cases_completed, 1.0));
+        row(
+            format!("cycle time, mean ({uname})"),
+            pm(&a.case_cycle_time_mean, unit),
+        );
+        row(
+            format!("cycle time, median ({uname})"),
+            pm(&a.case_cycle_time_median, unit),
+        );
+        row(
+            format!("cycle time, p90 ({uname})"),
+            pm(&a.case_cycle_time_p90, unit),
+        );
+        row("case cost, mean".into(), pm(&a.case_cost_mean, 1.0));
+        for (id, x) in &a.activities {
+            row(format!("{id}: wait ({uname})"), pm(&x.waiting_mean, unit));
+            row(
+                format!("{id}: processing ({uname})"),
+                pm(&x.processing_mean, unit),
+            );
+        }
+        for (name, x) in &a.resources {
+            row(format!("{name}: utilisation (%)"), pm(&x.utilisation, 0.01));
+        }
+        for (id, x) in &a.process_cycle_time_mean {
+            row(format!("{id}: instance cycle time ({uname})"), pm(x, unit));
+        }
+    });
 }

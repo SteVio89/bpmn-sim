@@ -150,6 +150,7 @@ pub struct Engine<'a> {
     records: Vec<ActivityRecord>,
     end_events: BTreeMap<QId, u64>,
     boundary_fired: BTreeMap<QId, u64>,
+    horizon_reached: bool,
     msg_flows: Vec<&'a MessageFlow>,
     /// group -> case
     groups: Vec<usize>,
@@ -245,6 +246,7 @@ impl<'a> Engine<'a> {
             records: Vec::new(),
             end_events: BTreeMap::new(),
             boundary_fired: BTreeMap::new(),
+            horizon_reached: false,
             msg_flows: m
                 .project
                 .files
@@ -274,7 +276,13 @@ impl<'a> Engine<'a> {
         for g in 0..self.m.arrivals.len() {
             self.schedule(0.0, Ev::Arrival(g));
         }
+        let horizon = self.m.sim.horizon;
         while let Some(Reverse((Time(t), _, ev))) = self.queue.pop() {
+            if horizon.is_some_and(|h| t > h) {
+                // Cut off at the horizon: later events never happen.
+                self.horizon_reached = true;
+                break;
+            }
             self.now = t;
             match ev {
                 Ev::Arrival(g) => self.on_arrival(g),
@@ -282,6 +290,9 @@ impl<'a> Engine<'a> {
                 Ev::Reply { group, flow } => self.deliver(group, flow),
                 Ev::Timer(sub) => self.fire_sub(sub),
             }
+        }
+        if self.horizon_reached {
+            self.now = horizon.unwrap_or(self.now);
         }
         self.finish()
     }
@@ -903,13 +914,33 @@ impl<'a> Engine<'a> {
         if let Some(pool) = cfg.pool.as_ref().and_then(|p| self.pools.get_mut(p)) {
             pool.busy += 1;
         }
+        // With a calendar the work starts when the resource is next open and pauses outside
+        // opening hours; `duration` is working time, `end` is wall-clock time.
+        let calendar = self.calendar_of(&node);
+        let (begin, end) = match calendar {
+            Some(c) => {
+                let begin = c.next_open(self.now);
+                (begin, c.advance(begin, duration))
+            }
+            None => (self.now, self.now + duration),
+        };
         let r = &mut self.runs[id];
-        r.start = self.now;
+        r.start = begin;
         r.duration = duration;
         r.state = RunState::Running;
         let (inst, tok) = (r.instance, r.token);
         self.set_token(inst, tok, &node, "working");
-        self.schedule(self.now + duration, Ev::TaskDone(id));
+        self.schedule(end, Ev::TaskDone(id));
+    }
+
+    fn calendar_of(&self, activity: &QId) -> Option<&'a crate::calendar::Calendar> {
+        let m = self.m;
+        m.activities
+            .get(activity)?
+            .pool
+            .as_ref()
+            .and_then(|p| m.pools.get(p))
+            .and_then(|d| d.calendar.as_ref())
     }
 
     /// Give a freed resource to the next task still waiting for it (FIFO).
@@ -965,6 +996,7 @@ impl<'a> Engine<'a> {
             queued,
             start,
             end: self.now,
+            work: duration,
             cost,
             cancelled: false,
         });
@@ -1007,7 +1039,13 @@ impl<'a> Engine<'a> {
             return;
         };
         let (worked, begun) = match state {
-            RunState::Running => (self.now - start, start),
+            RunState::Running => (
+                match self.calendar_of(&node_id) {
+                    Some(c) => c.open_between(start, self.now),
+                    None => (self.now - start).max(0.0),
+                },
+                start.min(self.now),
+            ),
             _ => (0.0, self.now),
         };
         let rate = cfg
@@ -1026,6 +1064,7 @@ impl<'a> Engine<'a> {
             queued,
             start: begun,
             end: self.now,
+            work: worked,
             cost,
             cancelled: true,
         });
@@ -1336,31 +1375,50 @@ impl<'a> Engine<'a> {
 
         // The observation window is the whole run; utilisation includes warm-up cases.
         let end_time = self.now;
+        // Tasks still running at the horizon have worked until then.
+        let mut busy: BTreeMap<&String, f64> =
+            self.pools.iter().map(|(n, p)| (n, p.busy_time)).collect();
+        for r in self.runs.iter().filter(|r| r.state == RunState::Running) {
+            if let Some(pool) = self.m.activities.get(&r.node).and_then(|a| a.pool.as_ref()) {
+                let worked = match self.calendar_of(&r.node) {
+                    Some(c) => c.open_between(r.start, end_time),
+                    None => (end_time - r.start).max(0.0),
+                };
+                if let Some(b) = busy.get_mut(pool) {
+                    *b += worked.min(r.duration);
+                }
+            }
+        }
         let resources = self
             .pools
             .iter()
             .map(|(name, p)| {
                 let def = &self.m.pools[name];
-                let available = f64::from(def.count) * end_time;
+                let open = match &def.calendar {
+                    Some(c) => c.open_between(0.0, end_time),
+                    None => end_time,
+                };
+                let busy_time = busy[name];
+                let available = f64::from(def.count) * open;
                 (
                     name.clone(),
                     ResourceStats {
                         count: def.count,
                         tasks: p.tasks,
-                        busy_time: p.busy_time,
+                        busy_time,
                         utilisation: if available > 0.0 {
-                            p.busy_time / available
+                            busy_time / available
                         } else {
                             0.0
                         },
-                        cost: p.busy_time / 3600.0 * def.cost_per_hour,
+                        cost: busy_time / 3600.0 * def.cost_per_hour,
                     },
                 )
             })
             .collect();
 
         // A token sitting at an embedded subprocess is not reported itself: its inner tokens are.
-        let stuck = self
+        let alive_tokens: Vec<StuckToken> = self
             .instances
             .iter()
             .flat_map(|inst| {
@@ -1376,6 +1434,12 @@ impl<'a> Engine<'a> {
                     })
             })
             .collect();
+        // Cut off by the horizon: unfinished work is not a deadlock.
+        let (stuck, unfinished) = if self.horizon_reached {
+            (Vec::new(), alive_tokens)
+        } else {
+            (alive_tokens, Vec::new())
+        };
 
         ReplicationResult {
             seed: self.seed,
@@ -1388,6 +1452,9 @@ impl<'a> Engine<'a> {
             resources,
             end_events: self.end_events,
             stuck,
+            unfinished,
+            horizon_reached: self.horizon_reached,
+            start_epoch: self.m.sim.clock.epoch,
             messages_lost: self
                 .messages
                 .iter()

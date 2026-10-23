@@ -1,0 +1,33 @@
+# V13: the model and parameters to re-create in QBP / BIMP (see docs/validation.md).
+[simulation]
+seed = 13
+replications = 30
+cases = 5000
+warm_up_cases = 500
+time_unit = "minutes"
+
+[[arrivals]]
+label = "Requests"
+inter_arrival = { dist = "exponential", mean = "12m" }
+triggers = ["Start"]
+
+[resources.Clerks]
+count = 2
+cost_per_hour = 20.0
+[resources.Experts]
+count = 1
+cost_per_hour = 50.0
+
+[activities.Task_Intake]
+duration = { dist = "triangular", min = "2m", mode = "4m", max = "9m" }
+[activities.Task_Simple]
+duration = { dist = "normal", mean = "10m", stdev = "2m" }
+[activities.Task_Check]
+duration = { dist = "exponential", mean = "6m" }
+[activities.Task_Review]
+duration = { dist = "uniform", min = "5m", max = "15m" }
+[activities.Task_Close]
+duration = { dist = "fixed", value = "3m" }
+
+[gateways.Split]
+probabilities = { Flow_simple = 0.6, Flow_complex = 0.4 }

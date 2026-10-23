@@ -1,0 +1,19 @@
+# V3: M/M/1 queue, rho = 0.8 (lambda = 1/10 min, mu = 1/8 min).
+# Theory: Wq = rho / (mu - lambda) = 32 min, W = 1 / (mu - lambda) = 40 min, utilisation 0.8.
+# Run:  sim-cli run tests/fixtures/v1-single-task.bpmn --scenario tests/fixtures/v3-mm1.toml
+[simulation]
+seed = 2024
+replications = 20
+cases = 40000
+warm_up_cases = 4000
+time_unit = "minutes"
+
+[[arrivals]]
+inter_arrival = { dist = "exponential", mean = "10m" }
+triggers = ["Start"]
+
+[resources.Dev]
+count = 1
+
+[activities.Task_Work]
+duration = { dist = "exponential", mean = "8m" }
