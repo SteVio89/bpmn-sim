@@ -2,6 +2,10 @@
 name = "sim-cli"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Command-line runner for the BPMN process simulator"
+publish = false
 
 [dependencies]
 anyhow = "1.0.104"

@@ -2,6 +2,10 @@
 name = "sim-core"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Discrete-event simulation of BPMN 2.0 process and collaboration models: parser, engine, statistics"
+publish = false
 
 [dependencies]
 rand = "0.10.3"
