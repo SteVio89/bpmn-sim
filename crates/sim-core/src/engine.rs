@@ -167,6 +167,8 @@ pub struct Engine<'a> {
     sub_starts: BTreeMap<QId, Vec<QId>>,
     link_catch: BTreeMap<(QId, String), QId>,
     signal_starts: BTreeMap<String, Vec<QId>>,
+    /// Inclusive join -> every element from which a token can still reach it.
+    or_reach: BTreeMap<QId, BTreeSet<QId>>,
 }
 
 /// Run all replications; replication `i` uses seed `seed + i`.
@@ -223,6 +225,16 @@ impl<'a> Engine<'a> {
                 }
             }
         }
+        let or_reach = m
+            .project
+            .nodes()
+            .filter(|n| {
+                m.active.contains(&n.process)
+                    && n.kind == NodeKind::InclusiveGateway
+                    && n.incoming.len() > 1
+            })
+            .map(|j| (j.id.clone(), reaching(m, j)))
+            .collect();
         Self {
             m,
             seed,
@@ -263,6 +275,7 @@ impl<'a> Engine<'a> {
             sub_starts,
             link_catch,
             signal_starts,
+            or_reach,
         }
     }
 
@@ -402,6 +415,18 @@ impl<'a> Engine<'a> {
 
     /// Move tokens through zero-time elements until they wait or end.
     fn process(&mut self, inst: usize, mut work: Vec<Work>) {
+        loop {
+            self.run_work(inst, &mut work);
+            // Inclusive joins can only be judged once every token has settled.
+            if !self.fire_or_joins(inst, &mut work) {
+                break;
+            }
+        }
+        self.check_completion(inst);
+    }
+
+    fn run_work(&mut self, inst: usize, work: &mut Vec<Work>) {
+        let mut work = std::mem::take(work);
         while let Some((tok, node_id, via)) = work.pop() {
             // The token may have been cancelled (terminate, interrupting boundary) meanwhile.
             if !self.alive(inst, tok) {
@@ -460,13 +485,138 @@ impl<'a> Engine<'a> {
                 NodeKind::ParallelGateway if node.incoming.len() > 1 => {
                     self.and_join(inst, tok, node, via, &mut work)
                 }
+                NodeKind::InclusiveGateway if node.incoming.len() > 1 => {
+                    self.set_token(inst, tok, &node_id, "waiting at inclusive join");
+                    if let Some(flow) = via {
+                        self.instances[inst]
+                            .joins
+                            .entry(node_id.clone())
+                            .or_default()
+                            .entry(flow)
+                            .or_default()
+                            .push_back(tok);
+                    }
+                }
+                NodeKind::EventBasedGateway => self.event_gateway(inst, tok, node, &mut work),
                 _ => {
                     self.set_token(inst, tok, &node_id, "passing");
                     self.route(inst, tok, node, &mut work);
                 }
             }
         }
-        self.check_completion(inst);
+    }
+
+    /// Fire every inclusive join of the instance that no other token (of the same subprocess
+    /// scope) can still reach. Returns whether one fired (then there is new work).
+    fn fire_or_joins(&mut self, inst: usize, work: &mut Vec<Work>) -> bool {
+        let mut fired = false;
+        let joins: Vec<QId> = self.instances[inst]
+            .joins
+            .iter()
+            .filter(|(j, flows)| {
+                self.or_reach.contains_key(*j) && flows.values().any(|q| !q.is_empty())
+            })
+            .map(|(j, _)| j.clone())
+            .collect();
+        for j in joins {
+            let Some(reach) = self.or_reach.get(&j).cloned() else {
+                continue;
+            };
+            let i = &self.instances[inst];
+            let waiting: BTreeSet<u64> = i.joins[&j].values().flatten().copied().collect();
+            let scopes: BTreeSet<Option<usize>> = waiting
+                .iter()
+                .filter_map(|t| i.tokens.get(t).map(|x| x.scope))
+                .collect();
+            for scope in scopes {
+                let i = &self.instances[inst];
+                let blocked = i.tokens.iter().any(|(id, t)| {
+                    !waiting.contains(id) && t.scope == scope && reach.contains(&t.node)
+                });
+                if blocked {
+                    continue;
+                }
+                // One token per incoming flow (of this scope) is consumed; the first continues.
+                let mut firing = Vec::new();
+                let tokens = &self.instances[inst].tokens;
+                let scope_of = |t: &u64| tokens.get(t).map(|x| x.scope);
+                let mut picks = Vec::new();
+                if let Some(flows) = self.instances[inst].joins.get(&j) {
+                    for (f, q) in flows {
+                        if let Some(pos) = q.iter().position(|t| scope_of(t) == Some(scope)) {
+                            picks.push((f.clone(), pos));
+                        }
+                    }
+                }
+                if let Some(flows) = self.instances[inst].joins.get_mut(&j) {
+                    for (f, pos) in picks {
+                        if let Some(t) = flows.get_mut(&f).and_then(|q| q.remove(pos)) {
+                            firing.push(t);
+                        }
+                    }
+                }
+                let Some((&keep, rest)) = firing.split_first() else {
+                    continue;
+                };
+                for t in rest {
+                    self.instances[inst].tokens.remove(t);
+                }
+                let m = self.m;
+                if let Some(node) = m.project.node(&j) {
+                    self.set_token(inst, keep, &j, "passing");
+                    self.route(inst, keep, node, work);
+                    fired = true;
+                }
+            }
+        }
+        fired
+    }
+
+    /// Event-based gateway: wait for whichever following catch event fires first; the others
+    /// are cancelled with it (all subscriptions belong to the waiting token).
+    fn event_gateway(&mut self, inst: usize, tok: u64, node: &FlowNode, work: &mut Vec<Work>) {
+        let m = self.m;
+        let targets: Vec<&FlowNode> = node
+            .outgoing
+            .iter()
+            .filter_map(|f| m.project.flow(f))
+            .filter_map(|f| m.project.node(&f.target))
+            .collect();
+        // A message already buffered for one of the events decides at once.
+        let group = self.instances[inst].group;
+        for t in &targets {
+            let is_message = matches!(t.kind, NodeKind::Task(TaskKind::Receive))
+                || matches!(t.event_defs.first(), Some(EventDef::Message(_)));
+            if is_message
+                && let Some(n) = self.buffer.get_mut(&(group, t.id.clone()))
+                && *n > 0
+            {
+                *n -= 1;
+                self.set_token(inst, tok, &t.id, "passing");
+                self.route(inst, tok, t, work);
+                return;
+            }
+        }
+        self.set_token(inst, tok, &node.id, "waiting at event-based gateway");
+        for t in targets {
+            match t.event_defs.first() {
+                Some(EventDef::Signal(name)) => {
+                    self.add_sub(
+                        inst,
+                        tok,
+                        &t.id,
+                        false,
+                        SubKind::Signal(name.clone().unwrap_or_default()),
+                    );
+                }
+                Some(EventDef::Timer) => {}
+                _ => {
+                    self.add_sub(inst, tok, &t.id, false, SubKind::Message);
+                }
+            }
+            // Timer events (and externally triggered events) fire after their `[events]` delay.
+            self.external_timer(inst, tok, t);
+        }
     }
 
     fn and_join(
@@ -522,7 +672,31 @@ impl<'a> Engine<'a> {
                 }
                 vec![pick.clone()]
             }
-            _ => node.outgoing.clone(),
+            _ => match self.m.inclusive.get(&node.id) {
+                Some(cfg) if node.kind == NodeKind::InclusiveGateway => {
+                    let mut chosen: Vec<QId> = Vec::new();
+                    for (f, p) in &cfg.flows {
+                        if self.rng.random::<f64>() < *p {
+                            chosen.push(f.clone());
+                        }
+                    }
+                    if chosen.is_empty() {
+                        // None chosen: the default flow, else the most likely flow (first on ties).
+                        let fallback = cfg.default.clone().or_else(|| {
+                            cfg.flows
+                                .iter()
+                                .fold(None::<&(QId, f64)>, |best, x| match best {
+                                    Some(b) if b.1 >= x.1 => Some(b),
+                                    _ => Some(x),
+                                })
+                                .map(|(f, _)| f.clone())
+                        });
+                        chosen.extend(fallback);
+                    }
+                    chosen
+                }
+                _ => node.outgoing.clone(),
+            },
         };
         if flows.is_empty() {
             // Implicit end (validation warns about it).
@@ -1478,4 +1652,49 @@ impl<'a> Engine<'a> {
             records: self.records,
         }
     }
+}
+
+/// Every element of the same process (and subprocess level) from which `join` is reachable:
+/// backwards over sequence flows, from link catch events to their link throws, and from
+/// boundary events to the activity they are attached to.
+fn reaching(m: &BoundModel, join: &FlowNode) -> BTreeSet<QId> {
+    let project = m.project;
+    let mut seen = BTreeSet::new();
+    let mut stack = vec![join.id.clone()];
+    while let Some(id) = stack.pop() {
+        let Some(n) = project.node(&id) else { continue };
+        let mut preds: Vec<QId> = n
+            .incoming
+            .iter()
+            .filter_map(|f| project.flow(f))
+            .map(|f| f.source.clone())
+            .collect();
+        if n.kind == NodeKind::IntermediateCatchEvent {
+            for d in &n.event_defs {
+                if let EventDef::Link(name) = d {
+                    preds.extend(
+                        project
+                            .nodes()
+                            .filter(|t| {
+                                t.process == n.process
+                                    && t.kind == NodeKind::IntermediateThrowEvent
+                                    && t.event_defs
+                                        .iter()
+                                        .any(|e| matches!(e, EventDef::Link(l) if l == name))
+                            })
+                            .map(|t| t.id.clone()),
+                    );
+                }
+            }
+        }
+        if let Some(a) = &n.attached_to {
+            preds.push(a.clone());
+        }
+        for p in preds {
+            if seen.insert(p.clone()) {
+                stack.push(p);
+            }
+        }
+    }
+    seen
 }

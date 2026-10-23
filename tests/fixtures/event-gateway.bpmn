@@ -1,0 +1,44 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL" id="D">
+  <bpmn:message id="M" name="Answer"/>
+  <bpmn:signal id="S" name="Go"/>
+  <bpmn:collaboration id="C">
+    <bpmn:participant id="PA" name="A" processRef="Process_A"/>
+    <bpmn:participant id="PB" name="B" processRef="Process_B"/>
+    <bpmn:participant id="PC" name="C" processRef="Process_C"/>
+    <bpmn:messageFlow id="MF" sourceRef="Throw_Msg" targetRef="Catch_Msg"/>
+  </bpmn:collaboration>
+  <bpmn:process id="Process_A">
+    <bpmn:startEvent id="Start_A"/>
+    <bpmn:eventBasedGateway id="Ebg"/>
+    <bpmn:intermediateCatchEvent id="Catch_Msg"><bpmn:messageEventDefinition messageRef="M"/></bpmn:intermediateCatchEvent>
+    <bpmn:intermediateCatchEvent id="Wait_Timer"><bpmn:timerEventDefinition/></bpmn:intermediateCatchEvent>
+    <bpmn:intermediateCatchEvent id="Catch_Sig"><bpmn:signalEventDefinition signalRef="S"/></bpmn:intermediateCatchEvent>
+    <bpmn:endEvent id="End_M"/>
+    <bpmn:endEvent id="End_T"/>
+    <bpmn:endEvent id="End_S"/>
+    <bpmn:sequenceFlow id="A0" sourceRef="Start_A" targetRef="Ebg"/>
+    <bpmn:sequenceFlow id="A1" sourceRef="Ebg" targetRef="Catch_Msg"/>
+    <bpmn:sequenceFlow id="A2" sourceRef="Ebg" targetRef="Wait_Timer"/>
+    <bpmn:sequenceFlow id="A3" sourceRef="Ebg" targetRef="Catch_Sig"/>
+    <bpmn:sequenceFlow id="A4" sourceRef="Catch_Msg" targetRef="End_M"/>
+    <bpmn:sequenceFlow id="A5" sourceRef="Wait_Timer" targetRef="End_T"/>
+    <bpmn:sequenceFlow id="A6" sourceRef="Catch_Sig" targetRef="End_S"/>
+  </bpmn:process>
+  <bpmn:process id="Process_B">
+    <bpmn:startEvent id="Start_B"/>
+    <bpmn:task id="Task_B"/>
+    <bpmn:intermediateThrowEvent id="Throw_Msg"><bpmn:messageEventDefinition messageRef="M"/></bpmn:intermediateThrowEvent>
+    <bpmn:endEvent id="End_B"/>
+    <bpmn:sequenceFlow id="B0" sourceRef="Start_B" targetRef="Task_B"/>
+    <bpmn:sequenceFlow id="B1" sourceRef="Task_B" targetRef="Throw_Msg"/>
+    <bpmn:sequenceFlow id="B2" sourceRef="Throw_Msg" targetRef="End_B"/>
+  </bpmn:process>
+  <bpmn:process id="Process_C">
+    <bpmn:startEvent id="Start_C"/>
+    <bpmn:task id="Task_C"/>
+    <bpmn:endEvent id="End_C"><bpmn:signalEventDefinition signalRef="S"/></bpmn:endEvent>
+    <bpmn:sequenceFlow id="C0" sourceRef="Start_C" targetRef="Task_C"/>
+    <bpmn:sequenceFlow id="C1" sourceRef="Task_C" targetRef="End_C"/>
+  </bpmn:process>
+</bpmn:definitions>

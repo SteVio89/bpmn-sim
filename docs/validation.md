@@ -19,6 +19,7 @@ How the numbers of the simulator are checked (spec §8). `cargo test --workspace
 | V11 | `m4a_events::v11_*` | link throw/catch behaves exactly like a sequence flow |
 | V12 | `m1_engine::v12_*` and the `*_deterministic` tests | same seed, bit-identical results |
 | V13 | by hand, see below | comparison with QBP / BIMP |
+| M6 | `m6_gateways::*` | inclusive split frequencies (5σ), OR join waits exactly for the chosen / still reachable branches, per instance; event-based gateway: first event wins, the others are cancelled |
 
 Further unit tests cover the t quantiles, confidence intervals and the calendar arithmetic
 (`aggregate.rs`, `calendar.rs`).

@@ -282,6 +282,8 @@ pub struct BoundModel<'p> {
     pub activities: BTreeMap<QId, ActivityCfg>,
     /// XOR split -> (outgoing flow, probability), in model order.
     pub gateways: BTreeMap<QId, Vec<(QId, f64)>>,
+    /// Inclusive (OR) split -> independent flow probabilities and the default flow.
+    pub inclusive: BTreeMap<QId, InclusiveCfg>,
     pub buffer_unconsumed: bool,
     pub signal_scope: SignalScope,
     /// Black-box participant -> reply delay.
@@ -292,6 +294,13 @@ pub struct BoundModel<'p> {
     /// Processes that take part in the run (triggered, or reached by messages/signals).
     pub active: Vec<QId>,
     pub warnings: Vec<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct InclusiveCfg {
+    /// Non-default outgoing flows and their probabilities, in model order.
+    pub flows: Vec<(QId, f64)>,
+    pub default: Option<QId>,
 }
 
 #[derive(Debug, Clone)]
@@ -858,35 +867,41 @@ impl Scenario {
             );
         }
 
-        // XOR split probabilities.
+        // Split probabilities: XOR splits need one per flow summing to 1; inclusive (OR) splits
+        // take each flow independently with its probability, except the default flow.
         let mut gateways = BTreeMap::new();
+        let mut inclusive = BTreeMap::new();
         let mut gw_specs: BTreeMap<QId, &GatewaySpec> = BTreeMap::new();
         for (key, spec) in &self.gateways {
             match resolve(project, key, "gateway") {
-                Ok(q) => {
-                    if project.node(&q).map(|n| &n.kind) != Some(&NodeKind::ExclusiveGateway) {
-                        errors.push(format!(
-                            "[gateways.{key}]: '{q}' is not an exclusive gateway"
-                        ));
-                    } else {
+                Ok(q) => match project.node(&q).map(|n| &n.kind) {
+                    Some(NodeKind::ExclusiveGateway | NodeKind::InclusiveGateway) => {
                         gw_specs.insert(q, spec);
                     }
-                }
+                    _ => errors.push(format!(
+                        "[gateways.{key}]: '{q}' is not an exclusive or inclusive gateway"
+                    )),
+                },
                 Err(e) => errors.push(format!("[gateways]: {e}")),
             }
         }
-        for n in nodes
-            .iter()
-            .filter(|n| n.kind == NodeKind::ExclusiveGateway && n.outgoing.len() > 1)
-        {
+        for n in nodes.iter().filter(|n| {
+            matches!(
+                n.kind,
+                NodeKind::ExclusiveGateway | NodeKind::InclusiveGateway
+            ) && n.outgoing.len() > 1
+        }) {
+            let is_or = n.kind == NodeKind::InclusiveGateway;
             let Some(spec) = gw_specs.get(&n.id) else {
                 errors.push(format!(
-                    "{} ({}): XOR split needs a [gateways] entry with probabilities",
+                    "{} ({}): {} split needs a [gateways] entry with probabilities",
                     n.id,
-                    n.label()
+                    n.label(),
+                    if is_or { "inclusive" } else { "XOR" }
                 ));
                 continue;
             };
+            let default = n.default_flow.clone().filter(|_| is_or);
             let mut by_flow: BTreeMap<QId, f64> = BTreeMap::new();
             for (k, p) in &spec.probabilities {
                 let q = match k.split_once('#') {
@@ -896,6 +911,11 @@ impl Scenario {
                 if !n.outgoing.contains(&q) {
                     errors.push(format!(
                         "{}: '{k}' is not an outgoing flow of this gateway",
+                        n.id
+                    ));
+                } else if default.as_ref() == Some(&q) {
+                    errors.push(format!(
+                        "{}: '{k}' is the default flow of an inclusive gateway and takes no probability (it is used when no other flow is chosen)",
                         n.id
                     ));
                 } else if !(0.0..=1.0).contains(p) {
@@ -908,7 +928,7 @@ impl Scenario {
                 }
             }
             let mut list = Vec::new();
-            for f in &n.outgoing {
+            for f in n.outgoing.iter().filter(|f| default.as_ref() != Some(*f)) {
                 match by_flow.get(f) {
                     Some(p) => list.push((f.clone(), *p)),
                     None => errors.push(format!(
@@ -917,11 +937,47 @@ impl Scenario {
                     )),
                 }
             }
-            let sum: f64 = list.iter().map(|(_, p)| p).sum();
-            if list.len() == n.outgoing.len() && (sum - 1.0).abs() > 1e-9 {
-                errors.push(format!("{}: probabilities sum to {sum}, expected 1", n.id));
+            if is_or {
+                inclusive.insert(
+                    n.id.clone(),
+                    InclusiveCfg {
+                        flows: list,
+                        default,
+                    },
+                );
+            } else {
+                let sum: f64 = list.iter().map(|(_, p)| p).sum();
+                if list.len() == n.outgoing.len() && (sum - 1.0).abs() > 1e-9 {
+                    errors.push(format!("{}: probabilities sum to {sum}, expected 1", n.id));
+                }
+                gateways.insert(n.id.clone(), list);
             }
-            gateways.insert(n.id.clone(), list);
+        }
+
+        // Event-based gateways lead to catch events (message, signal, timer) or receive tasks.
+        for n in nodes
+            .iter()
+            .filter(|n| n.kind == NodeKind::EventBasedGateway)
+        {
+            for f in &n.outgoing {
+                let target = project.flow(f).and_then(|fl| project.node(&fl.target));
+                let ok = target.is_some_and(|t| match &t.kind {
+                    NodeKind::Task(TaskKind::Receive) => true,
+                    NodeKind::IntermediateCatchEvent => matches!(
+                        t.event_defs.first(),
+                        Some(EventDef::Message(_) | EventDef::Signal(_) | EventDef::Timer)
+                    ),
+                    _ => false,
+                });
+                if !ok {
+                    errors.push(format!(
+                        "{} ({}): flow '{}' of an event-based gateway must lead to a message, signal or timer catch event or a receive task",
+                        n.id,
+                        n.label(),
+                        f.id
+                    ));
+                }
+            }
         }
 
         if !errors.is_empty() {
@@ -946,6 +1002,7 @@ impl Scenario {
             pools,
             activities,
             gateways,
+            inclusive,
             buffer_unconsumed: messages.buffer_unconsumed,
             signal_scope: sim.signal_scope,
             black_box_reply,
@@ -1093,9 +1150,7 @@ fn unsupported(n: &FlowNode) -> Option<String> {
         | NodeKind::IntermediateCatchEvent
         | NodeKind::BoundaryEvent => todo("event with this event definition", "not planned"),
         NodeKind::CallActivity => None,
-        NodeKind::InclusiveGateway | NodeKind::EventBasedGateway => {
-            todo("inclusive/event-based gateway", "M6")
-        }
+        NodeKind::InclusiveGateway | NodeKind::EventBasedGateway => None,
         NodeKind::Unsupported(k) => Some(format!("'{k}' is not supported")),
     }
 }
@@ -1181,6 +1236,20 @@ impl Scenario {
                     if let Some(spec) = spec {
                         boundary.insert(n.id.to_string(), spec);
                     }
+                }
+                NodeKind::InclusiveGateway if n.outgoing.len() > 1 => {
+                    gateways.insert(
+                        n.id.to_string(),
+                        GatewaySpec {
+                            label: n.name.clone(),
+                            probabilities: n
+                                .outgoing
+                                .iter()
+                                .filter(|f| n.default_flow.as_ref() != Some(*f))
+                                .map(|f| (f.id.clone(), 0.5))
+                                .collect(),
+                        },
+                    );
                 }
                 NodeKind::ExclusiveGateway if n.outgoing.len() > 1 => {
                     let p = 1.0 / n.outgoing.len() as f64;

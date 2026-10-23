@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL" id="D">
+  <bpmn:process id="Process_OrU">
+    <bpmn:startEvent id="Start"/>
+    <bpmn:parallelGateway id="And_Split"/>
+    <bpmn:task id="Task_A"/>
+    <bpmn:task id="Task_Pre"/>
+    <bpmn:exclusiveGateway id="Xor"/>
+    <bpmn:task id="Task_B"/>
+    <bpmn:task id="Task_X"/>
+    <bpmn:endEvent id="End_X"/>
+    <bpmn:inclusiveGateway id="Or_Join"/>
+    <bpmn:task id="Task_After"/>
+    <bpmn:endEvent id="End"/>
+    <bpmn:sequenceFlow id="F0" sourceRef="Start" targetRef="And_Split"/>
+    <bpmn:sequenceFlow id="F1" sourceRef="And_Split" targetRef="Task_A"/>
+    <bpmn:sequenceFlow id="F2" sourceRef="And_Split" targetRef="Task_Pre"/>
+    <bpmn:sequenceFlow id="F3" sourceRef="Task_A" targetRef="Or_Join"/>
+    <bpmn:sequenceFlow id="F4" sourceRef="Task_Pre" targetRef="Xor"/>
+    <bpmn:sequenceFlow id="Flow_toB" sourceRef="Xor" targetRef="Task_B"/>
+    <bpmn:sequenceFlow id="Flow_toX" sourceRef="Xor" targetRef="Task_X"/>
+    <bpmn:sequenceFlow id="F7" sourceRef="Task_B" targetRef="Or_Join"/>
+    <bpmn:sequenceFlow id="F8" sourceRef="Task_X" targetRef="End_X"/>
+    <bpmn:sequenceFlow id="F9" sourceRef="Or_Join" targetRef="Task_After"/>
+    <bpmn:sequenceFlow id="F10" sourceRef="Task_After" targetRef="End"/>
+  </bpmn:process>
+</bpmn:definitions>

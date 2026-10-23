@@ -325,14 +325,11 @@ pub fn show(app: &mut App, ui: &mut Ui) {
                 });
         }
 
-        egui::CollapsingHeader::new(format!("XOR gateways ({})", s.gateways.len())).show(
-            ui,
-            |ui| {
-                for (key, g) in s.gateways.iter_mut() {
-                    gateway_editor(ui, &project, key, g);
-                }
-            },
-        );
+        egui::CollapsingHeader::new(format!("Gateways ({})", s.gateways.len())).show(ui, |ui| {
+            for (key, g) in s.gateways.iter_mut() {
+                gateway_editor(ui, &project, key, g);
+            }
+        });
     });
 }
 
@@ -394,6 +391,14 @@ fn gateway_editor(ui: &mut Ui, project: &Project, key: &str, g: &mut GatewaySpec
         .show(ui, |ui| {
             for (flow, p) in g.probabilities.iter_mut() {
                 ui.add(egui::Slider::new(p, 0.0..=1.0).text(flow.as_str()));
+            }
+            let inclusive = project
+                .nodes()
+                .find(|n| n.id.to_string() == key || n.id.id == key)
+                .is_some_and(|n| n.kind == sim_core::NodeKind::InclusiveGateway);
+            if inclusive {
+                ui.label("inclusive: each flow is taken independently; if none is, the default (or most likely) flow");
+                return;
             }
             let sum: f64 = g.probabilities.values().sum();
             ui.horizontal(|ui| {

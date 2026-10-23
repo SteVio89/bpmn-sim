@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL" id="D">
+  <bpmn:process id="Process_OrD">
+    <bpmn:startEvent id="Start"/>
+    <bpmn:inclusiveGateway id="Or_Split" default="Flow_d"/>
+    <bpmn:task id="Task_A"/>
+    <bpmn:task id="Task_D"/>
+    <bpmn:inclusiveGateway id="Or_Join"/>
+    <bpmn:endEvent id="End"/>
+    <bpmn:sequenceFlow id="F0" sourceRef="Start" targetRef="Or_Split"/>
+    <bpmn:sequenceFlow id="Flow_a" sourceRef="Or_Split" targetRef="Task_A"/>
+    <bpmn:sequenceFlow id="Flow_d" sourceRef="Or_Split" targetRef="Task_D"/>
+    <bpmn:sequenceFlow id="F3" sourceRef="Task_A" targetRef="Or_Join"/>
+    <bpmn:sequenceFlow id="F4" sourceRef="Task_D" targetRef="Or_Join"/>
+    <bpmn:sequenceFlow id="F5" sourceRef="Or_Join" targetRef="End"/>
+  </bpmn:process>
+</bpmn:definitions>

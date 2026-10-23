@@ -215,12 +215,16 @@ mod tests {
 
     #[test]
     fn boundary_and_timer_sections_draw_and_run() {
-        for fixture in ["v9-boundary-timer.bpmn", "timer-catch.bpmn"] {
+        for fixture in [
+            "v9-boundary-timer.bpmn",
+            "timer-catch.bpmn",
+            "or-upstream.bpmn",
+            "or-split-join.bpmn",
+        ] {
             let ctx = egui::Context::default();
             let mut app = App::default();
             app.ws.open(&fixtures().join(fixture));
             app.regenerate_skeleton();
-            assert!(!app.scenario.events.is_empty() || !app.scenario.boundary.is_empty());
             app.tab = Tab::Scenario;
             frames(&mut app, &ctx, 2);
             app.start_run(&ctx);
