@@ -201,3 +201,28 @@ fn data_stores_objects_annotations_and_associations_are_kept_for_drawing() {
     assert!(p.node(&t("DS1")).is_none());
     assert!(validate(&p).iter().all(|i| i.element.id != "DS1"));
 }
+
+#[test]
+fn default_and_conditional_flows_are_marked() {
+    let p = Project::open_main(&fixture("multi-file/main.bpmn")).unwrap();
+    let (defaults, conditional) = sim_core::diagram::flow_markers(&p, "subprocess-a.bpmn");
+    assert!(
+        defaults.contains(&QId::new("subprocess-a.bpmn", "Flow_ok")),
+        "{defaults:?}"
+    );
+    assert!(conditional.is_empty());
+    // Conditions after a gateway get no marker; a condition on a flow leaving a task does.
+    let p = Project::open_main(&fixture("dmn/claim.bpmn")).unwrap();
+    let (defaults, conditional) = sim_core::diagram::flow_markers(&p, "claim.bpmn");
+    assert!(defaults.is_empty() && conditional.is_empty());
+    let text = std::fs::read_to_string(fixture("v13-model.bpmn"))
+        .unwrap()
+        .replace(r#"<bpmn:sequenceFlow id="F12" sourceRef="Task_Close" targetRef="End"/>"#, r#"<bpmn:sequenceFlow id="F12" sourceRef="Task_Close" targetRef="End"><bpmn:conditionExpression>=done</bpmn:conditionExpression></bpmn:sequenceFlow>"#);
+    let mut p = Project::new();
+    p.add_source("v13-model.bpmn", &text).unwrap();
+    let (_, conditional) = sim_core::diagram::flow_markers(&p, "v13-model.bpmn");
+    assert_eq!(
+        conditional.into_iter().map(|q| q.id).collect::<Vec<_>>(),
+        ["F12"]
+    );
+}

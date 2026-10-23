@@ -566,16 +566,21 @@ mod tests {
                 }
                 let out = r.frame(&ctx, r.input(), |ui| app.draw(ui));
                 r.save(&ctx, out, &dir.join("manual-start.png"));
-                // Complete tasks until a gateway asks, then show subprocess A.
-                for _ in 0..6 {
+                // Complete tasks and go on from events until a gateway asks, then show subprocess A.
+                for _ in 0..12 {
                     let m = app.diagram.manual.as_mut().unwrap();
-                    if let Some(sim_core::manual::Pending::Complete { token, .. }) = m
-                        .game
-                        .pending()
-                        .into_iter()
-                        .find(|p| matches!(p, sim_core::manual::Pending::Complete { .. }))
-                    {
-                        m.apply(sim_core::manual::Action::Complete { token });
+                    let step = m.game.pending().into_iter().find_map(|p| match p {
+                        sim_core::manual::Pending::Complete { token, .. } => {
+                            Some(sim_core::manual::Action::Complete { token })
+                        }
+                        sim_core::manual::Pending::Continue { token, .. } => {
+                            Some(sim_core::manual::Action::Continue { token })
+                        }
+                        _ => None,
+                    });
+                    match step {
+                        Some(a) => m.apply(a),
+                        None => break,
                     }
                 }
                 app.diagram.file = Some("subprocess-a.bpmn".into());

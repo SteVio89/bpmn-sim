@@ -198,3 +198,35 @@ pub fn messages_in_flight(
         })
         .collect()
 }
+
+/// Sequence flows of `file` drawn with a marker at their start: default flows (a slash) and
+/// conditional flows leaving an activity or event (a small diamond; conditions after gateways
+/// get no marker in BPMN).
+pub fn flow_markers(
+    project: &Project,
+    file: &str,
+) -> (
+    std::collections::BTreeSet<QId>,
+    std::collections::BTreeSet<QId>,
+) {
+    let mut defaults = std::collections::BTreeSet::new();
+    let mut conditional = std::collections::BTreeSet::new();
+    let Some(f) = project.files.get(file) else {
+        return (defaults, conditional);
+    };
+    for n in f.nodes.values() {
+        if let Some(d) = &n.default_flow {
+            defaults.insert(d.clone());
+        }
+    }
+    for flow in f.sequence_flows.values() {
+        let from_gateway = f
+            .nodes
+            .get(&flow.source)
+            .is_some_and(|n| n.kind.is_gateway());
+        if flow.condition.is_some() && !from_gateway && !defaults.contains(&flow.id) {
+            conditional.insert(flow.id.clone());
+        }
+    }
+    (defaults, conditional)
+}

@@ -569,6 +569,7 @@ fn draw(
     }
 
     // Flows.
+    let (default_flows, conditional_flows) = sim_core::diagram::flow_markers(project, &file.name);
     let pointer = response.hover_pos();
     let mut hovered_flow = None;
     for (id, points) in &d.edges {
@@ -615,6 +616,31 @@ fn draw(
         } else {
             painter.add(Shape::line(pts.clone(), thin));
             painter.add(Shape::convex_polygon(head, ink, Stroke::NONE));
+            // Default flow: a slash across its start; conditional flow from an activity: a
+            // small diamond at its start.
+            if let [a, b, ..] = pts.as_slice() {
+                let dir = (*b - *a).normalized();
+                let normal = Vec2::new(-dir.y, dir.x);
+                let s = 6.0 * zoom.clamp(0.6, 2.0);
+                if default_flows.contains(id) {
+                    let c = *a + dir * (s * 2.0);
+                    painter.line_segment(
+                        [
+                            c - dir * s * 0.6 - normal * s,
+                            c + dir * s * 0.6 + normal * s,
+                        ],
+                        Stroke::new(1.5, ink),
+                    );
+                } else if conditional_flows.contains(id) {
+                    let diamond = vec![
+                        *a,
+                        *a + dir * s + normal * s * 0.6,
+                        *a + dir * s * 2.0,
+                        *a + dir * s - normal * s * 0.6,
+                    ];
+                    painter.add(Shape::convex_polygon(diamond, paper, thin));
+                }
+            }
         }
     }
 
