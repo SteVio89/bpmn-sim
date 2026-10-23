@@ -173,3 +173,31 @@ fn label_positions_are_read_when_the_modeller_gave_them() {
         "no label bounds: drawn at the middle of the flow"
     );
 }
+
+#[test]
+fn data_stores_objects_annotations_and_associations_are_kept_for_drawing() {
+    let mut p = Project::new();
+    p.add_path(&fixture("task-types.bpmn")).unwrap();
+    let f = &p.files["task-types.bpmn"];
+    let t = |id: &str| QId::new("task-types.bpmn", id);
+    assert_eq!(
+        f.artifacts[&t("DS1")],
+        Artifact {
+            kind: ArtifactKind::DataStore,
+            text: Some("Customer DB".into())
+        }
+    );
+    assert_eq!(f.artifacts[&t("DO1")].kind, ArtifactKind::DataObject);
+    assert_eq!(
+        f.artifacts[&t("TA1")].text.as_deref(),
+        Some("Checked by the team lead")
+    );
+    // Data associations have an arrow, the plain association to the annotation has none.
+    assert!(f.associations[&t("DOA_1")]);
+    assert!(f.associations[&t("DIA_1")]);
+    assert!(!f.associations[&t("Assoc_1")]);
+    assert!(f.diagram.shapes.contains_key(&t("DS1")));
+    // They are not flow nodes: simulation and validation are unaffected.
+    assert!(p.node(&t("DS1")).is_none());
+    assert!(validate(&p).iter().all(|i| i.element.id != "DS1"));
+}

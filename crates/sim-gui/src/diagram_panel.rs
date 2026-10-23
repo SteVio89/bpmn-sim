@@ -16,7 +16,9 @@ use sim_core::diagram::{
     HeatMetric, Occupancy, TokenPlace, TokenView, heat, messages_in_flight, snapshot,
     token_positions,
 };
-use sim_core::{BpmnFile, EventDef, FlowNode, NodeKind, Project, QId, ReplicationResult, TaskKind};
+use sim_core::{
+    ArtifactKind, BpmnFile, EventDef, FlowNode, NodeKind, Project, QId, ReplicationResult, TaskKind,
+};
 
 use crate::app::App;
 use crate::diagram_icons::{self, Icon};
@@ -594,7 +596,17 @@ fn draw(
         let dir = (*last - *before).normalized() * 9.0 * zoom.clamp(0.5, 2.0);
         let side = Vec2::new(-dir.y, dir.x) * 0.5;
         let head = vec![*last, *last - dir + side, *last - dir - side];
-        if file.message_flows.contains_key(id) {
+        if let Some(directed) = file.associations.get(id) {
+            // Association (data or annotation): dotted, an open arrow head if directed.
+            let dotted = Stroke::new(1.0, ink.gamma_multiply(0.8));
+            painter.extend(Shape::dashed_line(&pts, dotted, 2.0, 3.0));
+            if *directed {
+                painter.add(Shape::line(
+                    vec![*last - dir + side, *last, *last - dir - side],
+                    dotted,
+                ));
+            }
+        } else if file.message_flows.contains_key(id) {
             // Message flow: dashed, small circle at the start, open arrow head.
             let grey = Stroke::new(1.0, ink.gamma_multiply(0.7));
             painter.extend(Shape::dashed_line(&pts, grey, 6.0 * zoom, 4.0 * zoom));
@@ -622,6 +634,116 @@ fn draw(
             }
         }
     };
+
+    // Artifacts: data stores, data objects, text annotations, groups.
+    for (id, a) in &file.artifacts {
+        let Some(b) = d.shapes.get(id) else { continue };
+        let r = rect_of(b);
+        let text = a.text.clone().unwrap_or_default();
+        match a.kind {
+            ArtifactKind::DataStore => {
+                // A cylinder: body, top ellipse, bottom arc and two rings under the top.
+                let ry = (r.height() * 0.12).max(2.0);
+                let (cx, rx) = (r.center().x, r.width() / 2.0);
+                let arc = |cy: f32, from: f32, to: f32| -> Vec<Pos2> {
+                    (0..=24)
+                        .map(|i| {
+                            let a = from + (to - from) * i as f32 / 24.0;
+                            Pos2::new(cx + rx * a.cos(), cy + ry * a.sin())
+                        })
+                        .collect()
+                };
+                let (top, bottom) = (r.top() + ry, r.bottom() - ry);
+                let mut body = arc(bottom, 0.0, std::f32::consts::PI);
+                body.extend(arc(top, std::f32::consts::PI, std::f32::consts::TAU));
+                painter.add(Shape::convex_polygon(body, paper, Stroke::NONE));
+                painter.line_segment(
+                    [Pos2::new(r.left(), top), Pos2::new(r.left(), bottom)],
+                    thin,
+                );
+                painter.line_segment(
+                    [Pos2::new(r.right(), top), Pos2::new(r.right(), bottom)],
+                    thin,
+                );
+                painter.add(Shape::closed_line(
+                    arc(top, 0.0, std::f32::consts::TAU),
+                    thin,
+                ));
+                for k in 1..=2 {
+                    painter.add(Shape::line(
+                        arc(top + k as f32 * ry * 0.7, 0.0, std::f32::consts::PI),
+                        thin,
+                    ));
+                }
+                painter.add(Shape::line(arc(bottom, 0.0, std::f32::consts::PI), thin));
+                name_label(&painter, id, r.center_bottom() + Vec2::new(0.0, 2.0), text);
+            }
+            ArtifactKind::DataObject => {
+                // A sheet with a folded corner.
+                let f = (r.width() * 0.3).min(r.height() * 0.3);
+                let sheet = vec![
+                    r.left_top(),
+                    Pos2::new(r.right() - f, r.top()),
+                    Pos2::new(r.right(), r.top() + f),
+                    r.right_bottom(),
+                    r.left_bottom(),
+                ];
+                painter.add(Shape::convex_polygon(sheet, paper, thin));
+                painter.add(Shape::line(
+                    vec![
+                        Pos2::new(r.right() - f, r.top()),
+                        Pos2::new(r.right() - f, r.top() + f),
+                        Pos2::new(r.right(), r.top() + f),
+                    ],
+                    thin,
+                ));
+                name_label(&painter, id, r.center_bottom() + Vec2::new(0.0, 2.0), text);
+            }
+            ArtifactKind::TextAnnotation => {
+                // An open bracket on the left with the text beside it.
+                let w = (10.0 * zoom).min(r.width() / 3.0);
+                painter.add(Shape::line(
+                    vec![
+                        Pos2::new(r.left() + w, r.top()),
+                        r.left_top(),
+                        r.left_bottom(),
+                        Pos2::new(r.left() + w, r.bottom()),
+                    ],
+                    thin,
+                ));
+                let galley = painter.layout(text, font.clone(), ink, (r.width() - 8.0).max(20.0));
+                painter.galley(
+                    Pos2::new(r.left() + 5.0, r.center().y - galley.size().y / 2.0),
+                    galley,
+                    ink,
+                );
+            }
+            ArtifactKind::Group => {
+                let ring: Vec<Pos2> = vec![
+                    r.left_top(),
+                    r.right_top(),
+                    r.right_bottom(),
+                    r.left_bottom(),
+                    r.left_top(),
+                ];
+                painter.extend(Shape::dashed_line(
+                    &ring,
+                    thin,
+                    8.0 * zoom.max(0.5),
+                    3.0 * zoom.max(0.5),
+                ));
+                if !text.is_empty() {
+                    painter.text(
+                        r.center_top() + Vec2::new(0.0, 3.0),
+                        Align2::CENTER_TOP,
+                        text,
+                        font.clone(),
+                        ink,
+                    );
+                }
+            }
+        }
+    }
 
     // Flow nodes.
     let mut hovered = None;

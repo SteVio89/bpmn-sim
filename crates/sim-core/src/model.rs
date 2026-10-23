@@ -178,6 +178,26 @@ pub struct BpmnFile {
     pub lanes: BTreeMap<QId, String>,
     /// BPMNDI layout of the file's first diagram (only used for drawing).
     pub diagram: Diagram,
+    /// Data stores, data objects, text annotations and groups (only drawn, never simulated).
+    pub artifacts: BTreeMap<QId, Artifact>,
+    /// Associations (data input/output associations and plain ones); `true` = has an arrow
+    /// at its target (only drawn).
+    pub associations: BTreeMap<QId, bool>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ArtifactKind {
+    DataStore,
+    DataObject,
+    TextAnnotation,
+    Group,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Artifact {
+    pub kind: ArtifactKind,
+    /// The name, or the text of a text annotation.
+    pub text: Option<String>,
 }
 
 /// Rectangle in diagram coordinates (BPMNDI `dc:Bounds`).

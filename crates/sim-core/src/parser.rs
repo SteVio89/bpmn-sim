@@ -177,6 +177,9 @@ impl Parser<'_> {
 
     fn read_collaboration(&mut self, n: Node) -> Result<(), ParseError> {
         for c in bpmn_children(n) {
+            if self.read_artifact(c) {
+                continue;
+            }
             match c.tag_name().name() {
                 "participant" => {
                     let id = self.required_id(c)?;
@@ -313,11 +316,26 @@ impl Parser<'_> {
                 flows.push((self.required_id(c)?, c));
                 continue;
             }
+            if self.read_artifact(c) {
+                continue;
+            }
             let Some(kind) = node_kind(local) else {
                 continue;
             };
             let id = self.required_id(c)?;
             let qid = self.qid(&id);
+            // Data associations of an activity (drawn as dotted arrows).
+            for a in bpmn_children(c).filter(|a| {
+                matches!(
+                    a.tag_name().name(),
+                    "dataInputAssociation" | "dataOutputAssociation"
+                )
+            }) {
+                if let Some(aid) = a.attribute("id") {
+                    let q = self.qid(aid);
+                    self.out.associations.insert(q, true);
+                }
+            }
             if self.out.nodes.contains_key(&qid) {
                 return Err(self.err(&id, "duplicate element id"));
             }
@@ -328,6 +346,41 @@ impl Parser<'_> {
             }
         }
         Ok(())
+    }
+
+    /// Remember data stores, data objects, text annotations, groups and associations for
+    /// drawing; returns whether `c` was one of them.
+    fn read_artifact(&mut self, c: Node) -> bool {
+        let kind = match c.tag_name().name() {
+            "dataStoreReference" => ArtifactKind::DataStore,
+            "dataObjectReference" => ArtifactKind::DataObject,
+            "textAnnotation" => ArtifactKind::TextAnnotation,
+            "group" => ArtifactKind::Group,
+            "association" => {
+                if let Some(id) = c.attribute("id") {
+                    let directed =
+                        matches!(c.attribute("associationDirection"), Some("One" | "Both"));
+                    self.out.associations.insert(self.qid(id), directed);
+                }
+                return true;
+            }
+            _ => return false,
+        };
+        let Some(id) = c.attribute("id") else {
+            return true;
+        };
+        let text = if kind == ArtifactKind::TextAnnotation {
+            bpmn_children(c)
+                .find(|t| t.tag_name().name() == "text")
+                .and_then(|t| t.text())
+                .map(|t| t.trim().to_string())
+        } else {
+            c.attribute("name").map(str::to_string)
+        };
+        self.out
+            .artifacts
+            .insert(self.qid(id), Artifact { kind, text });
+        true
     }
 
     fn read_node(

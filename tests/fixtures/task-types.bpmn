@@ -5,11 +5,16 @@
     <bpmn:participant id="Part_Types" name="All markers" processRef="Process_Types"/>
   </bpmn:collaboration>
   <bpmn:process id="Process_Types">
+    <bpmn:dataStoreReference id="DS1" name="Customer DB"/>
+    <bpmn:dataObject id="DataObject_1"/>
+    <bpmn:dataObjectReference id="DO1" name="Claim form" dataObjectRef="DataObject_1"/>
+    <bpmn:textAnnotation id="TA1"><bpmn:text>Checked by the team lead</bpmn:text></bpmn:textAnnotation>
+    <bpmn:association id="Assoc_1" sourceRef="TA1" targetRef="Task_User"/>
     <bpmn:startEvent id="Start" name="Start"/>
     <bpmn:task id="Task_Plain" name="Task"/>
     <bpmn:userTask id="Task_User" name="User task"/>
-    <bpmn:serviceTask id="Task_Service" name="Service task"/>
-    <bpmn:scriptTask id="Task_Script" name="Script task"/>
+    <bpmn:serviceTask id="Task_Service" name="Service task"><bpmn:dataOutputAssociation id="DOA_1"><bpmn:targetRef>DS1</bpmn:targetRef></bpmn:dataOutputAssociation></bpmn:serviceTask>
+    <bpmn:scriptTask id="Task_Script" name="Script task"><bpmn:dataInputAssociation id="DIA_1"><bpmn:sourceRef>DO1</bpmn:sourceRef></bpmn:dataInputAssociation></bpmn:scriptTask>
     <bpmn:manualTask id="Task_Manual" name="Manual task"/>
     <bpmn:businessRuleTask id="Task_Rule" name="Business rule task"/>
     <bpmn:sendTask id="Task_Send" name="Send task"/>
@@ -67,6 +72,12 @@
       <bpmndi:BPMNEdge id="F11_di" bpmnElement="F11"><di:waypoint x="1818" y="120"/><di:waypoint x="1935" y="120"/></bpmndi:BPMNEdge>
       <bpmndi:BPMNEdge id="F12_di" bpmnElement="F12"><di:waypoint x="1985" y="120"/><di:waypoint x="2095" y="120"/></bpmndi:BPMNEdge>
       <bpmndi:BPMNEdge id="F13_di" bpmnElement="F13"><di:waypoint x="2145" y="120"/><di:waypoint x="2262" y="120"/></bpmndi:BPMNEdge>
+      <bpmndi:BPMNShape id="DS1_di" bpmnElement="DS1"><dc:Bounds x="655" y="240" width="50" height="50"/><bpmndi:BPMNLabel><dc:Bounds x="645" y="295" width="70" height="14"/></bpmndi:BPMNLabel></bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="DO1_di" bpmnElement="DO1"><dc:Bounds x="802" y="240" width="36" height="50"/></bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="TA1_di" bpmnElement="TA1"><dc:Bounds x="430" y="235" width="150" height="40"/></bpmndi:BPMNShape>
+      <bpmndi:BPMNEdge id="DOA_1_di" bpmnElement="DOA_1"><di:waypoint x="680" y="160"/><di:waypoint x="680" y="240"/></bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="DIA_1_di" bpmnElement="DIA_1"><di:waypoint x="820" y="240"/><di:waypoint x="820" y="160"/></bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Assoc_1_di" bpmnElement="Assoc_1"><di:waypoint x="480" y="235"/><di:waypoint x="510" y="160"/></bpmndi:BPMNEdge>
     </bpmndi:BPMNPlane>
   </bpmndi:BPMNDiagram>
 </bpmn:definitions>
