@@ -446,7 +446,8 @@ impl Parser<'_> {
             parent: parent.cloned(),
             lane: None,
             attached_to,
-            cancel_activity: n.attribute("cancelActivity") != Some("false"),
+            cancel_activity: n.attribute("cancelActivity") != Some("false")
+                && n.attribute("isInterrupting") != Some("false"),
             called_element,
             called_decision,
             result_variable,

@@ -70,19 +70,14 @@ pub fn validate(project: &Project) -> Vec<Issue> {
 
         let instantiating_gateway = n.kind == NodeKind::EventBasedGateway
             && (n.instantiate || (n.incoming.is_empty() && !implicit.contains(&n.id)));
-        if n.triggered_by_event {
-            push(
-                Severity::Warning,
-                n,
-                "event subprocesses are not supported yet".into(),
-            );
-        } else if instantiating_gateway {
+        if instantiating_gateway {
             push(
                 Severity::Warning,
                 n,
                 "event-based gateways that start a process are not supported; only start events start one".into(),
             );
-        } else {
+        } else if !n.triggered_by_event {
+            // (Event subprocesses have no sequence flows; their structure is checked on binding.)
             if !n.kind.is_event() && n.incoming.is_empty() && !implicit.contains(&n.id) {
                 push(Severity::Warning, n, "has no incoming sequence flow".into());
             }

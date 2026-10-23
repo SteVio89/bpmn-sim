@@ -688,6 +688,11 @@ impl Scenario {
                         let Some(n) = project.node(&q) else { continue };
                         if n.kind != NodeKind::StartEvent {
                             errors.push(format!("{label}: trigger '{q}' is not a start event"));
+                        } else if n.parent.is_some() {
+                            // Earlier skeletons listed these; the subprocess starts them itself.
+                            warnings.push(format!(
+                                "{label}: trigger '{q}' is a start event inside a subprocess, it is ignored"
+                            ));
                         } else if !n
                             .event_defs
                             .iter()
@@ -750,6 +755,7 @@ impl Scenario {
                 };
                 if source_active
                     && t.kind == NodeKind::StartEvent
+                    && t.parent.is_none()
                     && t.event_defs
                         .iter()
                         .any(|d| matches!(d, EventDef::Message(_)))
@@ -784,7 +790,11 @@ impl Scenario {
                 .collect();
             let to_add: Vec<QId> = project
                 .nodes()
-                .filter(|n| n.kind == NodeKind::StartEvent && !processes.contains(&n.process))
+                .filter(|n| {
+                    n.kind == NodeKind::StartEvent
+                        && n.parent.is_none()
+                        && !processes.contains(&n.process)
+                })
                 .filter(|n| {
                     n.event_defs.iter().any(|d| {
                         matches!(d, EventDef::Signal(name) if thrown.contains(&name.as_deref().unwrap_or_default()))
@@ -830,7 +840,9 @@ impl Scenario {
                             "message flow {}: target '{}' cannot receive a message",
                             f.id, f.target
                         ));
-                    } else if !processes.contains(&t.process) && t.kind != NodeKind::StartEvent {
+                    } else if !processes.contains(&t.process)
+                        && !(t.kind == NodeKind::StartEvent && t.parent.is_none())
+                    {
                         warnings.push(format!(
                             "message flow {}: target '{}' is in a process that is never instantiated, the message will stay undelivered",
                             f.id, f.target
@@ -854,14 +866,12 @@ impl Scenario {
         }
 
         // Element support and per-element configuration for every instantiated process.
-        // Elements inside an event subprocess are left out: the event subprocess itself is
-        // reported as unsupported.
         let nodes: Vec<&FlowNode> = project
             .nodes()
-            .filter(|n| processes.contains(&n.process) && !project.in_event_subprocess(n))
+            .filter(|n| processes.contains(&n.process))
             .collect();
         for n in &nodes {
-            if let Some(why) = unsupported(n) {
+            if let Some(why) = unsupported(project, n) {
                 errors.push(format!("{} ({}): {why}", n.id, n.label()));
             }
         }
@@ -911,8 +921,13 @@ impl Scenario {
                     }
                 }
             }
-            if n.kind == NodeKind::SubProcess
-                && !n.triggered_by_event
+            if n.triggered_by_event {
+                errors.extend(
+                    event_sub_problems(project, n)
+                        .into_iter()
+                        .map(|why| format!("{} ({}): {why}", n.id, n.label())),
+                );
+            } else if n.kind == NodeKind::SubProcess
                 && project.start_nodes(&n.process, Some(&n.id)).is_empty()
             {
                 errors.push(format!(
@@ -960,15 +975,27 @@ impl Scenario {
                     Some(NodeKind::IntermediateCatchEvent | NodeKind::Task(TaskKind::Receive)) => {
                         event_specs.insert(q, spec);
                     }
+                    Some(NodeKind::StartEvent)
+                        if project.node(&q).is_some_and(|n| {
+                            project.is_event_sub_start(n)
+                                && matches!(
+                                    n.event_defs.first(),
+                                    Some(EventDef::Timer | EventDef::Message(_) | EventDef::Signal(_))
+                                )
+                        }) =>
+                    {
+                        event_specs.insert(q, spec);
+                    }
                     _ => errors.push(format!(
-                        "[events.{key}]: '{q}' is not an intermediate catch event or receive task"
+                        "[events.{key}]: '{q}' is not an intermediate catch event, receive task or timer/message/signal start event of an event subprocess"
                     )),
                 },
                 Err(e) => errors.push(format!("[events]: {e}")),
             }
         }
         for n in &nodes {
-            let is_timer = n.kind == NodeKind::IntermediateCatchEvent
+            let is_timer = (n.kind == NodeKind::IntermediateCatchEvent
+                || project.is_event_sub_start(n))
                 && n.event_defs.iter().any(|d| matches!(d, EventDef::Timer));
             match event_specs.get(&n.id) {
                 Some(spec) => match Dist::new(&spec.delay) {
@@ -1656,13 +1683,10 @@ fn resolve_participant(project: &Project, key: &str) -> Result<QId, String> {
 }
 
 /// Elements the engine cannot execute yet; `None` if supported.
-fn unsupported(n: &FlowNode) -> Option<String> {
+fn unsupported(project: &Project, n: &FlowNode) -> Option<String> {
     let todo = |what: &str, m: &str| Some(format!("{what} is not supported yet ({m})"));
     let single = |ok: fn(&EventDef) -> bool| n.event_defs.len() == 1 && ok(&n.event_defs[0]);
     match &n.kind {
-        NodeKind::SubProcess if n.triggered_by_event => {
-            Some("event subprocesses are not supported yet".into())
-        }
         NodeKind::Task(_)
         | NodeKind::ExclusiveGateway
         | NodeKind::ParallelGateway
@@ -1676,6 +1700,25 @@ fn unsupported(n: &FlowNode) -> Option<String> {
                     || single(|d| matches!(d, EventDef::Message(_) | EventDef::Signal(_)))) =>
         {
             None
+        }
+        NodeKind::StartEvent if project.is_event_sub_start(n) => {
+            if single(|d| {
+                matches!(
+                    d,
+                    EventDef::Message(_)
+                        | EventDef::Signal(_)
+                        | EventDef::Timer
+                        | EventDef::Error(_)
+                        | EventDef::Escalation(_)
+                )
+            }) {
+                None
+            } else {
+                todo(
+                    "event subprocess start event with this event definition",
+                    "not planned",
+                )
+            }
         }
         NodeKind::StartEvent if n.parent.is_some() && single(|d| matches!(d, EventDef::None)) => {
             None
@@ -1747,6 +1790,36 @@ fn unsupported(n: &FlowNode) -> Option<String> {
     }
 }
 
+/// What is wrong with the structure of event subprocess `n` (BPMN §10.3.5, §13.5.4).
+fn event_sub_problems(project: &Project, n: &FlowNode) -> Vec<String> {
+    let mut problems = Vec::new();
+    let starts: Vec<&FlowNode> = project
+        .nodes()
+        .filter(|c| c.parent.as_ref() == Some(&n.id) && c.kind == NodeKind::StartEvent)
+        .collect();
+    match starts.as_slice() {
+        [s] => {
+            if s.event_defs.iter().all(|d| matches!(d, EventDef::None)) {
+                problems.push("the start event of an event subprocess needs a trigger".into());
+            }
+            if !s.cancel_activity && matches!(s.event_defs.first(), Some(EventDef::Error(_))) {
+                problems.push("an error event subprocess is always interrupting".into());
+            }
+        }
+        _ => problems.push("an event subprocess needs exactly one start event".into()),
+    }
+    if !n.incoming.is_empty() || !n.outgoing.is_empty() {
+        problems.push("an event subprocess must not have sequence flows".into());
+    }
+    if project
+        .nodes()
+        .any(|b| b.attached_to.as_ref() == Some(&n.id))
+    {
+        problems.push("an event subprocess cannot have boundary events".into());
+    }
+    problems
+}
+
 impl Scenario {
     /// A complete starting scenario for a loaded model: every task, XOR split and resource pool
     /// gets an entry with placeholder values, using qualified ids (spec §4).
@@ -1759,6 +1832,7 @@ impl Scenario {
             .nodes()
             .filter(|n| {
                 n.kind == NodeKind::StartEvent
+                    && n.parent.is_none()
                     && Some(&n.id.file) == main.as_ref()
                     && n.event_defs
                         .iter()
@@ -1887,8 +1961,10 @@ impl Scenario {
                         },
                     );
                 }
-                NodeKind::IntermediateCatchEvent
-                    if n.event_defs.iter().any(|d| matches!(d, EventDef::Timer)) =>
+                NodeKind::IntermediateCatchEvent | NodeKind::StartEvent
+                    if n.event_defs.iter().any(|d| matches!(d, EventDef::Timer))
+                        && (n.kind == NodeKind::IntermediateCatchEvent
+                            || project.is_event_sub_start(n)) =>
                 {
                     events.insert(
                         n.id.to_string(),

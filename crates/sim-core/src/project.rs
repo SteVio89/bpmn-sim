@@ -170,16 +170,27 @@ impl Project {
             .collect()
     }
 
-    /// Whether `n` lies (at any depth) inside an event subprocess.
-    pub fn in_event_subprocess(&self, n: &FlowNode) -> bool {
-        let mut parent = n.parent.as_ref();
-        while let Some(p) = parent.and_then(|p| self.node(p)) {
-            if p.triggered_by_event {
-                return true;
-            }
-            parent = p.parent.as_ref();
-        }
-        false
+    /// The start events of the event subprocesses directly inside `container` (an embedded
+    /// subprocess or event subprocess, `None` for the top level of `process`).
+    pub fn event_sub_starts(&self, process: &QId, container: Option<&QId>) -> Vec<&FlowNode> {
+        self.nodes()
+            .filter(|n| n.process == *process && self.is_event_sub_start(n))
+            .filter(|n| {
+                n.parent
+                    .as_ref()
+                    .and_then(|p| self.node(p))
+                    .is_some_and(|es| es.parent.as_ref() == container)
+            })
+            .collect()
+    }
+
+    /// Whether `n` is the start event of an event subprocess.
+    pub fn is_event_sub_start(&self, n: &FlowNode) -> bool {
+        n.kind == NodeKind::StartEvent
+            && n.parent
+                .as_ref()
+                .and_then(|p| self.node(p))
+                .is_some_and(|p| p.triggered_by_event)
     }
 
     /// The outgoing flows of an activity or event (not a gateway) that has conditional

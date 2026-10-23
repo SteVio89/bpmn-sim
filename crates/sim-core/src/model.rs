@@ -109,6 +109,7 @@ pub struct FlowNode {
     pub lane: Option<String>,
     /// Boundary events only.
     pub attached_to: Option<QId>,
+    /// Boundary events: `cancelActivity`; start events: `isInterrupting` (both default true).
     pub cancel_activity: bool,
     /// Call activities: called process id (`calledElement` or `zeebe:calledElement`).
     pub called_element: Option<String>,

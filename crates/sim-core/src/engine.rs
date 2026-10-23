@@ -5,6 +5,9 @@
 //!
 //! Tokens wait through *subscriptions*: a catch event, receive task or boundary event subscribes
 //! to a message, a signal or a timer. Cancelling an activity deactivates its subscriptions.
+//! The start events of event subprocesses subscribe while their enclosing scope runs; their
+//! subscriptions belong to the token at the enclosing subprocess, or to no token
+//! (`NO_TOKEN`) at the top level of an instance.
 
 use std::cmp::{Ordering, Reverse};
 use std::collections::{BTreeMap, BTreeSet, BinaryHeap, VecDeque};
@@ -117,6 +120,8 @@ struct Instance {
     tokens: BTreeMap<u64, Token>,
     /// AND join node -> incoming flow -> waiting tokens (FIFO).
     joins: BTreeMap<QId, BTreeMap<QId, VecDeque<u64>>>,
+    /// Subscriptions of the event subprocesses at the top level.
+    event_subs: Vec<usize>,
     done: bool,
 }
 
@@ -148,6 +153,22 @@ struct Pool {
 
 /// Work item: a token arrives at `node`, via `via` (None for start events).
 type Work = (u64, QId, Option<QId>);
+
+/// Owner of the event subprocess subscriptions at the top level of an instance.
+const NO_TOKEN: u64 = u64::MAX;
+
+/// Who catches a thrown error or escalation.
+enum Catcher {
+    /// A boundary event of the activity token `owner` sits at.
+    Boundary { inst: usize, owner: u64, event: QId },
+    /// An event subprocess (its start event `start`) of `scope` (`None`: the top level).
+    EventSub {
+        inst: usize,
+        scope: Option<usize>,
+        owner: u64,
+        start: QId,
+    },
+}
 
 pub struct Engine<'a> {
     m: &'a BoundModel<'a>,
@@ -185,6 +206,11 @@ pub struct Engine<'a> {
     // Static lookups derived from the model.
     boundaries_of: BTreeMap<QId, Vec<QId>>,
     sub_starts: BTreeMap<QId, Vec<QId>>,
+    /// (process, enclosing subprocess or `None` for the top level) -> start events of its
+    /// event subprocesses.
+    event_subs_of: BTreeMap<(QId, Option<QId>), Vec<QId>>,
+    /// Event subprocess subscription -> scope it belongs to (`None`: the top level).
+    es_subs: BTreeMap<usize, Option<usize>>,
     link_catch: BTreeMap<(QId, String), QId>,
     signal_starts: BTreeMap<String, Vec<QId>>,
     /// Inclusive join -> every element from which a token can still reach it.
@@ -215,6 +241,7 @@ impl<'a> Engine<'a> {
     pub fn new(m: &'a BoundModel<'a>, seed: u64) -> Self {
         let mut boundaries_of: BTreeMap<QId, Vec<QId>> = BTreeMap::new();
         let mut sub_starts: BTreeMap<QId, Vec<QId>> = BTreeMap::new();
+        let mut event_subs_of: BTreeMap<(QId, Option<QId>), Vec<QId>> = BTreeMap::new();
         let mut link_catch = BTreeMap::new();
         let mut signal_starts: BTreeMap<String, Vec<QId>> = BTreeMap::new();
         for n in m.project.nodes().filter(|n| m.active.contains(&n.process)) {
@@ -227,7 +254,15 @@ impl<'a> Engine<'a> {
             if n.kind == NodeKind::SubProcess {
                 sub_starts.insert(n.id.clone(), m.project.start_nodes(&n.process, Some(&n.id)));
             }
-            if n.kind == NodeKind::StartEvent {
+            if m.project.is_event_sub_start(n)
+                && let Some(es) = n.parent.as_ref().and_then(|p| m.project.node(p))
+            {
+                event_subs_of
+                    .entry((n.process.clone(), es.parent.clone()))
+                    .or_default()
+                    .push(n.id.clone());
+            }
+            if n.kind == NodeKind::StartEvent && n.parent.is_none() {
                 for d in &n.event_defs {
                     if let EventDef::Signal(name) = d {
                         signal_starts
@@ -295,6 +330,8 @@ impl<'a> Engine<'a> {
             signals: Vec::new(),
             boundaries_of,
             sub_starts,
+            event_subs_of,
+            es_subs: BTreeMap::new(),
             link_catch,
             signal_starts,
             or_reach,
@@ -392,6 +429,7 @@ impl<'a> Engine<'a> {
             process,
             tokens: BTreeMap::new(),
             joins: BTreeMap::new(),
+            event_subs: Vec::new(),
             done: false,
         });
         self.cases[case].open_instances += 1;
@@ -399,6 +437,8 @@ impl<'a> Engine<'a> {
     }
 
     fn start_instance(&mut self, inst: usize, starts: Vec<QId>) {
+        let process = self.instances[inst].process.clone();
+        self.arm_event_subs(inst, NO_TOKEN, None, &process, None);
         let mut work = Vec::new();
         for s in starts.into_iter().rev() {
             let tok = self.new_token(inst, &s, "starting", None);
@@ -904,6 +944,24 @@ impl<'a> Engine<'a> {
         for s in t.subs {
             self.deactivate_sub(s);
         }
+        // Only event subprocesses still run in the scope: it is completing and starts no new
+        // ones (BPMN §13.5.4).
+        let m = self.m;
+        let rest: Vec<&Token> = self.instances[inst]
+            .tokens
+            .values()
+            .filter(|x| x.scope == t.scope)
+            .collect();
+        if !rest.is_empty()
+            && rest.iter().all(|x| {
+                m.project
+                    .node(&x.node)
+                    .is_some_and(|n| n.triggered_by_event)
+            })
+        {
+            let owner = t.scope.map_or(NO_TOKEN, |sc| self.scopes[sc].parent);
+            self.deactivate_event_subs(inst, t.scope, owner);
+        }
         if let Some(sc) = t.scope
             && !self.instances[inst]
                 .tokens
@@ -1049,6 +1107,7 @@ impl<'a> Engine<'a> {
             t.child_scope = Some(sc);
         }
         self.arm_boundaries(inst, tok, node);
+        self.arm_event_subs(inst, tok, Some(sc), &node.process, Some(&node.id));
         let starts = self.sub_starts.get(&node.id).cloned().unwrap_or_default();
         let mut items = Vec::new();
         for s in starts {
@@ -1113,6 +1172,7 @@ impl<'a> Engine<'a> {
             }
         }
         self.instances[inst].done = true;
+        self.deactivate_event_subs(inst, None, NO_TOKEN);
         let case = self.instances[inst].case;
         self.cases[case].open_instances -= 1;
     }
@@ -1197,9 +1257,17 @@ impl<'a> Engine<'a> {
         id
     }
 
-    fn timer_sub(&mut self, inst: usize, owner: u64, node: &QId, boundary: bool, delay: f64) {
+    fn timer_sub(
+        &mut self,
+        inst: usize,
+        owner: u64,
+        node: &QId,
+        boundary: bool,
+        delay: f64,
+    ) -> usize {
         let s = self.add_sub(inst, owner, node, boundary, SubKind::Timer);
         self.schedule(self.now + delay, Ev::Timer(s));
+        s
     }
 
     fn deactivate_sub(&mut self, s: usize) {
@@ -1273,20 +1341,33 @@ impl<'a> Engine<'a> {
         }
     }
 
-    /// The activity that catches an error (`error`) or escalation thrown by token `tok`: the
-    /// closest enclosing embedded subprocess or call activity, innermost first, with a matching
-    /// boundary event. At one activity a boundary event for exactly this code wins over a
-    /// catch-all one (without a code). Returns (instance, token at the activity, boundary event).
+    /// Who catches an error (`error`) or escalation thrown by token `tok`, innermost first: an
+    /// event subprocess of the scope the token is in, then a boundary event of the embedded
+    /// subprocess or call activity around it, and so on outwards (from a called process's top
+    /// level the search continues at the call activity in the calling instance). At one level a
+    /// handler for exactly this code wins over a catch-all one (without a code). What an event
+    /// subprocess throws is not caught by the event subprocesses next to it.
     fn find_catch(
         &self,
         inst: usize,
         tok: u64,
         error: bool,
         code: Option<&str>,
-    ) -> Option<(usize, u64, QId)> {
+    ) -> Option<Catcher> {
         let (mut i, mut t) = (inst, tok);
+        let mut skip_event_subs = false;
         loop {
-            let (owner_inst, mut owner) = match self.instances[i].tokens.get(&t)?.scope {
+            let scope = self.instances[i].tokens.get(&t)?.scope;
+            if !skip_event_subs && let Some(start) = self.event_sub_catch(i, scope, error, code) {
+                let owner = scope.map_or(NO_TOKEN, |sc| self.scopes[sc].parent);
+                return Some(Catcher::EventSub {
+                    inst: i,
+                    scope,
+                    owner,
+                    start,
+                });
+            }
+            let (owner_inst, mut owner) = match scope {
                 Some(sc) => (i, self.scopes[sc].parent),
                 None => self.instances[i].parent?,
             };
@@ -1313,18 +1394,61 @@ impl<'a> Engine<'a> {
                     }
                 })
                 .collect();
-            let exact = codes.iter().find(|(_, c)| c.is_some() && *c == code);
-            if let Some((b, _)) = exact.or_else(|| codes.iter().find(|(_, c)| c.is_none())) {
-                return Some((owner_inst, owner, (*b).clone()));
+            if let Some(b) = best_match(&codes, code) {
+                return Some(Catcher::Boundary {
+                    inst: owner_inst,
+                    owner,
+                    event: b.clone(),
+                });
             }
+            skip_event_subs = self
+                .m
+                .project
+                .node(activity)
+                .is_some_and(|n| n.triggered_by_event);
             (i, t) = (owner_inst, owner);
         }
     }
 
-    /// Throw an error or escalation from token `tok`; returns whether a boundary event caught it.
-    /// An error, and an escalation caught by an interrupting boundary event, cancel the catching
-    /// activity with everything inside (including the thrower); a non-interrupting escalation
-    /// boundary starts an extra token and the thrower goes on.
+    /// The start event of an event subprocess of `scope` (`None`: the top level of the
+    /// instance) that catches this error or escalation.
+    fn event_sub_catch(
+        &self,
+        inst: usize,
+        scope: Option<usize>,
+        error: bool,
+        code: Option<&str>,
+    ) -> Option<QId> {
+        let container = match scope {
+            // The iterations of a multi-instance or loop activity are no process level.
+            Some(sc) if self.scopes[sc].repeat.is_some() => return None,
+            Some(sc) => Some(self.scopes[sc].node.clone()),
+            None => None,
+        };
+        let key = (self.instances[inst].process.clone(), container);
+        let codes: Vec<(&QId, Option<&str>)> = self
+            .event_subs_of
+            .get(&key)
+            .into_iter()
+            .flatten()
+            .filter_map(|s| {
+                let n = self.m.project.node(s)?;
+                match (n.event_defs.first()?, error) {
+                    (EventDef::Error(c), true) | (EventDef::Escalation(c), false) => {
+                        Some((s, c.as_deref()))
+                    }
+                    _ => None,
+                }
+            })
+            .collect();
+        best_match(&codes, code).cloned()
+    }
+
+    /// Throw an error or escalation from token `tok`; returns whether a boundary event or an
+    /// event subprocess caught it. An error, and an escalation caught by an interrupting
+    /// boundary event, cancel the catching activity with everything inside (including the
+    /// thrower); a non-interrupting escalation boundary starts an extra token and the thrower
+    /// goes on. An event subprocess cancels the rest of its scope if it is interrupting.
     fn raise(
         &mut self,
         inst: usize,
@@ -1333,8 +1457,30 @@ impl<'a> Engine<'a> {
         code: Option<&str>,
         work: &mut Vec<Work>,
     ) -> bool {
-        let Some((owner_inst, owner, b)) = self.find_catch(inst, tok, error, code) else {
-            return false;
+        let (owner_inst, owner, b) = match self.find_catch(inst, tok, error, code) {
+            None => return false,
+            Some(Catcher::Boundary { inst, owner, event }) => (inst, owner, event),
+            Some(Catcher::EventSub {
+                inst: owner_inst,
+                scope,
+                owner,
+                start,
+            }) => {
+                let interrupting = error
+                    || self
+                        .m
+                        .project
+                        .node(&start)
+                        .is_some_and(|n| n.cancel_activity);
+                *self.boundary_fired.entry(start.clone()).or_default() += 1;
+                let item = self.start_event_sub(owner_inst, scope, owner, &start, interrupting);
+                if owner_inst == inst {
+                    work.push(item);
+                } else {
+                    self.process(owner_inst, vec![item]);
+                }
+                return true;
+            }
         };
         let m = self.m;
         let interrupting = error || m.project.node(&b).is_some_and(|n| n.cancel_activity);
@@ -1361,6 +1507,10 @@ impl<'a> Engine<'a> {
     /// A subscription's trigger happened.
     fn fire_sub(&mut self, s: usize) {
         if !self.subs[s].active {
+            return;
+        }
+        if let Some(&scope) = self.es_subs.get(&s) {
+            self.fire_event_sub(s, scope);
             return;
         }
         let (inst, owner, node_id, boundary) = {
@@ -1408,6 +1558,164 @@ impl<'a> Engine<'a> {
         self.set_token(inst, tok, &node.id, "passing");
         self.route(inst, tok, node, &mut work);
         self.process(inst, work);
+    }
+
+    // ------------------------------------------------------------ event subprocesses
+
+    /// A process level starts (`container`: the embedded subprocess, `None` for the top level
+    /// of the instance's process): the start events of its event subprocesses subscribe to
+    /// their message or signal, and to their `[events]` delay (timers, external triggers).
+    /// Errors and escalations need no subscription (`find_catch`).
+    fn arm_event_subs(
+        &mut self,
+        inst: usize,
+        owner: u64,
+        scope: Option<usize>,
+        process: &QId,
+        container: Option<&QId>,
+    ) {
+        let starts = self
+            .event_subs_of
+            .get(&(process.clone(), container.cloned()))
+            .cloned()
+            .unwrap_or_default();
+        let m = self.m;
+        for s in starts {
+            let Some(node) = m.project.node(&s) else {
+                continue;
+            };
+            let mut ids = Vec::new();
+            match node.event_defs.first() {
+                Some(EventDef::Message(_)) => {
+                    ids.push(self.add_sub(inst, owner, &s, false, SubKind::Message));
+                }
+                Some(EventDef::Signal(name)) => ids.push(self.add_sub(
+                    inst,
+                    owner,
+                    &s,
+                    false,
+                    SubKind::Signal(name.clone().unwrap_or_default()),
+                )),
+                _ => {}
+            }
+            if let Some(d) = m.events.get(&s) {
+                let delay = d.sample(&mut self.rng);
+                ids.push(self.timer_sub(inst, owner, &s, false, delay));
+            }
+            for id in ids {
+                self.es_subs.insert(id, scope);
+                if owner == NO_TOKEN {
+                    self.instances[inst].event_subs.push(id);
+                }
+            }
+        }
+    }
+
+    /// The trigger of an event subprocess's start event happened.
+    fn fire_event_sub(&mut self, s: usize, scope: Option<usize>) {
+        let (inst, owner, start) = {
+            let sub = &self.subs[s];
+            (sub.inst, sub.owner, sub.node.clone())
+        };
+        let gone = if owner == NO_TOKEN {
+            self.instances[inst].done
+        } else {
+            !self.alive(inst, owner)
+        };
+        if gone {
+            self.deactivate_sub(s);
+            return;
+        }
+        let interrupting = self
+            .m
+            .project
+            .node(&start)
+            .is_some_and(|n| n.cancel_activity);
+        if !interrupting && matches!(self.subs[s].kind, SubKind::Timer) {
+            // A non-interrupting timer fires once; messages and signals stay armed.
+            self.deactivate_sub(s);
+        }
+        *self.boundary_fired.entry(start.clone()).or_default() += 1;
+        let item = self.start_event_sub(inst, scope, owner, &start, interrupting);
+        self.process(inst, vec![item]);
+    }
+
+    /// Start the event subprocess of `start` in `scope`: a token waits at the event subprocess
+    /// (so the scope completes only after it) while its own scope runs from `start`. If it is
+    /// interrupting, everything else in the scope is cancelled first and no other event
+    /// subprocess of the scope can start any more. Returns the work item for `start`.
+    fn start_event_sub(
+        &mut self,
+        inst: usize,
+        scope: Option<usize>,
+        owner: u64,
+        start: &QId,
+        interrupting: bool,
+    ) -> Work {
+        if interrupting {
+            self.deactivate_event_subs(inst, scope, owner);
+            let victims: Vec<u64> = self.instances[inst]
+                .tokens
+                .iter()
+                .filter(|(_, t)| scope.is_none() || t.scope == scope)
+                .map(|(id, _)| *id)
+                .collect();
+            for v in victims {
+                if self.alive(inst, v) {
+                    self.cancel_token(inst, v);
+                }
+            }
+        }
+        let m = self.m;
+        let es = m
+            .project
+            .node(start)
+            .and_then(|n| n.parent.clone())
+            .unwrap_or_else(|| start.clone());
+        let tok = self.new_token(inst, &es, "inside event subprocess", scope);
+        self.trace(
+            inst,
+            tok,
+            TraceKind::Arrive {
+                node: es.clone(),
+                via: None,
+            },
+        );
+        let sc = self.scopes.len();
+        self.scopes.push(Scope {
+            node: es.clone(),
+            parent: tok,
+            repeat: None,
+        });
+        if let Some(t) = self.instances[inst].tokens.get_mut(&tok) {
+            t.child_scope = Some(sc);
+        }
+        let process = self.instances[inst].process.clone();
+        self.arm_event_subs(inst, tok, Some(sc), &process, Some(&es));
+        let first = self.new_token(inst, start, "starting", Some(sc));
+        (first, start.clone(), None)
+    }
+
+    /// End the event subprocess subscriptions of `scope` (owned by `owner`).
+    fn deactivate_event_subs(&mut self, inst: usize, scope: Option<usize>, owner: u64) {
+        let subs: Vec<usize> = if owner == NO_TOKEN {
+            std::mem::take(&mut self.instances[inst].event_subs)
+        } else {
+            let Some(t) = self.instances[inst].tokens.get(&owner) else {
+                return;
+            };
+            t.subs
+                .iter()
+                .copied()
+                .filter(|s| self.es_subs.get(s) == Some(&scope))
+                .collect()
+        };
+        if let Some(t) = self.instances[inst].tokens.get_mut(&owner) {
+            t.subs.retain(|s| !subs.contains(s));
+        }
+        for s in subs {
+            self.deactivate_sub(s);
+        }
     }
 
     // ------------------------------------------------------------ tasks
@@ -1743,15 +2051,18 @@ impl<'a> Engine<'a> {
                     self.waiting_msg.entry(key).or_default().push_back(s);
                 }
                 return;
-            } else if target.kind == NodeKind::StartEvent {
+            } else if target.kind == NodeKind::StartEvent && target.parent.is_none() {
                 if self.cases[case].completion.is_none() {
                     self.log_message(group, f, MessageOutcome::StartedInstance);
                     let inst = self.create_instance(case, group, target.process.clone(), None);
                     self.start_instance(inst, vec![target.id.clone()]);
                     return;
                 }
-            } else if self.m.buffer_unconsumed && target.kind != NodeKind::BoundaryEvent {
-                // (A boundary event only listens while its activity runs: never buffered.)
+            } else if self.m.buffer_unconsumed
+                && !matches!(target.kind, NodeKind::BoundaryEvent | NodeKind::StartEvent)
+            {
+                // (A boundary event only listens while its activity runs, an event subprocess
+                // while its scope runs: never buffered.)
                 outcome = MessageOutcome::Buffered;
                 *self.buffer.entry(key).or_default() += 1;
             }
@@ -1886,6 +2197,7 @@ impl<'a> Engine<'a> {
         i.done = true;
         i.finished = Some(self.now);
         let (case, parent) = (i.case, i.parent);
+        self.deactivate_event_subs(inst, None, NO_TOKEN);
         let c = &mut self.cases[case];
         c.open_instances -= 1;
         if c.open_instances == 0 {
@@ -2099,6 +2411,17 @@ impl<'a> Engine<'a> {
 /// Every element of the same process (and subprocess level) from which `join` is reachable:
 /// backwards over sequence flows, from link catch events to their link throws, and from
 /// boundary events to the activity they are attached to.
+/// The handler for exactly `code`, else a catch-all one (without a code).
+pub(crate) fn best_match<'q>(
+    handlers: &[(&'q QId, Option<&str>)],
+    code: Option<&str>,
+) -> Option<&'q QId> {
+    let exact = handlers.iter().find(|(_, c)| c.is_some() && *c == code);
+    exact
+        .or_else(|| handlers.iter().find(|(_, c)| c.is_none()))
+        .map(|(h, _)| *h)
+}
+
 pub(crate) fn reaching(project: &crate::project::Project, join: &FlowNode) -> BTreeSet<QId> {
     let mut seen = BTreeSet::new();
     let mut stack = vec![join.id.clone()];
