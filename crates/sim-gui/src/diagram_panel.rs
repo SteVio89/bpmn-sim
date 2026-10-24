@@ -54,6 +54,10 @@ pub struct DiagramView {
     pub time: f64,
     /// Playback speed in simulated seconds per real second; `None` = automatic.
     pub speed: Option<f64>,
+    /// Fast-forward through stretches in which nothing visible changes.
+    pub skip_quiet: bool,
+    /// The quiet stretch being fast-forwarded through, if any.
+    pub ff: Option<FastForward>,
     /// Follow individual (traced) cases instead of showing queues of all cases.
     pub follow: bool,
     pub case: u64,
@@ -63,6 +67,26 @@ pub struct DiagramView {
     /// Screen area of the last drawn diagram.
     pub area: Rect,
 }
+
+/// A quiet stretch of the replay played back faster.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct FastForward {
+    /// Normal speed resumes here, shortly before the next change.
+    pub until: f64,
+    /// Simulated seconds per real second while fast-forwarding.
+    pub rate: f64,
+    /// Length of the quiet stretch (simulated seconds).
+    pub span: f64,
+    /// Replay time after the last step: moved by anyone else, the fast-forward ends.
+    at: f64,
+}
+
+/// A stretch is quiet if nothing changes for this long on screen at the current speed...
+const QUIET_SECONDS: f64 = 2.0;
+/// ...and is then played back in this long...
+const FAST_FORWARD_SECONDS: f64 = 1.0;
+/// ...arriving this long (at normal speed) before the next change.
+const LEAD_SECONDS: f64 = 0.5;
 
 /// What a frame of the diagram reports back.
 pub struct DrawOut {
@@ -180,10 +204,74 @@ impl DiagramView {
         } else {
             r.end_time
         };
-        self.time += self.speed_of(r) * dt;
+        let speed = self.speed_of(r);
+        // The slider, a case switch or "next event" moved the clock: start afresh.
+        if self.ff.is_some_and(|f| f.at != self.time) || !self.skip_quiet {
+            self.ff = None;
+        }
+        if self.skip_quiet
+            && self.ff.is_none()
+            && let Some(next) = self.next_change(r)
+        {
+            let gap = next - self.time;
+            let lead = speed * LEAD_SECONDS;
+            if gap > speed * QUIET_SECONDS {
+                self.ff = Some(FastForward {
+                    until: next - lead,
+                    rate: ((gap - lead) / FAST_FORWARD_SECONDS).max(speed),
+                    span: gap,
+                    at: self.time,
+                });
+            }
+        }
+        match self.ff {
+            Some(f) => {
+                self.time = (self.time + f.rate * dt).min(f.until);
+                self.ff = (self.time < f.until).then_some(FastForward { at: self.time, ..f });
+            }
+            None => self.time += speed * dt,
+        }
         if self.time >= end {
             self.time = end;
             self.playing = false;
+            self.ff = None;
+        }
+    }
+
+    /// The next moment after the replay time at which something visible changes: a token
+    /// leaves or reaches an element, a task starts or ends, a message is sent or arrives.
+    fn next_change(&self, r: &ReplicationResult) -> Option<f64> {
+        let t = self.time + 1e-9;
+        let travel = self.travel(r);
+        let after = |x: &f64| *x > t;
+        if self.follow {
+            let cases = self.followed();
+            let tokens = r
+                .trace
+                .iter()
+                .filter(|e| cases.contains(&e.case))
+                .flat_map(|e| [e.time, e.time + travel]);
+            let tasks = r
+                .records
+                .iter()
+                .filter(|x| cases.contains(&x.case))
+                .flat_map(|x| [x.queued, x.start, x.end]);
+            let messages = r
+                .messages
+                .iter()
+                .filter(|m| cases.contains(&m.case))
+                .flat_map(|m| [m.time, m.time + travel]);
+            tokens
+                .chain(tasks)
+                .chain(messages)
+                .filter(after)
+                .min_by(f64::total_cmp)
+        } else {
+            r.records
+                .iter()
+                .flat_map(|x| [x.queued, x.start, x.end])
+                .filter(after)
+                .min_by(f64::total_cmp)
         }
     }
 
@@ -230,6 +318,8 @@ impl Default for DiagramView {
             playing: false,
             time: 0.0,
             speed: None,
+            skip_quiet: true,
+            ff: None,
             follow: true,
             case: 0,
             cases_shown: 1,
@@ -1634,6 +1724,8 @@ fn replay_controls(ui: &mut Ui, v: &mut DiagramView, r: &ReplicationResult) {
                     ui.selectable_value(&mut v.speed, Some(s), l);
                 }
             });
+        ui.checkbox(&mut v.skip_quiet, "skip quiet times")
+            .on_hover_text("play stretches in which nothing changes in about a second");
         ui.separator();
         let clock = SimClock {
             epoch: r.start_epoch,
@@ -1643,6 +1735,9 @@ fn replay_controls(ui: &mut Ui, v: &mut DiagramView, r: &ReplicationResult) {
             clock.format(v.time).replace('T', " ").trim_end_matches('Z'),
             format_span(v.time)
         ));
+        if let Some(f) = v.ff.filter(|_| v.playing) {
+            ui.label(RichText::new(format!("fast-forward · {}", span_label(f.span))).weak());
+        }
     });
     ui.horizontal(|ui| {
         ui.radio_value(&mut v.follow, false, "all cases (queues)");
@@ -1685,6 +1780,21 @@ fn replay_controls(ui: &mut Ui, v: &mut DiagramView, r: &ReplicationResult) {
         let dt = f64::from(ui.input(|i| i.stable_dt).min(0.1));
         v.advance(r, dt);
         ui.ctx().request_repaint();
+    }
+}
+
+/// A quiet stretch in words: "14 h", "3 d 2 h", "25 min".
+fn span_label(s: f64) -> String {
+    let (d, h, m) = (
+        (s / 86_400.0).floor(),
+        ((s % 86_400.0) / 3600.0).floor(),
+        ((s % 3600.0) / 60.0).round(),
+    );
+    match (d > 0.0, h > 0.0) {
+        (true, true) => format!("{d} d {h} h"),
+        (true, false) => format!("{d} d"),
+        (false, true) => format!("{h} h"),
+        (false, false) => format!("{m} min"),
     }
 }
 

@@ -985,11 +985,17 @@ mod tests {
 
     /// Load a model and its scenario and put a finished run into the app (no worker thread).
     fn with_results(fixture: &str, scenario: &str) -> App {
+        with_results_edited(fixture, scenario, |_| {})
+    }
+
+    /// Like `with_results`, with the scenario changed by `edit` before the run.
+    fn with_results_edited(fixture: &str, scenario: &str, edit: impl FnOnce(&mut Scenario)) -> App {
         let mut app = App::default();
         app.ws.open(&fixtures().join(fixture));
         let text = std::fs::read_to_string(fixtures().join(scenario)).unwrap();
         app.scenario = Scenario::from_toml(&text).unwrap();
         app.scenario.simulation.replications = 1;
+        edit(&mut app.scenario);
         let bound = app.scenario.bind(&app.ws.project).unwrap();
         let data = sim_core::run_replications(&bound);
         app.results = Some(RunResults {
@@ -1007,6 +1013,7 @@ mod tests {
         app.tab = Tab::Diagram;
         app.diagram.mode = Mode::Replay;
         app.diagram.speed = Some(3600.0); // one simulated hour per second
+        app.diagram.skip_quiet = false;
         app.diagram.follow = false;
         frame_with(&mut app, &ctx, vec![]);
         app.diagram.playing = true;
@@ -1037,6 +1044,54 @@ mod tests {
             "{} vs {end}",
             app.diagram.time
         );
+    }
+
+    #[test]
+    fn replay_fast_forwards_through_quiet_times() {
+        // The first case arrives Monday 00:00; the clerks start at 09:00.
+        let office = |s: &mut Scenario| {
+            s.simulation.cases = Some(3);
+            s.simulation.warm_up_cases = 0;
+            s.calendars
+                .insert("office".into(), crate::editors::office_hours());
+            for r in s.resources.values_mut() {
+                r.calendar = Some("office".into());
+            }
+        };
+        let ctx = egui::Context::default();
+        let r = with_results_edited("v13-model.bpmn", "v13-model.toml", office)
+            .results
+            .unwrap()
+            .data[0]
+            .clone();
+        let opens = r.records[0].start;
+        assert_eq!(opens, 9.0 * 3600.0);
+        for skip in [true, false] {
+            let mut app = with_results_edited("v13-model.bpmn", "v13-model.toml", office);
+            app.tab = Tab::Diagram;
+            app.diagram.mode = Mode::Replay;
+            app.diagram.speed = Some(60.0); // one simulated minute per second
+            app.diagram.skip_quiet = skip;
+            frame_with(&mut app, &ctx, vec![]);
+            app.diagram.playing = true;
+            // 0.6 s for the token to reach the task, then about 1 s through the night.
+            for _ in 0..110 {
+                frame_with(&mut app, &ctx, vec![]);
+            }
+            let t = app.diagram.time;
+            if skip {
+                // Normal speed again half a second (30 simulated seconds) before 09:00.
+                assert!((opens - 60.0..opens).contains(&t), "{t}");
+                assert!(app.diagram.ff.is_none());
+                for _ in 0..60 {
+                    frame_with(&mut app, &ctx, vec![]);
+                }
+                // On past 09:00 (the 4-minute task is quiet at this speed too).
+                assert!(app.diagram.time > opens, "{}", app.diagram.time);
+            } else {
+                assert!(t < 120.0, "{t}");
+            }
+        }
     }
 
     #[test]
