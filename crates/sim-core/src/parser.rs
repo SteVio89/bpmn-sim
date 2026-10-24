@@ -33,6 +33,7 @@ pub fn parse_file(file: &str, xml: &str) -> Result<BpmnFile, ParseError> {
             name: file.to_string(),
             ..BpmnFile::default()
         },
+        root_event_defs: BTreeMap::new(),
     };
     p.read_definitions(root)?;
     Ok(p.out)
@@ -47,9 +48,18 @@ fn bpmn_children<'a, 'i>(n: Node<'a, 'i>) -> impl Iterator<Item = Node<'a, 'i>> 
         .filter(|c| c.is_element() && c.tag_name().namespace() == Some(BPMN_NS))
 }
 
+/// The id a reference names. References the schema types as `xsd:QName` (`processRef`,
+/// `messageRef`, `calledElement`, ...) may carry a namespace prefix, as in `tns:Msg_1`; ids
+/// themselves never contain a colon.
+fn local_ref(r: &str) -> &str {
+    r.rsplit_once(':').map_or(r, |(_, local)| local)
+}
+
 struct Parser<'f> {
     file: &'f str,
     out: BpmnFile,
+    /// Event definitions declared as root elements, for `eventDefinitionRef`.
+    root_event_defs: BTreeMap<String, EventDef>,
 }
 
 impl Parser<'_> {
@@ -100,6 +110,11 @@ impl Parser<'_> {
                     _ => self.out.escalations.insert(id, code("escalationCode")),
                 };
             }
+        }
+        for c in bpmn_children(root).filter(|c| c.tag_name().name().ends_with("EventDefinition")) {
+            let id = self.required_id(c)?;
+            let def = self.event_def(c);
+            self.root_event_defs.insert(id, def);
         }
         for c in bpmn_children(root) {
             match c.tag_name().name() {
@@ -193,7 +208,7 @@ impl Parser<'_> {
                     let participant = Participant {
                         id: self.qid(&id),
                         name: c.attribute("name").map(str::to_string),
-                        process: c.attribute("processRef").map(|p| self.qid(p)),
+                        process: c.attribute("processRef").map(|p| self.qid(local_ref(p))),
                     };
                     self.out
                         .participants
@@ -206,8 +221,8 @@ impl Parser<'_> {
                     let flow = MessageFlow {
                         id: self.qid(&id),
                         name: c.attribute("name").map(str::to_string),
-                        source: self.qid(&source),
-                        target: self.qid(&target),
+                        source: self.qid(local_ref(&source)),
+                        target: self.qid(local_ref(&target)),
                     };
                     self.out.message_flows.insert(flow.id.clone(), flow);
                 }
@@ -404,8 +419,17 @@ impl Parser<'_> {
         };
         let mut event_defs = Vec::new();
         if kind.is_event() {
-            for d in bpmn_children(n).filter(|d| d.tag_name().name().ends_with("EventDefinition")) {
-                event_defs.push(self.event_def(d));
+            for d in bpmn_children(n) {
+                let local = d.tag_name().name();
+                if local.ends_with("EventDefinition") {
+                    event_defs.push(self.event_def(d));
+                } else if local == "eventDefinitionRef" {
+                    let r = d.text().map(str::trim).unwrap_or_default();
+                    let def = self.root_event_defs.get(local_ref(r)).ok_or_else(|| {
+                        self.err(id, format!("eventDefinitionRef '{r}' is not a root event definition of this file"))
+                    })?;
+                    event_defs.push(def.clone());
+                }
             }
             if event_defs.is_empty() {
                 event_defs.push(EventDef::None);
@@ -413,14 +437,14 @@ impl Parser<'_> {
         }
 
         let attached_to = if kind == NodeKind::BoundaryEvent {
-            Some(self.qid(&self.required_attr(n, id, "attachedToRef")?))
+            Some(self.qid(local_ref(&self.required_attr(n, id, "attachedToRef")?)))
         } else {
             None
         };
 
         let called_element = if kind == NodeKind::CallActivity {
             n.attribute("calledElement")
-                .map(str::to_string)
+                .map(|c| local_ref(c).to_string())
                 .or_else(|| zeebe_attr(n, "calledElement", "processId"))
         } else {
             None
@@ -466,14 +490,14 @@ impl Parser<'_> {
             "messageEventDefinition" => EventDef::Message(d.attribute("messageRef").map(|r| {
                 self.out
                     .messages
-                    .get(r)
+                    .get(local_ref(r))
                     .cloned()
                     .unwrap_or_else(|| r.to_string())
             })),
             "signalEventDefinition" => EventDef::Signal(d.attribute("signalRef").map(|r| {
                 self.out
                     .signals
-                    .get(r)
+                    .get(local_ref(r))
                     .cloned()
                     .unwrap_or_else(|| r.to_string())
             })),
@@ -483,7 +507,7 @@ impl Parser<'_> {
             "errorEventDefinition" => EventDef::Error(d.attribute("errorRef").map(|r| {
                 self.out
                     .errors
-                    .get(r)
+                    .get(local_ref(r))
                     .cloned()
                     .unwrap_or_else(|| r.to_string())
             })),
@@ -491,7 +515,7 @@ impl Parser<'_> {
                 EventDef::Escalation(d.attribute("escalationRef").map(|r| {
                     self.out
                         .escalations
-                        .get(r)
+                        .get(local_ref(r))
                         .cloned()
                         .unwrap_or_else(|| r.to_string())
                 }))
