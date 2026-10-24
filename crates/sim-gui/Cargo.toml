@@ -14,7 +14,7 @@ egui = "0.37.0"
 egui_plot = "0.38.0"
 rfd = "0.17.2"
 serde_json = "1.0.154"
-sim-core = { version = "0.1.0", path = "../sim-core" }
+sim-core = { version = "0.2.0", path = "../sim-core" }
 toml = "1.1.8"
 
 [dev-dependencies]
