@@ -12,6 +12,12 @@ pub fn show(app: &mut App, ui: &mut Ui) {
         {
             app.ws.open(&dir);
             after_load(app);
+            app.scenario_candidates = find_scenarios(&dir);
+            if app.ws.load_error.is_none()
+                && let Some(first) = app.scenario_candidates.first().cloned()
+            {
+                app.load_scenario(first);
+            }
         }
         if ui.button("Open file…").clicked()
             && let Some(f) = rfd::FileDialog::new()
@@ -19,6 +25,7 @@ pub fn show(app: &mut App, ui: &mut Ui) {
                 .pick_file()
         {
             app.ws.open(&f);
+            app.scenario_candidates.clear();
             after_load(app);
         }
         if ui.button("Add file…").clicked()
@@ -192,4 +199,22 @@ fn after_load(app: &mut App) {
             app.update_note = Some(u);
         }
     }
+}
+
+/// The `*.toml` files in `dir` that parse as a scenario, in name order. Other TOML files
+/// (a `Cargo.toml`, say) are skipped.
+fn find_scenarios(dir: &std::path::Path) -> Vec<std::path::PathBuf> {
+    let mut v: Vec<_> = std::fs::read_dir(dir)
+        .map(|rd| {
+            rd.filter_map(|e| e.ok().map(|e| e.path()))
+                .filter(|p| p.extension().is_some_and(|x| x == "toml"))
+                .filter(|p| {
+                    std::fs::read_to_string(p)
+                        .is_ok_and(|t| sim_core::Scenario::from_toml(&t).is_ok())
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    v.sort();
+    v
 }

@@ -222,26 +222,31 @@ pub fn show(app: &mut App, ui: &mut Ui) {
 
 fn toolbar(app: &mut App, ui: &mut Ui) {
     ui.horizontal(|ui| {
+        if app.scenario_candidates.len() > 1 {
+            let name = |p: &std::path::Path| {
+                p.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()
+            };
+            let mut pick = None;
+            egui::ComboBox::from_id_salt("scenario-pick")
+                .selected_text(app.scenario_path.as_deref().map(name).unwrap_or_else(|| "Scenario…".into()))
+                .show_ui(ui, |ui| {
+                    for c in &app.scenario_candidates {
+                        let on = app.scenario_path.as_ref() == Some(c);
+                        if ui.selectable_label(on, name(c)).clicked() && !on {
+                            pick = Some(c.clone());
+                        }
+                    }
+                });
+            if let Some(c) = pick {
+                app.load_scenario(c);
+            }
+        }
         if ui.button("Load scenario…").clicked()
             && let Some(f) = rfd::FileDialog::new()
                 .add_filter("TOML", &["toml"])
                 .pick_file()
         {
-            match std::fs::read_to_string(&f)
-                .map_err(|e| e.to_string())
-                .and_then(|t| Scenario::from_toml(&t).map_err(|e| e.to_string()))
-            {
-                Ok(s) => {
-                    app.scenario = s;
-                    // A saved scenario counts as checked; only what it lacks is new.
-                    app.unreviewed.clear();
-                    let u = app.update_from_model();
-                    app.status = format!("Loaded {}", f.display());
-                    app.scenario_path = Some(f);
-                    app.update_note = Some(u);
-                }
-                Err(e) => app.status = format!("Could not load scenario: {e}"),
-            }
+            app.load_scenario(f);
         }
         if ui.button("Save scenario…").clicked() {
             let mut dialog = rfd::FileDialog::new()

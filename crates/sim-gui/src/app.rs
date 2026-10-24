@@ -41,6 +41,8 @@ pub struct App {
     pub ws: Workspace,
     pub scenario: Scenario,
     pub scenario_path: Option<PathBuf>,
+    /// Scenario files found next to the models of the opened folder, in name order.
+    pub scenario_candidates: Vec<PathBuf>,
     pub status: String,
     pub tab: Tab,
     pub selected: Option<QId>,
@@ -64,6 +66,7 @@ impl Default for App {
             ws: Workspace::default(),
             scenario: Scenario::default(),
             scenario_path: None,
+            scenario_candidates: Vec::new(),
             status: "Open a BPMN file or folder to begin.".into(),
             tab: Tab::Model,
             selected: None,
@@ -85,6 +88,25 @@ impl App {
     /// A scenario that still has nothing configured can be replaced by a fresh skeleton.
     pub fn scenario_is_pristine(&self) -> bool {
         self.scenario.activities.is_empty() && self.scenario.gateways.is_empty()
+    }
+
+    /// Load a scenario file, replacing the current scenario. A saved scenario counts as
+    /// checked; only what it lacks is new.
+    pub fn load_scenario(&mut self, f: PathBuf) {
+        match std::fs::read_to_string(&f)
+            .map_err(|e| e.to_string())
+            .and_then(|t| Scenario::from_toml(&t).map_err(|e| e.to_string()))
+        {
+            Ok(s) => {
+                self.scenario = s;
+                self.unreviewed.clear();
+                let u = self.update_from_model();
+                self.status = format!("Loaded {}", f.display());
+                self.scenario_path = Some(f);
+                self.update_note = Some(u);
+            }
+            Err(e) => self.status = format!("Could not load scenario: {e}"),
+        }
     }
 
     /// Replace the scenario by placeholders for everything; all of them still to be checked.
