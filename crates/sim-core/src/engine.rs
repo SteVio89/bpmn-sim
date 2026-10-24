@@ -324,6 +324,8 @@ impl<'a> Engine<'a> {
                 .files
                 .values()
                 .flat_map(|f| f.message_flows.values())
+                // (Flows at call activities and subprocesses only show what happens inside.)
+                .filter(|f| !m.project.is_mirror_flow(f))
                 .collect(),
             groups: Vec::new(),
             waiting_msg: BTreeMap::new(),

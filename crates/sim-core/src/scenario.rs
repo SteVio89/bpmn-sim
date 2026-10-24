@@ -931,6 +931,7 @@ impl Scenario {
                 .files
                 .values()
                 .flat_map(|f| f.message_flows.values())
+                .filter(|f| !project.is_mirror_flow(f))
             {
                 let source_active = match project.node(&f.source) {
                     Some(n) => processes.contains(&n.process),
@@ -1003,6 +1004,31 @@ impl Scenario {
             .values()
             .flat_map(|f| f.message_flows.values())
         {
+            if project.is_mirror_flow(f) {
+                // Only a picture of what happens inside: fine towards a black box, but an element
+                // of a modelled process at the other end never gets (or sends) this message.
+                let is_scope =
+                    |n: &&FlowNode| matches!(n.kind, NodeKind::CallActivity | NodeKind::SubProcess);
+                let (src, tgt) = (project.node(&f.source), project.node(&f.target));
+                if [src, tgt]
+                    .into_iter()
+                    .flatten()
+                    .any(|n| processes.contains(&n.process))
+                {
+                    if let Some(s) = src.filter(|n| !is_scope(n)) {
+                        warnings.at(&s.id, format!(
+                            "message flow {}: ends at a call activity or subprocess, which only shows what happens inside it; the simulation sends nothing along it, so nothing inside receives the message of '{}'",
+                            f.id, s.label()
+                        ));
+                    } else if let Some(t) = tgt.filter(|n| !is_scope(n)) {
+                        warnings.at(&t.id, format!(
+                            "message flow {}: starts at a call activity or subprocess, which only shows what happens inside it; the simulation sends nothing along it, so '{}' never gets this message",
+                            f.id, t.label()
+                        ));
+                    }
+                }
+                continue;
+            }
             let src = project.node(&f.source);
             let active = match src {
                 Some(n) => processes.contains(&n.process),

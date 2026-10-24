@@ -123,7 +123,14 @@ fn multi_file_keeps_reused_ids_apart() {
         .unwrap();
     assert_eq!(rule.called_decision.as_deref(), Some("decision-risk"));
     assert_eq!(p.decisions["decision-risk"], "decision-risk.dmn");
-    assert!(validate(&p).is_empty(), "{:?}", messages(&validate(&p)));
+    // Only that the main file does not show the suppliers the called processes talk to.
+    assert_eq!(
+        messages(&validate(&p)),
+        [
+            "Call_A: the called process sends messages to 'Supplier A' ('Analyse'), but no message flow goes from this call activity to 'Supplier A'; show that pool and the message flow here too",
+            "Call_B: the called process sends messages to 'Supplier B' ('Analyse'), but no message flow goes from this call activity to 'Supplier B'; show that pool and the message flow here too",
+        ]
+    );
 }
 
 #[test]

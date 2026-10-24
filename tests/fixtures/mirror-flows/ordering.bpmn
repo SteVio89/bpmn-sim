@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL" id="Defs_Ordering">
+  <bpmn:collaboration id="Collab_Ordering">
+    <bpmn:participant id="Part_Ordering" name="Ordering" processRef="Process_Order"/>
+    <!-- Same pool as in shop.bpmn: other id, name differs only in case and spacing. -->
+    <bpmn:participant id="Part_Sup" name=" supplier "/>
+    <bpmn:messageFlow id="MF_Order" sourceRef="Send_Order" targetRef="Part_Sup"/>
+    <bpmn:messageFlow id="MF_Goods" sourceRef="Part_Sup" targetRef="Wait_Goods"/>
+  </bpmn:collaboration>
+  <bpmn:process id="Process_Order">
+    <bpmn:startEvent id="Start_Order"/>
+    <bpmn:sendTask id="Send_Order" name="Send order"/>
+    <bpmn:receiveTask id="Wait_Goods" name="Receive goods"/>
+    <bpmn:endEvent id="End_Order"/>
+    <bpmn:sequenceFlow id="FO1" sourceRef="Start_Order" targetRef="Send_Order"/>
+    <bpmn:sequenceFlow id="FO2" sourceRef="Send_Order" targetRef="Wait_Goods"/>
+    <bpmn:sequenceFlow id="FO3" sourceRef="Wait_Goods" targetRef="End_Order"/>
+  </bpmn:process>
+</bpmn:definitions>

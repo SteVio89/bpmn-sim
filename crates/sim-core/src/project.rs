@@ -129,6 +129,16 @@ impl Project {
         self.files.get(&id.file)?.sequence_flows.get(id)
     }
 
+    /// A message flow at a call activity or subprocess (BPMN §9.3) only shows on the outside
+    /// what elements inside it send or receive. The simulation sends nothing along it: the
+    /// elements inside send and receive along their own message flows.
+    pub fn is_mirror_flow(&self, f: &MessageFlow) -> bool {
+        [&f.source, &f.target].into_iter().any(|end| {
+            self.node(end)
+                .is_some_and(|n| matches!(n.kind, NodeKind::CallActivity | NodeKind::SubProcess))
+        })
+    }
+
     /// Name of the participant (pool) whose process contains `process`, if the file has a collaboration.
     pub fn participant_name(&self, process: &QId) -> Option<&str> {
         self.files

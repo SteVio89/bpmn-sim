@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL" xmlns:bpmndi="http://www.omg.org/spec/BPMN/20100524/DI" xmlns:dc="http://www.omg.org/spec/DD/20100524/DC" xmlns:di="http://www.omg.org/spec/DD/20100524/DI" id="Defs_Clinic">
+  <bpmn:collaboration id="Collab_Clinic">
+    <bpmn:participant id="Part_Clinic" name="Clinic" processRef="Process_Clinic"/>
+    <bpmn:participant id="Part_Lab" name="Lab"/>
+    <bpmn:messageFlow id="MF_Sample" sourceRef="Send_Sample" targetRef="Part_Lab"/>
+    <bpmn:messageFlow id="MF_Visit" sourceRef="Sub_Visit" targetRef="Part_Lab"/>
+  </bpmn:collaboration>
+  <bpmn:process id="Process_Clinic">
+    <bpmn:startEvent id="Start_Clinic"/>
+    <bpmn:subProcess id="Sub_Visit" name="Visit">
+      <bpmn:startEvent id="Start_Visit"/>
+      <bpmn:sendTask id="Send_Sample" name="Send sample"/>
+      <bpmn:endEvent id="End_Visit"/>
+      <bpmn:sequenceFlow id="FV1" sourceRef="Start_Visit" targetRef="Send_Sample"/>
+      <bpmn:sequenceFlow id="FV2" sourceRef="Send_Sample" targetRef="End_Visit"/>
+    </bpmn:subProcess>
+    <bpmn:endEvent id="End_Clinic"/>
+    <bpmn:sequenceFlow id="FC1" sourceRef="Start_Clinic" targetRef="Sub_Visit"/>
+    <bpmn:sequenceFlow id="FC2" sourceRef="Sub_Visit" targetRef="End_Clinic"/>
+  </bpmn:process>
+  <!-- "Visit" is drawn collapsed: its content is not on this diagram. -->
+  <bpmndi:BPMNDiagram id="Diagram_Clinic">
+    <bpmndi:BPMNPlane id="Plane_Clinic" bpmnElement="Collab_Clinic">
+      <bpmndi:BPMNShape id="Part_Clinic_di" bpmnElement="Part_Clinic"><dc:Bounds x="100" y="200" width="500" height="160"/></bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Start_Clinic_di" bpmnElement="Start_Clinic"><dc:Bounds x="172" y="262" width="36" height="36"/></bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Sub_Visit_di" bpmnElement="Sub_Visit" isExpanded="false"><dc:Bounds x="260" y="240" width="100" height="80"/></bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="End_Clinic_di" bpmnElement="End_Clinic"><dc:Bounds x="432" y="262" width="36" height="36"/></bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Part_Lab_di" bpmnElement="Part_Lab"><dc:Bounds x="100" y="60" width="500" height="60"/></bpmndi:BPMNShape>
+      <bpmndi:BPMNEdge id="FC1_di" bpmnElement="FC1"><di:waypoint x="208" y="280"/><di:waypoint x="260" y="280"/></bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="FC2_di" bpmnElement="FC2"><di:waypoint x="360" y="280"/><di:waypoint x="432" y="280"/></bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="MF_Visit_di" bpmnElement="MF_Visit"><di:waypoint x="310" y="240"/><di:waypoint x="310" y="120"/></bpmndi:BPMNEdge>
+    </bpmndi:BPMNPlane>
+  </bpmndi:BPMNDiagram>
+</bpmn:definitions>

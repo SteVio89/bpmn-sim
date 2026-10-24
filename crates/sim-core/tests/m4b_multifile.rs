@@ -134,7 +134,14 @@ fn discovery_loads_exactly_the_referenced_files() {
         ["decision-limit.dmn", "decision-risk.dmn"],
         "decision-unused.dmn stays out"
     );
-    assert!(validate(&p).is_empty(), "{:?}", validate(&p));
+    // (main.bpmn does not show the suppliers the called processes talk to.)
+    let issues = validate(&p);
+    assert!(
+        issues.iter().all(|i| i.severity == Severity::Warning
+            && i.message
+                .contains("show that pool and the message flow here too")),
+        "{issues:?}"
+    );
 }
 
 #[test]

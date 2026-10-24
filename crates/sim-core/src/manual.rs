@@ -465,7 +465,11 @@ impl Game {
                 .files
                 .values()
                 .flat_map(|f| f.message_flows.values())
-                .any(|f| f.target == *event && self.project.node(&f.source).is_some())
+                .any(|f| {
+                    f.target == *event
+                        && self.project.node(&f.source).is_some()
+                        && !self.project.is_mirror_flow(f)
+                })
     }
 
     /// The flows the player chooses from at a split: every outgoing flow of a gateway; the
@@ -1382,7 +1386,7 @@ impl Game {
                 .files
                 .values()
                 .flat_map(|f| f.message_flows.values())
-                .filter(|f| f.source == n.id)
+                .filter(|f| f.source == n.id && !self.project.is_mirror_flow(f))
                 .cloned()
                 .collect();
             for f in flows {

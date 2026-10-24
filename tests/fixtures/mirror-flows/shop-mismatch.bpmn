@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL" id="Defs_ShopMismatch">
+  <bpmn:collaboration id="Collab_ShopMismatch">
+    <bpmn:participant id="Part_Shop" name="Shop" processRef="Process_ShopMismatch"/>
+    <bpmn:participant id="Part_Warehouse" name="Warehouse" processRef="Process_Warehouse"/>
+    <bpmn:participant id="Part_Supplier" name="Supplier"/>
+    <bpmn:participant id="Part_Auditor" name="Auditor"/>
+    <!-- The goods coming back from the supplier are not shown. -->
+    <bpmn:messageFlow id="MF_Out" sourceRef="Call_Order" targetRef="Part_Supplier"/>
+    <!-- Nothing inside the called process receives from the auditor or sends to the warehouse. -->
+    <bpmn:messageFlow id="MF_Audit" sourceRef="Part_Auditor" targetRef="Call_Order"/>
+    <bpmn:messageFlow id="MF_Notice" sourceRef="Call_Order" targetRef="Wait_Notice"/>
+  </bpmn:collaboration>
+  <bpmn:process id="Process_ShopMismatch">
+    <bpmn:startEvent id="Start_Shop"/>
+    <bpmn:callActivity id="Call_Order" name="Order goods" calledElement="Process_Order"/>
+    <bpmn:endEvent id="End_Shop"/>
+    <bpmn:sequenceFlow id="FS1" sourceRef="Start_Shop" targetRef="Call_Order"/>
+    <bpmn:sequenceFlow id="FS2" sourceRef="Call_Order" targetRef="End_Shop"/>
+  </bpmn:process>
+  <bpmn:process id="Process_Warehouse">
+    <bpmn:startEvent id="Start_Warehouse"/>
+    <bpmn:receiveTask id="Wait_Notice" name="Await delivery notice"/>
+    <bpmn:endEvent id="End_Warehouse"/>
+    <bpmn:sequenceFlow id="FW1" sourceRef="Start_Warehouse" targetRef="Wait_Notice"/>
+    <bpmn:sequenceFlow id="FW2" sourceRef="Wait_Notice" targetRef="End_Warehouse"/>
+  </bpmn:process>
+</bpmn:definitions>
