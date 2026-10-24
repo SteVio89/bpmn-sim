@@ -20,8 +20,9 @@ Camunda 8 models) and does three things with them:
 It supports collaborations (several pools exchanging messages), call activities across files,
 embedded subprocesses and event subprocesses, multi-instance and loop activities, boundary
 events (including errors and escalations thrown inside subprocesses and called processes),
-timers, signals, link events, inclusive and event-based gateways, conditional flows, and DMN
-decision tables behind business rule tasks. `docs/semantics.md` lists where it deviates from
+timers, signals, link events, inclusive and event-based gateways, conditional flows, DMN
+decision tables behind business rule tasks, and gateways that ask what other pools of the
+same case have already done. `docs/semantics.md` lists where it deviates from
 BPMN 2.0.2 and which elements it does not run.
 
 **Status:** early, version 0.1. The simulation results are checked against queueing theory
@@ -120,6 +121,26 @@ probabilities = { Flow_simple = 0.6, Flow_complex = 0.4 }
 
 Tasks use the resource pool named like their lane (or pool). The desktop app fills in
 placeholders for a loaded model and keeps them up to date when the model changes.
+
+Pools that start together and ask each other about progress ("is it ready yet?")
+can let a two-way XOR split ask what has happened in the case instead of drawing it, start
+later than the case, and run a call activity whose process is in no loaded file as a task:
+
+```toml
+[[arrivals]]
+inter_arrival = { dist = "fixed", value = "30d" }
+triggers = ["Start_Build", "Start_Ship"]      # one start event in each pool
+
+[events.Start_Ship]                           # this pool begins up to 10 days later
+delay = { dist = "uniform", min = "0d", max = "10d" }
+
+[gateways.Gateway_Ready]                      # "Built yet?"
+if_completed = "End_Built"                    # once this element completed in the case...
+then = "Flow_yes"                             # ...take this flow, until then the other one
+
+[activities.Call_Build]                       # call activity whose process is not loaded
+duration = { dist = "uniform", min = "5d", max = "20d" }
+```
 
 ## Documentation
 
