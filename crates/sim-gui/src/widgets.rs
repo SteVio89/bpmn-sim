@@ -1,6 +1,6 @@
 //! Small editing widgets.
 
-use egui::{ComboBox, DragValue, Id, Response, Ui};
+use egui::{ComboBox, DragValue, Id, Response, TextEdit, Ui};
 use sim_core::dist::{DistSpec, Seconds};
 
 const UNITS: [(&str, f64); 5] = [
@@ -33,6 +33,27 @@ pub fn drag_f64(
     } else {
         ui.data_mut(|d| d.remove_temp::<f64>(key));
         *v = local;
+    }
+    r
+}
+
+/// A text field that only writes the text back once typing is done (Enter or focus lost),
+/// so a half-typed "09:0" is never validated as a finished value.
+pub fn text_edit_deferred(
+    ui: &mut Ui,
+    value: &mut String,
+    style: impl FnOnce(TextEdit<'_>) -> TextEdit<'_>,
+) -> Response {
+    let key = ui.next_auto_id();
+    let mut local = ui
+        .data(|d| d.get_temp::<String>(key))
+        .unwrap_or_else(|| value.clone());
+    let r = ui.add(style(TextEdit::singleline(&mut local)));
+    if r.has_focus() && !r.lost_focus() {
+        ui.data_mut(|d| d.insert_temp(key, local));
+    } else {
+        ui.data_mut(|d| d.remove_temp::<String>(key));
+        *value = local;
     }
     r
 }

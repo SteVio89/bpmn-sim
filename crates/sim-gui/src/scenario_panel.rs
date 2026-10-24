@@ -11,7 +11,7 @@ use sim_core::{FlowNode, Project, Scenario};
 use crate::app::App;
 use crate::configure::{Status, Target, problem_target, statuses};
 use crate::editors;
-use crate::widgets::{default_dist, dist_edit, duration_edit, rate_text};
+use crate::widgets::{default_dist, dist_edit, duration_edit, rate_text, text_edit_deferred};
 
 /// A section of elements: title, the elements, which of their needs it shows.
 type Section<'a> = (&'a str, &'a [&'a FlowNode], fn(&Need) -> bool);
@@ -758,11 +758,10 @@ pub fn run_settings(ui: &mut Ui, s: &mut SimulationSection) {
             ui.end_row();
             ui.label("Start (UTC)");
             let mut start = s.start.clone().unwrap_or_default();
-            if ui
-                .add(egui::TextEdit::singleline(&mut start).hint_text("2024-01-01T00:00"))
-                .on_hover_text("date and time of the simulation start; decides the weekday working hours start on")
-                .changed()
-            {
+            let before = start.clone();
+            text_edit_deferred(ui, &mut start, |t| t.hint_text("2024-01-01T00:00"))
+                .on_hover_text("date and time of the simulation start; decides the weekday working hours start on");
+            if start != before {
                 s.start = (!start.trim().is_empty()).then(|| start.trim().to_string());
             }
             ui.end_row();

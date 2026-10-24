@@ -17,7 +17,9 @@ use sim_core::{EventDef, FlowNode, NodeKind, Project, QId, Scenario};
 
 use crate::configure::{find_node, node_kind_name};
 use crate::diagram_panel::case_color;
-use crate::widgets::{default_dist, dist_edit, dist_preview, drag_f64, rate_text};
+use crate::widgets::{
+    default_dist, dist_edit, dist_preview, drag_f64, rate_text, text_edit_deferred,
+};
 
 /// How an outgoing flow reads: its name, else "to <target>".
 pub fn flow_label(project: &Project, f: &QId) -> String {
@@ -936,7 +938,7 @@ pub fn calendar_fields(ui: &mut Ui, name: &str, c: &mut CalendarSpec) {
         });
         ui.horizontal(|ui| {
             ui.label("hours");
-            ui.text_edit_singleline(&mut p.hours)
+            text_edit_deferred(ui, &mut p.hours, |t| t)
                 .on_hover_text("e.g. 09:00-12:00,13:00-17:00; 24:00 ends at midnight");
             if several && ui.small_button("remove").clicked() {
                 remove = Some(i);
