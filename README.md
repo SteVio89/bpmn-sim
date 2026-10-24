@@ -21,8 +21,8 @@ It supports collaborations (several pools exchanging messages), call activities 
 embedded subprocesses and event subprocesses, multi-instance and loop activities, boundary
 events (including errors and escalations thrown inside subprocesses and called processes),
 timers, signals, link events, inclusive and event-based gateways, conditional flows, DMN
-decision tables behind business rule tasks, and gateways that ask what other pools of the
-same case have already done. `docs/semantics.md` lists where it deviates from
+decision tables behind business rule tasks (gateways can follow their outputs), and gateways
+that ask what other pools of the same case have already done. `docs/semantics.md` lists where it deviates from
 BPMN 2.0.2 and which elements it does not run.
 
 **Status:** early, version 0.1. The simulation results are checked against queueing theory
@@ -121,6 +121,19 @@ probabilities = { Flow_simple = 0.6, Flow_complex = 0.4 }
 
 Tasks use the resource pool named like their lane (or pool). The desktop app fills in
 placeholders for a loaded model and keeps them up to date when the model changes.
+
+A gateway after a business rule task can follow the decision's result instead of shares, also
+when the flows have no conditions. A table with several outputs stores each one as
+`<resultVariable>.<output>`; name the one that decides the gateway:
+
+```toml
+[decisions."order-triage".inputs]             # how the decision's inputs are drawn
+category = { choice = { standard = 0.7, express = 0.3 } }
+
+[gateways.Gateway_Route]
+output = "triage.route"                       # resultVariable "triage", output "route"
+values = { Flow_ship = "ship", Flow_hold = ["hold", "review"] }
+```
 
 Pools that start together and ask each other about progress ("is it ready yet?")
 can let a two-way XOR split ask what has happened in the case instead of drawing it, start
