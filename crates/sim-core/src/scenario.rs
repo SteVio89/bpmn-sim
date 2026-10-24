@@ -164,8 +164,34 @@ pub enum Sampler {
     Chance(f64),
 }
 
+impl Sampler {
+    /// One value, as the engine draws it.
+    pub fn sample<R: rand::Rng + ?Sized>(&self, rng: &mut R) -> crate::feel::Value {
+        use crate::feel::Value;
+        use rand::RngExt;
+        match self {
+            Sampler::Number(dist) => Value::Num(dist.sample_raw(rng)),
+            Sampler::Chance(p) => Value::Bool(rng.random::<f64>() < *p),
+            Sampler::Choice(options) => {
+                let r: f64 = rng.random();
+                let mut acc = 0.0;
+                let mut pick = options.last().map(|(k, _)| k.clone()).unwrap_or_default();
+                for (k, p) in options {
+                    acc += p;
+                    if r < acc {
+                        pick = k.clone();
+                        break;
+                    }
+                }
+                Value::Str(pick)
+            }
+        }
+    }
+}
+
 impl InputSpec {
-    fn sampler(&self) -> Result<Sampler, String> {
+    /// How the input is drawn; an error if the spec is invalid (e.g. shares not adding up).
+    pub fn sampler(&self) -> Result<Sampler, String> {
         match self {
             InputSpec::Number(n) => n.to_dist().map(Sampler::Number),
             InputSpec::Chance(c) if (0.0..=1.0).contains(&c.p_true) => {

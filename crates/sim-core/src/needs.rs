@@ -6,7 +6,7 @@
 use std::collections::BTreeMap;
 
 use crate::dist::{DistSpec, Seconds};
-use crate::dmn::{HitPolicy, Table};
+use crate::dmn::{HitPolicy, InputDescription, InputKind, Table};
 use crate::feel::Value;
 use crate::model::*;
 use crate::project::Project;
@@ -77,14 +77,7 @@ pub fn decision_outputs(project: &Project) -> Vec<DecisionOutput> {
         let Some(id) = &n.called_decision else {
             continue;
         };
-        let Some(table) = project
-            .decisions
-            .get(id)
-            .and_then(|f| project.dmn.get(f))
-            .and_then(|f| f.decisions.get(id))
-            .and_then(|d| d.table.as_ref())
-            .and_then(|raw| Table::compile(id, raw).ok())
-        else {
+        let Some(table) = decision_table(project, id) else {
             continue;
         };
         let single = table.outputs.len() == 1;
@@ -269,62 +262,172 @@ fn upstream(project: &Project, n: &FlowNode) -> Vec<QId> {
     out
 }
 
-/// A placeholder distribution for decision input `input`, from what the rules compare it
-/// with: equal shares of the strings (plus "other" when a rule tests `not(...)`), true half
-/// of the time, or numbers spread around the compared ones (not below 0 unless a compared
-/// number is), so that every rule can match.
-fn placeholder_input(project: &Project, decision: &str, input: &str) -> InputSpec {
-    let (literals, negated) = project
+/// The loaded decision table `decision`, compiled.
+pub fn decision_table(project: &Project, decision: &str) -> Option<Table> {
+    project
         .decisions
         .get(decision)
         .and_then(|f| project.dmn.get(f))
         .and_then(|f| f.decisions.get(decision))
         .and_then(|d| d.table.as_ref())
         .and_then(|raw| Table::compile(decision, raw).ok())
-        .map(|t| t.literals(input))
-        .unwrap_or_default();
-    let mut strings: Vec<String> = literals
-        .iter()
-        .filter_map(|v| match v {
-            Value::Str(s) => Some(s.clone()),
-            _ => None,
+}
+
+/// Input `input` of decision `decision`, or of any loaded decision table that reads it (inputs
+/// are process variables, so a scenario entry under one decision serves them all).
+pub fn describe_input(project: &Project, decision: &str, input: &str) -> Option<InputDescription> {
+    decision_table(project, decision)
+        .and_then(|t| t.describe_input(input))
+        .or_else(|| {
+            project
+                .decisions
+                .keys()
+                .filter_map(|d| decision_table(project, d))
+                .find_map(|t| t.describe_input(input))
         })
-        .collect();
-    if !strings.is_empty() {
-        if negated && !strings.iter().any(|s| s == "other") {
-            strings.push("other".into());
-        }
-        let p = 1.0 / strings.len() as f64;
-        return InputSpec::Choice(ChoiceSpec {
-            choice: strings.into_iter().map(|s| (s, p)).collect(),
+}
+
+/// A placeholder distribution for decision input `input`, from its type and what the rules
+/// compare it with: equal shares of its values (plus "other" when a rule tests `not(...)`),
+/// true half of the time, or numbers spread around the compared ones (not below 0 unless a
+/// compared number is), so that every rule can match.
+fn placeholder_input(project: &Project, decision: &str, input: &str) -> InputSpec {
+    let Some(d) = describe_input(project, decision, input) else {
+        return InputSpec::Number(NumberSpec::Uniform {
+            min: 0.0,
+            max: 100.0,
         });
+    };
+    match d.kind {
+        InputKind::Text => {
+            let mut values = d.values;
+            if values.is_empty() {
+                values.push("value".into());
+            }
+            if d.negated && !values.iter().any(|s| s == "other") {
+                values.push("other".into());
+            }
+            let p = 1.0 / values.len() as f64;
+            InputSpec::Choice(ChoiceSpec {
+                choice: values.into_iter().map(|s| (s, p)).collect(),
+            })
+        }
+        InputKind::Bool => InputSpec::Chance(ChanceSpec { p_true: 0.5 }),
+        InputKind::Number | InputKind::Unknown => {
+            let (min, max) = match (d.thresholds.first(), d.thresholds.last()) {
+                (Some(&lo), Some(&hi)) => {
+                    let margin = if hi > lo {
+                        (hi - lo) / 2.0
+                    } else {
+                        lo.abs().max(1.0)
+                    };
+                    let floor = if lo >= 0.0 { 0.0 } else { f64::MIN };
+                    ((lo - margin).max(floor), hi + margin)
+                }
+                _ => (0.0, 100.0),
+            };
+            InputSpec::Number(NumberSpec::Uniform { min, max })
+        }
     }
-    if literals.iter().any(|v| matches!(v, Value::Bool(_))) {
-        return InputSpec::Chance(ChanceSpec { p_true: 0.5 });
+}
+
+/// What a decision gives for the scenario's input distributions, estimated from samples.
+#[derive(Debug, Clone, PartialEq)]
+pub struct DecisionPreview {
+    pub samples: usize,
+    /// Samples no rule matched (all outputs null).
+    pub no_match: usize,
+    /// UNIQUE with several matching rules, ANY with differing outputs.
+    pub violations: usize,
+    /// Output name -> (value as text, samples that gave it), most frequent first. A list
+    /// (COLLECT) counts once for each value it holds; an empty list counts as "nothing".
+    pub outputs: Vec<(String, Vec<(String, usize)>)>,
+    /// Inputs drawn from nothing, taken as null: (input, why).
+    pub unknown: Vec<(String, String)>,
+}
+
+/// Evaluate decision `decision` `samples` times with inputs drawn from the scenario's
+/// `[decisions]` entries (fixed seed, so the preview stays put between frames). Inputs that
+/// another decision sets, or whose entry is invalid, are null.
+pub fn preview_decision(
+    project: &Project,
+    scenario: &Scenario,
+    decision: &str,
+    samples: usize,
+) -> Option<DecisionPreview> {
+    use rand::SeedableRng;
+    let table = decision_table(project, decision)?;
+    let mut samplers = BTreeMap::new();
+    let mut unknown = Vec::new();
+    for input in &table.inputs {
+        let spec = scenario
+            .decisions
+            .values()
+            .find_map(|d| d.inputs.get(input));
+        match spec.map(InputSpec::sampler) {
+            Some(Ok(s)) => {
+                samplers.insert(input.clone(), s);
+            }
+            Some(Err(e)) => unknown.push((input.clone(), e)),
+            None if decided(project).contains(input) => {
+                unknown.push((input.clone(), "set by another decision".into()))
+            }
+            None => unknown.push((input.clone(), "no distribution".into())),
+        }
     }
-    let numbers: Vec<f64> = literals
+    let mut rng = rand_chacha::ChaCha8Rng::seed_from_u64(1);
+    let mut counts: Vec<BTreeMap<String, usize>> = vec![BTreeMap::new(); table.outputs.len()];
+    let (mut no_match, mut violations) = (0, 0);
+    for _ in 0..samples {
+        let values: BTreeMap<&String, Value> = samplers
+            .iter()
+            .map(|(k, s)| (k, s.sample(&mut rng)))
+            .collect();
+        let e = table.evaluate(|name| {
+            values
+                .iter()
+                .find(|(k, _)| **k == name)
+                .map_or(Value::Null, |(_, v)| v.clone())
+        });
+        no_match += usize::from(e.matched == 0);
+        violations += usize::from(e.violation);
+        for (i, o) in table.outputs.iter().enumerate() {
+            let texts = match &e.outputs[o] {
+                Value::List(items) if items.is_empty() => vec!["nothing".to_string()],
+                Value::List(items) => items.iter().map(value_text).collect(),
+                v => vec![value_text(v)],
+            };
+            for t in texts {
+                *counts[i].entry(t).or_default() += 1;
+            }
+        }
+    }
+    let outputs = table
+        .outputs
         .iter()
-        .filter_map(|v| match v {
-            Value::Num(x) => Some(*x),
-            _ => None,
+        .zip(counts)
+        .map(|(o, c)| {
+            let mut list: Vec<(String, usize)> = c.into_iter().collect();
+            list.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
+            (o.clone(), list)
         })
         .collect();
-    let (min, max) = match (
-        numbers.iter().copied().reduce(f64::min),
-        numbers.iter().copied().reduce(f64::max),
-    ) {
-        (Some(lo), Some(hi)) => {
-            let margin = if hi > lo {
-                (hi - lo) / 2.0
-            } else {
-                lo.abs().max(1.0)
-            };
-            let floor = if lo >= 0.0 { 0.0 } else { f64::MIN };
-            ((lo - margin).max(floor), hi + margin)
-        }
-        _ => (0.0, 100.0),
-    };
-    InputSpec::Number(NumberSpec::Uniform { min, max })
+    Some(DecisionPreview {
+        samples,
+        no_match,
+        violations,
+        outputs,
+        unknown,
+    })
+}
+
+/// A value for people: strings without quotes, null as "nothing".
+fn value_text(v: &Value) -> String {
+    match v {
+        Value::Str(s) => s.clone(),
+        Value::Null => "nothing".into(),
+        v => v.to_string(),
+    }
 }
 
 /// The parameters `n` takes from the scenario, in the order they are usually edited.

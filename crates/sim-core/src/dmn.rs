@@ -6,7 +6,7 @@ use std::collections::BTreeMap;
 use roxmltree::Node;
 
 use crate::error::ParseError;
-use crate::feel::{Test, UnaryTests, Value, parse_output};
+use crate::feel::{Op, Test, UnaryTests, Value, parse_output};
 
 #[derive(Debug, Clone, Default)]
 pub struct DmnFile {
@@ -19,6 +19,8 @@ pub struct DmnFile {
 pub struct Decision {
     pub id: String,
     pub name: Option<String>,
+    /// `<description>` of the decision.
+    pub description: Option<String>,
     /// `None` if the decision is not a decision table (e.g. a literal expression).
     pub table: Option<RawTable>,
 }
@@ -30,9 +32,55 @@ pub struct RawTable {
     pub aggregation: Option<String>,
     /// Input expressions (variable names).
     pub inputs: Vec<String>,
+    /// What the file says about each input (same order as `inputs`; may be shorter).
+    pub input_info: Vec<InputInfo>,
     /// Output names (empty string for an unnamed single output).
     pub outputs: Vec<String>,
     pub rules: Vec<RawRule>,
+}
+
+/// An input's `label`, its expression's `typeRef` and its `inputValues` (allowed values).
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct InputInfo {
+    pub label: Option<String>,
+    pub type_ref: Option<String>,
+    pub allowed: Option<String>,
+}
+
+/// What kind of value a decision input takes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InputKind {
+    Text,
+    Number,
+    Bool,
+    /// No `typeRef` and no rule literal to tell.
+    Unknown,
+}
+
+/// A decision input as a person filling in a scenario needs it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct InputDescription {
+    /// The variable name (input expression).
+    pub name: String,
+    pub label: Option<String>,
+    pub kind: InputKind,
+    /// Text values to choose from: the allowed values (`inputValues`), else those the rules
+    /// compare with, then any further ones the rules compare with.
+    pub values: Vec<String>,
+    /// Numbers the rules compare with (range bounds included), ascending.
+    pub thresholds: Vec<f64>,
+    /// Whether a rule tests `not(...)`: some value other than the listed ones matters.
+    pub negated: bool,
+}
+
+impl InputDescription {
+    /// "Issue type (issueType)", or just the name without a label.
+    pub fn title(&self) -> String {
+        match &self.label {
+            Some(l) if *l != self.name => format!("{l} ({})", self.name),
+            _ => self.name.clone(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Default)]
@@ -95,6 +143,19 @@ pub fn parse_dmn(file: &str, xml: &str) -> Result<DmnFile, ParseError> {
                         .unwrap_or_default()
                 })
                 .collect(),
+            input_info: children(t, "input")
+                .map(|i| InputInfo {
+                    label: i.attribute("label").map(str::to_string),
+                    type_ref: children(i, "inputExpression")
+                        .next()
+                        .and_then(|e| e.attribute("typeRef"))
+                        .map(str::to_string),
+                    allowed: children(i, "inputValues")
+                        .next()
+                        .map(text_of)
+                        .filter(|t| !t.is_empty()),
+                })
+                .collect(),
             outputs: children(t, "output")
                 .map(|o| o.attribute("name").unwrap_or_default().to_string())
                 .collect(),
@@ -111,6 +172,11 @@ pub fn parse_dmn(file: &str, xml: &str) -> Result<DmnFile, ParseError> {
             Decision {
                 id: id.to_string(),
                 name: d.attribute("name").map(str::to_string),
+                description: children(d, "description")
+                    .next()
+                    .and_then(|t| t.text())
+                    .map(|t| t.trim().to_string())
+                    .filter(|t| !t.is_empty()),
                 table,
             },
         );
@@ -139,6 +205,7 @@ pub enum Aggregation {
 pub struct Table {
     pub hit_policy: HitPolicy,
     pub inputs: Vec<String>,
+    pub input_info: Vec<InputInfo>,
     pub outputs: Vec<String>,
     rules: Vec<(Vec<UnaryTests>, Vec<Value>)>,
 }
@@ -220,6 +287,7 @@ impl Table {
         Ok(Self {
             hit_policy,
             inputs: raw.inputs.clone(),
+            input_info: raw.input_info.clone(),
             outputs: raw.outputs.clone(),
             rules,
         })
@@ -272,6 +340,72 @@ impl Table {
             }
         }
         (out, negated)
+    }
+
+    /// Input `name` described for filling in a scenario: its label, kind (from `typeRef`, else
+    /// from the literals the rules use), the text values to choose from and the numbers the
+    /// rules compare with.
+    pub fn describe_input(&self, name: &str) -> Option<InputDescription> {
+        let i = self.inputs.iter().position(|x| x == name)?;
+        let info = self.input_info.get(i).cloned().unwrap_or_default();
+        let (literals, negated) = self.literals(name);
+        let mut values: Vec<String> = Vec::new();
+        let allowed = info
+            .allowed
+            .as_deref()
+            .and_then(|t| UnaryTests::parse(t).ok());
+        let from_allowed = allowed.iter().flat_map(|u| match u {
+            UnaryTests::Tests {
+                negated: false,
+                tests,
+            } => tests.clone(),
+            _ => Vec::new(),
+        });
+        for t in from_allowed {
+            if let Test::Cmp(Op::Eq, Value::Str(v)) = t
+                && !values.contains(&v)
+            {
+                values.push(v);
+            }
+        }
+        for v in &literals {
+            if let Value::Str(v) = v
+                && !values.contains(v)
+            {
+                values.push(v.clone());
+            }
+        }
+        let mut thresholds: Vec<f64> = literals
+            .iter()
+            .filter_map(|v| match v {
+                Value::Num(x) => Some(*x),
+                _ => None,
+            })
+            .collect();
+        thresholds.sort_by(f64::total_cmp);
+        thresholds.dedup();
+        let kind = match info
+            .type_ref
+            .as_deref()
+            .map(str::to_ascii_lowercase)
+            .as_deref()
+        {
+            Some("string") => InputKind::Text,
+            Some("number" | "integer" | "long" | "double") => InputKind::Number,
+            Some("boolean") => InputKind::Bool,
+            _ if !values.is_empty() => InputKind::Text,
+            _ if literals.iter().any(|v| matches!(v, Value::Bool(_))) => InputKind::Bool,
+            _ if !thresholds.is_empty() => InputKind::Number,
+            _ => InputKind::Unknown,
+        };
+        Some(InputDescription {
+            name: name.to_string(),
+            label: info.label.filter(|l| !l.trim().is_empty()),
+            kind,
+            values,
+            thresholds,
+            negated,
+        })
     }
 
     /// `input(name)` gives the value of an input expression.
@@ -359,6 +493,7 @@ mod tests {
             hit_policy: policy.into(),
             aggregation: agg.map(String::from),
             inputs: vec!["amount".into(), "segment".into()],
+            input_info: Vec::new(),
             outputs: vec!["result".into()],
             rules: rules
                 .iter()
@@ -426,6 +561,43 @@ mod tests {
     }
 
     #[test]
+    fn inputs_are_described_from_the_file_and_the_rules() {
+        let xml = r#"<definitions xmlns="https://www.omg.org/spec/DMN/20191111/MODEL/" id="D">
+  <decision id="d" name="Routing">
+    <description> Picks a route. </description>
+    <decisionTable id="t">
+      <input id="i1" label="Kind of item"><inputExpression id="e1" typeRef="string"><text>kind</text></inputExpression><inputValues id="v1"><text>"small","large","bulky"</text></inputValues></input>
+      <input id="i2" label="Weight"><inputExpression id="e2" typeRef="number"><text>weight</text></inputExpression></input>
+      <input id="i3"><inputExpression id="e3"><text>fragile</text></inputExpression></input>
+      <output id="o" name="route"/>
+      <rule id="r1"><inputEntry id="a"><text>"large","odd"</text></inputEntry><inputEntry id="b"><text>[10..20]</text></inputEntry><inputEntry id="c"><text>true</text></inputEntry><outputEntry id="d"><text>"truck"</text></outputEntry></rule>
+      <rule id="r2"><inputEntry id="a2"><text>not("small")</text></inputEntry><inputEntry id="b2"><text>&lt; 5</text></inputEntry><inputEntry id="c2"><text>-</text></inputEntry><outputEntry id="d2"><text>"van"</text></outputEntry></rule>
+    </decisionTable>
+  </decision>
+</definitions>"#;
+        let f = parse_dmn("r.dmn", xml).unwrap();
+        let d = &f.decisions["d"];
+        assert_eq!(d.description.as_deref(), Some("Picks a route."));
+        let t = Table::compile("d", d.table.as_ref().unwrap()).unwrap();
+        let kind = t.describe_input("kind").unwrap();
+        assert_eq!(kind.title(), "Kind of item (kind)");
+        assert_eq!(kind.kind, InputKind::Text);
+        assert_eq!(kind.values, ["small", "large", "bulky", "odd"]);
+        assert!(kind.negated);
+        let weight = t.describe_input("weight").unwrap();
+        assert_eq!(
+            (weight.kind, weight.thresholds.clone()),
+            (InputKind::Number, vec![5.0, 10.0, 20.0])
+        );
+        let fragile = t.describe_input("fragile").unwrap();
+        assert_eq!(
+            (fragile.kind, fragile.title()),
+            (InputKind::Bool, "fragile".into())
+        );
+        assert!(t.describe_input("nothing").is_none());
+    }
+
+    #[test]
     fn any_requires_equal_outputs() {
         let same: &[(&[&str], &[&str])] = &[(&["< 10", "-"], &["1"]), (&["< 20", "-"], &["1"])];
         assert!(!eval(&table("ANY", None, same), 5.0, "").violation);
@@ -460,6 +632,7 @@ mod tests {
             hit_policy: policy.into(),
             aggregation: None,
             inputs: vec![input.into()],
+            input_info: Vec::new(),
             outputs: vec!["o".into()],
             rules: vec![RawRule {
                 id: "r".into(),

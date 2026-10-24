@@ -314,3 +314,47 @@ fn flows_whose_names_match_no_decision_value_get_shares() {
     assert!(g.output.is_none());
     assert_eq!(g.probabilities.len(), 3);
 }
+
+#[test]
+fn the_preview_shows_what_the_decision_gives_for_the_inputs() {
+    let p = ticket();
+    let s = Scenario::from_toml(&scenario()).unwrap();
+    let pr = needs::preview_decision(&p, &s, "ticket-triage", 4000).unwrap();
+    assert_eq!((pr.samples, pr.no_match, pr.violations), (4000, 0, 0));
+    assert!(pr.unknown.is_empty(), "{:?}", pr.unknown);
+    let (name, queue) = &pr.outputs[0];
+    assert_eq!(name, "queue");
+    assert_eq!(queue[0].0, "front", "most frequent first");
+    let share = |v: &str| queue.iter().find(|(k, _)| k == v).unwrap().1 as f64 / 4000.0;
+    assert!((share("front") - 0.5).abs() < 0.04);
+    assert!((share("specialist") - 0.2).abs() < 0.04);
+    // A COLLECT list counts once per value it holds.
+    let pr = needs::preview_decision(&p, &s, "ticket-checks", 4000).unwrap();
+    let legal = pr.outputs[0]
+        .1
+        .iter()
+        .find(|(k, _)| k == "legal")
+        .unwrap()
+        .1;
+    assert!((legal as f64 / 4000.0 - 0.8).abs() < 0.04);
+
+    // Inputs without a distribution are null: here nothing matches.
+    let none = Scenario::from_toml("").unwrap();
+    let pr = needs::preview_decision(&p, &none, "ticket-triage", 100).unwrap();
+    assert_eq!(pr.no_match, 100);
+    assert_eq!(pr.unknown.len(), 2);
+    assert_eq!(pr.outputs[0].1, [("nothing".to_string(), 100)]);
+}
+
+#[test]
+fn inputs_are_described_with_their_labels_and_types() {
+    let p = ticket();
+    let d = needs::describe_input(&p, "ticket-triage", "category").unwrap();
+    assert_eq!(d.title(), "Category (category)");
+    assert_eq!(d.kind, dmn::InputKind::Text);
+    assert_eq!(d.values, ["billing", "account", "outage"]);
+    let d = needs::describe_input(&p, "ticket-triage", "severity").unwrap();
+    assert_eq!((d.kind, d.thresholds), (dmn::InputKind::Number, vec![3.0]));
+    // Found under another decision that reads the same variable.
+    assert!(needs::describe_input(&p, "ticket-checks", "severity").is_some());
+}

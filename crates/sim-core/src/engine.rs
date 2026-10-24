@@ -17,7 +17,6 @@ use rand_chacha::ChaCha8Rng;
 
 use crate::feel::Value;
 use crate::model::*;
-use crate::scenario::Sampler;
 use crate::scenario::{BoundModel, SignalScope, SplitRule};
 use crate::stats::*;
 
@@ -1939,24 +1938,10 @@ impl<'a> Engine<'a> {
             if let Some(v) = vars.get(name) {
                 return v.clone();
             }
-            let v = match d.samplers.get(name) {
-                Some(Sampler::Number(dist)) => Value::Num(dist.sample_raw(rng)),
-                Some(Sampler::Chance(p)) => Value::Bool(rng.random::<f64>() < *p),
-                Some(Sampler::Choice(options)) => {
-                    let r: f64 = rng.random();
-                    let mut acc = 0.0;
-                    let mut pick = options.last().map(|(k, _)| k.clone()).unwrap_or_default();
-                    for (k, p) in options {
-                        acc += p;
-                        if r < acc {
-                            pick = k.clone();
-                            break;
-                        }
-                    }
-                    Value::Str(pick)
-                }
-                None => Value::Null,
-            };
+            let v = d
+                .samplers
+                .get(name)
+                .map_or(Value::Null, |s| s.sample(&mut *rng));
             vars.insert(name.to_string(), v.clone());
             v
         });
