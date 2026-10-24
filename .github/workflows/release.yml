@@ -60,12 +60,30 @@ jobs:
       - run: cargo build --release --locked --target ${{ matrix.target }} -p sim-gui -p sim-cli
 
       - name: Package (Linux, macOS)
-        if: runner.os != 'Windows'
+        if: runner.os == 'Linux'
         shell: bash
         run: |
           name="bpmn-sim-${GITHUB_REF_NAME}-${{ matrix.target }}"
           mkdir "$name"
           cp target/${{ matrix.target }}/release/sim-gui target/${{ matrix.target }}/release/sim-cli "$name/"
+          cp LICENSE README.md "$name/"
+          cp -r third-party "$name/"
+          tar czf "$name.tar.gz" "$name"
+          echo "ASSET=$name.tar.gz" >> "$GITHUB_ENV"
+
+      - name: Package (macOS)
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          name="bpmn-sim-${GITHUB_REF_NAME}-${{ matrix.target }}"
+          release=target/${{ matrix.target }}/release
+          # A .app bundle opens without a Terminal window, unlike the bare binary.
+          app="$name/BPMN Sim.app"
+          mkdir -p "$app/Contents/MacOS"
+          cp $release/sim-gui "$app/Contents/MacOS/"
+          sed "s/@VERSION@/${GITHUB_REF_NAME#v}/" packaging/macos/Info.plist > "$app/Contents/Info.plist"
+          codesign --force --deep --sign - "$app"
+          cp $release/sim-cli "$name/"
           cp LICENSE README.md "$name/"
           cp -r third-party "$name/"
           tar czf "$name.tar.gz" "$name"

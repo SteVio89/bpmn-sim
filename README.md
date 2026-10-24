@@ -170,8 +170,8 @@ duration = { dist = "uniform", min = "5d", max = "20d" }
 ## Pre-built binaries
 
 Releases on GitHub contain binaries for Linux, macOS and Windows. They are not signed: on
-macOS, open the app with right-click > Open the first time (or run
-`xattr -d com.apple.quarantine sim-gui`); on Windows, confirm the SmartScreen warning.
+macOS, open `BPMN Sim.app` with right-click > Open the first time (or run
+`xattr -dr com.apple.quarantine "BPMN Sim.app"`); on Windows, confirm the SmartScreen warning.
 
 ## Licence
 
