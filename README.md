@@ -173,6 +173,12 @@ Releases on GitHub contain binaries for Linux, macOS and Windows. They are not s
 macOS, open `BPMN Sim.app` with right-click > Open the first time (or run
 `xattr -dr com.apple.quarantine "BPMN Sim.app"`); on Windows, confirm the SmartScreen warning.
 
+The desktop app checks GitHub for a newer release at startup. If there is one, a banner offers
+**Install update**: the archive for your platform is downloaded, checked against the SHA-256
+digest GitHub publishes for it, and swapped in; **Restart now** then starts the new version.
+The app must be installed somewhere you can write to. Set `BPMN_SIM_NO_UPDATE_CHECK=1` to turn
+the check off.
+
 ## Licence
 
 Copyright (C) 2026 Stefan Viol

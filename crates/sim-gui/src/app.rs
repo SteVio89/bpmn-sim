@@ -55,6 +55,7 @@ pub struct App {
     pub pilot: PilotRunner,
     /// What the last "Update from model" (or load) changed, shown in the scenario tab.
     pub update_note: Option<sim_core::needs::Update>,
+    pub updater: crate::update::Updater,
 }
 
 impl Default for App {
@@ -75,6 +76,7 @@ impl Default for App {
             unreviewed: BTreeSet::new(),
             pilot: PilotRunner::default(),
             update_note: None,
+            updater: Default::default(),
         }
     }
 }
@@ -180,6 +182,8 @@ impl App {
     /// One frame of the whole UI (separate from `eframe::App::ui` so tests can drive it).
     pub fn draw(&mut self, ui: &mut egui::Ui) {
         self.poll_job();
+        self.updater.poll();
+        crate::update::banner(self, ui);
         self.pilot.tick(ui.ctx(), &self.ws.project, &self.scenario);
         egui::Panel::top("tabs").show(ui, |ui| {
             ui.horizontal(|ui| {

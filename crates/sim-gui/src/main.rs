@@ -15,6 +15,7 @@ mod results_panel;
 mod scenario_panel;
 #[cfg(test)]
 mod snapshot;
+mod update;
 mod widgets;
 mod workspace;
 
@@ -22,6 +23,10 @@ fn main() -> eframe::Result {
     eframe::run_native(
         "BPMN Simulator",
         eframe::NativeOptions::default(),
-        Box::new(|_cc| Ok(Box::new(app::App::default()))),
+        Box::new(|cc| {
+            let mut app = app::App::default();
+            app.updater.check(&cc.egui_ctx);
+            Ok(Box::new(app))
+        }),
     )
 }
