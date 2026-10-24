@@ -2,7 +2,8 @@
 //! processes it calls, across diagrams; another instance gets a live close-up ("action cam") on
 //! the right when it gets busy where no view shows it, and keeps it while it waits; the rest get
 //! a one-line chip. In auto mode the main view instead picks the instance with the most going on
-//! by itself, without action cams.
+//! by itself, without action cams. Views glide (eased) within a diagram and slide over to another
+//! diagram; the main view's moves hold the replay clock so nothing happens unseen meanwhile.
 
 use std::collections::BTreeMap;
 
@@ -33,6 +34,17 @@ pub const BUSY_SECONDS: f64 = 3.0;
 pub const HOLD_SECONDS: f32 = 3.0;
 /// Auto mode switches only to an instance this much more interesting than the current one.
 const SWITCH_MARGIN: f32 = 0.5;
+/// Pause (on screen, clock held) before the main view switches diagrams, so the token can be
+/// seen reaching the call activity or end event that makes it switch.
+const BEAT_SECONDS: f32 = 0.35;
+/// Length of the slide from one diagram to the next (clock held for the main view).
+pub const CUT_SECONDS: f32 = 0.6;
+/// The next diagram slides in from this share of the view's width.
+pub const SLIDE: f32 = 0.25;
+/// A glide further than this share of the view's width holds the clock (a jump in all but name).
+const FAR: f32 = 0.5;
+/// A glide keeps its target while the new one is closer than this (screen points).
+const RETARGET: f32 = 40.0;
 /// The followed tokens stay this far inside a view (fraction of its size per side).
 const MARGIN: f32 = 0.15;
 
@@ -51,8 +63,14 @@ pub struct Camera {
     cams: Vec<Cam>,
     /// Size of an action cam's picture (as last laid out).
     cam_size: Vec2,
-    /// Diagram point the main view is gliding to.
-    glide: Option<Pos2>,
+    /// The main view's glide within its diagram.
+    glide: Option<Glide>,
+    /// Seconds waited before switching the main view to another diagram.
+    beat: Option<f32>,
+    /// The main view slides in over the diagram it showed before.
+    cut: Option<Cut>,
+    /// The instance the main view followed last frame.
+    following: Option<u64>,
     /// The case this state belongs to.
     case: Option<u64>,
 }
@@ -68,6 +86,9 @@ impl Default for Camera {
             cams: Vec::new(),
             cam_size: Vec2::new(COLUMN_MIN, COLUMN_MIN * CAM_ASPECT),
             glide: None,
+            beat: None,
+            cut: None,
+            following: None,
             case: None,
         }
     }
@@ -110,9 +131,26 @@ impl Camera {
         self.cams.clear();
     }
 
-    /// The main view or an action cam is still gliding (needs another frame).
+    /// The main view or an action cam is still moving (needs another frame).
     pub fn moving(&self) -> bool {
-        self.glide.is_some() || self.cams.iter().any(|c| c.glide.is_some())
+        self.glide.is_some()
+            || self.beat.is_some()
+            || self.cut.is_some()
+            || self
+                .cams
+                .iter()
+                .any(|c| c.glide.is_some() || c.cut.is_some())
+    }
+
+    /// The main view is about to switch diagrams, slides or makes a long glide: the replay
+    /// clock waits for it.
+    pub fn holds_clock(&self) -> bool {
+        self.beat.is_some() || self.cut.is_some() || self.glide.as_ref().is_some_and(|g| g.hold)
+    }
+
+    /// The slide of the main view in progress.
+    pub fn cut(&self) -> Option<&Cut> {
+        self.cut.as_ref()
     }
 
     /// The instances shown as action cams, top to bottom.
@@ -155,7 +193,53 @@ struct Cam {
     /// Empty until it is first placed.
     file: String,
     center: Pos2,
-    glide: Option<Pos2>,
+    glide: Option<Glide>,
+    cut: Option<Cut>,
+}
+
+/// An eased move of a view's centre within a diagram.
+struct Glide {
+    from: Pos2,
+    to: Pos2,
+    t: f32,
+    seconds: f32,
+    /// Starts slowly (a fresh move); a new aim while moving keeps the speed.
+    ease_in: bool,
+    /// Holds the replay clock.
+    hold: bool,
+}
+
+/// A view sliding in over the diagram it showed before: that diagram's file, view and the
+/// direction it slides in from (1: from the right).
+#[derive(Clone, Debug)]
+pub struct Cut {
+    pub file: String,
+    pub pan: Vec2,
+    pub zoom: f32,
+    pub dir: f32,
+    t: f32,
+}
+
+impl Cut {
+    fn new(file: String, pan: Vec2, zoom: f32, dir: f32) -> Self {
+        Self {
+            file,
+            pan,
+            zoom,
+            dir,
+            t: 0.0,
+        }
+    }
+
+    /// How far it is, from 0 to 1 (eased).
+    pub fn progress(&self) -> f32 {
+        smoothstep(self.t / CUT_SECONDS)
+    }
+}
+
+fn smoothstep(x: f32) -> f32 {
+    let x = x.clamp(0.0, 1.0);
+    x * x * (3.0 - 2.0 * x)
 }
 
 /// The top-level instances of `case` (its pools and what messages and signals started).
@@ -451,15 +535,41 @@ pub fn glide_target(center: Pos2, size: Vec2, zoom: f32, pts: &[Pos2], p: Pos2) 
     }
 }
 
-/// Move `center` a step of `dt` seconds towards `glide`; the glide ends on arrival.
-fn glide_step(center: &mut Pos2, glide: &mut Option<Pos2>, zoom: f32, dt: f32) {
-    let Some(g) = *glide else {
+/// Glide a view of `width` at `zoom` from `center` to `to`: longer moves take longer (up to
+/// 1 s), and a move further than `FAR` or a `hold` one holds the replay clock. A glide under way
+/// keeps its target unless the new one is clearly elsewhere.
+fn aim(glide: &mut Option<Glide>, center: Pos2, to: Pos2, zoom: f32, width: f32, hold: bool) {
+    if glide
+        .as_ref()
+        .is_some_and(|g| (g.to - to).length() * zoom < RETARGET)
+    {
+        return;
+    }
+    let d = (to - center).length() * zoom;
+    *glide = Some(Glide {
+        from: center,
+        to,
+        t: 0.0,
+        seconds: (0.35 + d / 2000.0).min(1.0),
+        ease_in: glide.is_none(),
+        hold: hold || d > width * FAR,
+    });
+}
+
+/// Move `center` along `glide` by `dt` seconds; the glide ends on arrival.
+fn glide_step(center: &mut Pos2, glide: &mut Option<Glide>, dt: f32) {
+    let Some(g) = glide else {
         return;
     };
-    let k = 1.0 - (-dt * 6.0).exp();
-    *center += (g - *center) * k;
-    if (g - *center).length() * zoom < 0.5 {
-        *center = g;
+    g.t += dt;
+    let x = (g.t / g.seconds).min(1.0);
+    let k = if g.ease_in {
+        smoothstep(x)
+    } else {
+        1.0 - (1.0 - x).powi(3)
+    };
+    *center = g.from + (g.to - g.from) * k;
+    if x >= 1.0 {
         *glide = None;
     }
 }
@@ -478,8 +588,12 @@ pub fn follow_main(
         return;
     };
     if v.camera.paused || !v.area.is_positive() {
+        v.camera.beat = None;
         return;
     }
+    // Another instance (picked, or by auto mode): the clock waits for the view to get there.
+    let switched = v.camera.following.is_some_and(|f| Some(f) != main);
+    v.camera.following = main;
     let (file, focus) = l.view(v.file.as_deref());
     let Some((_, p)) = token_point(project, &focus.place) else {
         return;
@@ -494,6 +608,15 @@ pub fn follow_main(
     let size = v.area.size();
     let pts = l.points(project, file);
     if v.file.as_deref() != Some(file) {
+        // A moment to see the token arrive before the view switches.
+        if v.file.is_some() {
+            let beat = v.camera.beat.get_or_insert(0.0);
+            *beat += dt;
+            if *beat < BEAT_SECONDS {
+                return;
+            }
+        }
+        v.camera.beat = None;
         let mut history = callers(r, focus.instance);
         while history.last().map(String::as_str) == Some(file) {
             history.pop();
@@ -505,13 +628,32 @@ pub fn follow_main(
         v.camera.glide = None;
         return;
     }
+    v.camera.beat = None;
     let mut center = ((size / 2.0 - v.pan) / v.zoom).to_pos2();
     if let Some(t) = glide_target(center, size, v.zoom, &pts, p) {
-        v.camera.glide = Some(t);
+        aim(&mut v.camera.glide, center, t, v.zoom, size.x, switched);
     }
     if v.camera.glide.is_some() {
-        glide_step(&mut center, &mut v.camera.glide, v.zoom, dt);
+        glide_step(&mut center, &mut v.camera.glide, dt);
         v.pan = size / 2.0 - center.to_vec2() * v.zoom;
+    }
+}
+
+/// The main view showed `before` (file, pan, zoom) last frame and shows `v.file` now:
+/// start sliding over if that is another diagram, and move a slide on by `dt`.
+pub fn track_cut(v: &mut DiagramView, before: Option<(String, Vec2, f32)>, dt: f32) {
+    if let Some(c) = &mut v.camera.cut {
+        c.t += dt;
+        if c.t >= CUT_SECONDS {
+            v.camera.cut = None;
+        }
+    }
+    if let (Some((file, pan, zoom)), Some(now)) = (before, &v.file)
+        && file != *now
+    {
+        // Into a called diagram from the right, back out from the left.
+        let dir = if v.history.contains(&file) { 1.0 } else { -1.0 };
+        v.camera.cut = Some(Cut::new(file, pan, zoom, dir));
     }
 }
 
@@ -557,6 +699,8 @@ pub struct Shot {
     pub focus: TokenView,
     pub file: String,
     pub center: Pos2,
+    /// Sliding in over the diagram it showed before.
+    pub cut: Option<Cut>,
 }
 
 /// The other instances: those with an action cam, and the rest as chips.
@@ -608,6 +752,7 @@ pub fn side(
             file: String::new(),
             center: Pos2::ZERO,
             glide: None,
+            cut: None,
         };
         if cams.len() < MAX_CAMS {
             cams.push(cam);
@@ -630,28 +775,42 @@ pub fn side(
             continue;
         };
         let pts = l.points(project, file);
+        if let Some(c) = &mut cam.cut {
+            c.t += dt;
+            if c.t >= CUT_SECONDS {
+                cam.cut = None;
+            }
+        }
         if cam.file != file {
+            if !cam.file.is_empty() {
+                let into = callers(r, focus.instance).contains(&cam.file);
+                let pan = cam_pan(size, cam.center);
+                let old = std::mem::take(&mut cam.file);
+                cam.cut = Some(Cut::new(old, pan, CAM_ZOOM, if into { 1.0 } else { -1.0 }));
+            }
             cam.file = file.to_string();
             cam.center = frame(size, CAM_ZOOM, &pts, p);
             cam.glide = None;
         } else {
             if let Some(t) = glide_target(cam.center, size, CAM_ZOOM, &pts, p) {
-                cam.glide = Some(t);
+                aim(&mut cam.glide, cam.center, t, CAM_ZOOM, size.x, false);
             }
-            glide_step(&mut cam.center, &mut cam.glide, CAM_ZOOM, dt);
+            glide_step(&mut cam.center, &mut cam.glide, dt);
         }
-        placed.push((cam.root, focus.clone(), cam.file.clone(), cam.center));
+        let cut = cam.cut.clone();
+        placed.push((cam.root, focus.clone(), cam.file.clone(), cam.center, cut));
     }
     let mut others = others;
     let cams = placed
         .into_iter()
-        .filter_map(|(root, focus, file, center)| {
+        .filter_map(|(root, focus, file, center, cut)| {
             let i = others.iter().position(|l| l.root == root)?;
             Some(Shot {
                 lineage: others.remove(i),
                 focus,
                 file,
                 center,
+                cut,
             })
         })
         .collect();
@@ -691,14 +850,23 @@ mod tests {
             None
         );
         assert_eq!(glide_target(c, size, 0.6, &apart, apart[1]), Some(apart[1]));
-        // The glide eases in and ends on arrival.
-        let (mut at, mut g) = (c, Some(Pos2::new(650.0, 300.0)));
-        glide_step(&mut at, &mut g, 0.6, 0.1);
-        assert!(at.x > 500.0 && at.x < 650.0 && g.is_some(), "{at:?}");
-        for _ in 0..100 {
-            glide_step(&mut at, &mut g, 0.6, 0.1);
+        // The glide eases in, takes longer the further it goes, and ends on arrival.
+        let (mut at, mut g) = (c, None);
+        aim(&mut g, at, Pos2::new(650.0, 300.0), 0.6, 300.0, false);
+        let first = g.as_ref().map(|g| (g.seconds, g.hold)).unwrap();
+        assert_eq!(first, (0.35 + 90.0 / 2000.0, false));
+        glide_step(&mut at, &mut g, 0.05);
+        assert!(at.x > 500.0 && at.x < 510.0 && g.is_some(), "{at:?}");
+        // A target close to the old one keeps the glide, one elsewhere starts a new one.
+        aim(&mut g, at, Pos2::new(660.0, 300.0), 0.6, 300.0, false);
+        assert_eq!(g.as_ref().unwrap().to, Pos2::new(650.0, 300.0));
+        for _ in 0..20 {
+            glide_step(&mut at, &mut g, 0.05);
         }
-        assert_eq!((at, g), (Pos2::new(650.0, 300.0), None));
+        assert_eq!((at, g.is_none()), (Pos2::new(650.0, 300.0), true));
+        // Far (more than half the view): the replay clock waits for it.
+        aim(&mut g, at, Pos2::new(1000.0, 300.0), 0.6, 300.0, false);
+        assert!(g.as_ref().unwrap().hold);
     }
 
     fn lineage(root: u64, place: TokenPlace, recent: bool) -> Lineage {

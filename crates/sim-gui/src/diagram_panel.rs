@@ -422,6 +422,12 @@ pub fn show(app: &mut App, ui: &mut Ui) {
     }
 
     let file_before = v.file.clone();
+    // What the replay showed last frame, to slide over from when the diagram changes.
+    let shown_before = v
+        .file
+        .clone()
+        .filter(|_| v.mode == Mode::Replay)
+        .map(|f| (f, v.pan, v.zoom));
     ui.horizontal(|ui| {
         if let Some(back) = v.history.last().cloned()
             && ui
@@ -525,6 +531,10 @@ pub fn show(app: &mut App, ui: &mut Ui) {
         if !v.camera.auto {
             side = Some(camera::side(v, &project, r, lineages, dt)).filter(|s| !s.is_empty());
         }
+    }
+    if v.mode == Mode::Replay {
+        let dt = ui.input(|i| i.stable_dt).min(0.1);
+        camera::track_cut(v, shown_before, dt);
         if v.camera.moving() {
             ui.ctx().request_repaint();
         }
@@ -624,21 +634,28 @@ pub fn show(app: &mut App, ui: &mut Ui) {
         _ => Overlay::None,
     };
     let legend = !heat_values.is_empty();
-    let out = match (&side, result) {
-        (Some(s), Some(r)) => {
+    let metric = v.metric;
+    let heat_of_file = |f: &str| match (metric, result) {
+        (Some(m), Some(r)) => heat(&project, f, r, m),
+        _ => BTreeMap::new(),
+    };
+    let out = match &side {
+        Some(s) => {
             let full = ui.available_rect_before_wrap();
             let (main_rect, side_rect) = v.camera.split(full, s);
             let cam_size = v.camera.cam_size();
             let out = ui
                 .scope_builder(egui::UiBuilder::new().max_rect(main_rect), |ui| {
-                    draw(ui, v, &project, file, &heat_values, &overlay, &marks)
+                    let cut = v.camera.cut().cloned();
+                    let parts = (&heat_values, &overlay, &marks);
+                    draw_cut(ui, v, &project, file, parts, cut.as_ref(), &heat_of_file)
                 })
                 .inner;
             let promoted = ui
                 .scope_builder(egui::UiBuilder::new().max_rect(side_rect), |ui| {
                     egui::ScrollArea::vertical()
                         .show(ui, |ui| {
-                            side_column(ui, &project, r, s, &overlay, v.metric, cam_size)
+                            side_column(ui, &project, s, &overlay, &heat_of_file, cam_size)
                         })
                         .inner
                 })
@@ -648,7 +665,11 @@ pub fn show(app: &mut App, ui: &mut Ui) {
             }
             out
         }
-        _ => draw(ui, v, &project, file, &heat_values, &overlay, &marks),
+        _ => {
+            let cut = v.camera.cut().cloned();
+            let parts = (&heat_values, &overlay, &marks);
+            draw_cut(ui, v, &project, file, parts, cut.as_ref(), &heat_of_file)
+        }
     };
     if v.mode == Mode::Replay && out.panned {
         v.camera.paused = true;
@@ -1764,15 +1785,63 @@ pub fn point_along(pts: &[Pos2], fraction: f64) -> Pos2 {
     pts.last().copied().unwrap_or_default()
 }
 
+/// Draw `v` and, while `cut` lasts, slide it in over the diagram shown before (which slides out
+/// the other way and fades under it).
+fn draw_cut(
+    ui: &mut Ui,
+    v: &mut DiagramView,
+    project: &Project,
+    file: &BpmnFile,
+    (heat_values, overlay, marks): (&BTreeMap<QId, f64>, &Overlay, &Marks),
+    cut: Option<&camera::Cut>,
+    heat_of_file: &dyn Fn(&str) -> BTreeMap<QId, f64>,
+) -> DrawOut {
+    let Some((c, old)) = cut.and_then(|c| Some((c, project.files.get(&c.file)?))) else {
+        return draw(ui, v, project, file, heat_values, overlay, marks);
+    };
+    let rect = ui.available_rect_before_wrap();
+    let e = c.progress();
+    let shift = Vec2::X * rect.width() * camera::SLIDE * c.dir;
+    let mut before = DiagramView {
+        file: Some(c.file.clone()),
+        zoom: c.zoom,
+        pan: c.pan - shift * e,
+        fit: false,
+        mode: Mode::Replay,
+        ..DiagramView::default()
+    };
+    let old_heat = heat_of_file(&c.file);
+    ui.scope_builder(egui::UiBuilder::new().max_rect(rect), |ui| {
+        draw(
+            ui,
+            &mut before,
+            project,
+            old,
+            &old_heat,
+            overlay,
+            &Marks::default(),
+        )
+    });
+    let offset = shift * (1.0 - e);
+    v.pan += offset;
+    let out = ui
+        .scope_builder(egui::UiBuilder::new().max_rect(rect), |ui| {
+            ui.multiply_opacity(e);
+            draw(ui, v, project, file, heat_values, overlay, marks)
+        })
+        .inner;
+    v.pan -= offset;
+    out
+}
+
 /// Action cams (a close-up of the instances that got busy where no view showed them) and chips
 /// (the others). Returns the instance clicked to follow it with the main view.
 fn side_column(
     ui: &mut Ui,
     project: &Project,
-    r: &ReplicationResult,
     side: &camera::Side,
     overlay: &Overlay,
-    metric: Option<HeatMetric>,
+    heat_of_file: &dyn Fn(&str) -> BTreeMap<QId, f64>,
     cam_size: Vec2,
 ) -> Option<u64> {
     let mut promoted = None;
@@ -1800,17 +1869,18 @@ fn side_column(
                 mode: Mode::Replay,
                 ..DiagramView::default()
             };
-            let heat_values = metric.map_or_else(BTreeMap::new, |m| heat(project, name, r, m));
+            let heat_values = heat_of_file(name);
             let out = ui
                 .allocate_ui(size, |ui| {
-                    draw(
+                    let parts = (&heat_values, overlay, &Marks::default());
+                    draw_cut(
                         ui,
                         &mut cam,
                         project,
                         f,
-                        &heat_values,
-                        overlay,
-                        &Marks::default(),
+                        parts,
+                        shot.cut.as_ref(),
+                        heat_of_file,
                     )
                 })
                 .inner;
@@ -1967,7 +2037,10 @@ fn replay_controls(ui: &mut Ui, v: &mut DiagramView, project: &Project, r: &Repl
     ui.add(egui::Slider::new(&mut v.time, lo..=hi.max(lo + 1.0)).show_value(false));
     if v.playing {
         let dt = f64::from(ui.input(|i| i.stable_dt).min(0.1));
-        v.advance(r, dt);
+        // The camera is switching diagrams or making a long move: the clock waits.
+        if !v.camera.holds_clock() {
+            v.advance(r, dt);
+        }
         ui.ctx().request_repaint();
     }
 }

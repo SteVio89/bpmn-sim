@@ -978,6 +978,31 @@ mod tests {
             }
             r.save(&ctx, out.unwrap(), &dir.join(format!("{name}.png")));
         }
+        // Halfway through the slide into the called diagram.
+        let ctx = egui::Context::default();
+        ctx.set_theme(egui::ThemePreference::Light);
+        let mut r = crate::snapshot::Renderer::new(1400, 800);
+        let mut app = with_results("multi-file/main.bpmn", "multi-file/scenario.toml");
+        app.tab = Tab::Diagram;
+        app.diagram.mode = Mode::Replay;
+        app.diagram.follow = true;
+        app.diagram.camera.set_auto();
+        let mut out = None;
+        for step in 0..=2000 {
+            if app
+                .diagram
+                .camera
+                .cut()
+                .is_some_and(|c| c.progress() >= 0.5)
+            {
+                break;
+            }
+            if app.diagram.camera.cut().is_none() && !app.diagram.camera.holds_clock() {
+                app.diagram.time = f64::from(step) * 6.0;
+            }
+            out = Some(r.frame(&ctx, r.input(), |ui| app.draw(ui)));
+        }
+        r.save(&ctx, out.unwrap(), &dir.join("replay-slide.png"));
     }
 
     #[test]
@@ -1165,11 +1190,32 @@ mod tests {
             .unwrap();
         let t = (inside.start + inside.end) / 2.0;
         app.diagram.time = t;
-        for _ in 0..3 {
+        // Playing: a beat to see the token at the call activity, then a slide into the called
+        // diagram (from the right); the clock waits for both.
+        app.diagram.playing = true;
+        frame_with(&mut app, &ctx, vec![]);
+        assert_eq!(app.diagram.file.as_deref(), Some("main.bpmn"));
+        let held = app.diagram.time;
+        let mut frames = 0;
+        while app.diagram.file.as_deref() == Some("main.bpmn") && frames < 300 {
             frame_with(&mut app, &ctx, vec![]);
+            frames += 1;
         }
+        assert!(frames > 3, "switched after {frames} frames");
         assert_eq!(app.diagram.file.as_deref(), Some("subprocess-a.bpmn"));
         assert_eq!(app.diagram.history, ["main.bpmn"]);
+        let cut = app.diagram.camera.cut().expect("slides in");
+        assert_eq!((cut.file.as_str(), cut.dir), ("main.bpmn", 1.0));
+        while app.diagram.camera.cut().is_some() && frames < 600 {
+            assert_eq!(app.diagram.time, held, "the clock waits");
+            frame_with(&mut app, &ctx, vec![]);
+            frames += 1;
+        }
+        assert!(app.diagram.camera.cut().is_none());
+        frame_with(&mut app, &ctx, vec![]);
+        assert!(app.diagram.time > held, "and goes on afterwards");
+        app.diagram.playing = false;
+        app.diagram.time = t;
         // The customer waits in main.bpmn, out of sight: an action cam or a chip.
         let v = &mut app.diagram;
         let tokens = sim_core::diagram::token_positions(&r, &v.followed(), t, v.travel(&r));
@@ -1194,7 +1240,7 @@ mod tests {
         assert_eq!(app.diagram.file.as_deref(), Some("subprocess-a.bpmn"));
         // Following the customer again brings the view back to its pool.
         app.diagram.camera.paused = false;
-        for _ in 0..3 {
+        for _ in 0..120 {
             frame_with(&mut app, &ctx, vec![]);
         }
         assert_eq!(app.diagram.file.as_deref(), Some("main.bpmn"));
