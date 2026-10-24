@@ -1,0 +1,208 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Every element of the BPMN 2.0.2 process conformance class that the simulator supports,
+     serialized like bpmn.io / Camunda Modeler (bpmn: prefix, vendor extensions, BPMNDI). -->
+<bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL"
+                  xmlns:bpmndi="http://www.omg.org/spec/BPMN/20100524/DI"
+                  xmlns:dc="http://www.omg.org/spec/DD/20100524/DC"
+                  xmlns:di="http://www.omg.org/spec/DD/20100524/DI"
+                  xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+                  xmlns:camunda="http://camunda.org/schema/1.0/bpmn"
+                  xmlns:zeebe="http://camunda.org/schema/zeebe/1.0"
+                  xmlns:signavio="http://www.signavio.com"
+                  xmlns:modeler="http://camunda.org/schema/modeler/1.0"
+                  id="Defs_Full" targetNamespace="http://bpmn.io/schema/bpmn"
+                  exporter="Camunda Modeler" exporterVersion="5.30.0"
+                  modeler:executionPlatform="Camunda Cloud" modeler:executionPlatformVersion="8.6.0">
+  <bpmn:escalation id="Esc_Late" name="Late" escalationCode="LATE"/>
+  <bpmn:error id="Err_Reject" name="Rejected" errorCode="REJECT"/>
+  <bpmn:signal id="Sig_Stop" name="Stop"/>
+  <bpmn:category id="Cat_1">
+    <bpmn:categoryValue id="CatVal_1" value="Back office"/>
+  </bpmn:category>
+  <bpmn:dataStore id="Store_Crm" name="CRM" isUnlimited="true"/>
+  <bpmn:process id="Process_Full" name="Full palette" isExecutable="true">
+    <bpmn:extensionElements>
+      <signavio:signavioDiagramMetaData metaKey="revisionid" metaValue="abc"/>
+    </bpmn:extensionElements>
+    <bpmn:laneSet id="LaneSet_1">
+      <bpmn:lane id="Lane_Office" name="Office">
+        <bpmn:flowNodeRef>Start</bpmn:flowNodeRef>
+        <bpmn:flowNodeRef>Task_User</bpmn:flowNodeRef>
+        <bpmn:flowNodeRef>Fork</bpmn:flowNodeRef>
+        <bpmn:flowNodeRef>Task_Manual</bpmn:flowNodeRef>
+        <bpmn:flowNodeRef>Task_Service</bpmn:flowNodeRef>
+        <bpmn:flowNodeRef>Sync</bpmn:flowNodeRef>
+        <bpmn:flowNodeRef>Or_Split</bpmn:flowNodeRef>
+        <bpmn:flowNodeRef>Or_Join</bpmn:flowNodeRef>
+        <bpmn:flowNodeRef>Task_Script</bpmn:flowNodeRef>
+        <bpmn:flowNodeRef>Task_Rule</bpmn:flowNodeRef>
+        <bpmn:childLaneSet id="LaneSet_Office">
+          <bpmn:lane id="Lane_Clerks" name="Clerks">
+            <bpmn:flowNodeRef>Task_Multi</bpmn:flowNodeRef>
+            <bpmn:flowNodeRef>Task_Loop</bpmn:flowNodeRef>
+            <bpmn:flowNodeRef>Sub_Handle</bpmn:flowNodeRef>
+            <bpmn:flowNodeRef>Timer_Remind</bpmn:flowNodeRef>
+            <bpmn:flowNodeRef>Task_Remind</bpmn:flowNodeRef>
+            <bpmn:flowNodeRef>End_Reminded</bpmn:flowNodeRef>
+            <bpmn:flowNodeRef>Err_Rejected</bpmn:flowNodeRef>
+            <bpmn:flowNodeRef>End_Rejected</bpmn:flowNodeRef>
+          </bpmn:lane>
+        </bpmn:childLaneSet>
+      </bpmn:lane>
+      <bpmn:lane id="Lane_Head" name="Head office">
+        <bpmn:flowNodeRef>Link_Throw</bpmn:flowNodeRef>
+        <bpmn:flowNodeRef>Link_Catch</bpmn:flowNodeRef>
+        <bpmn:flowNodeRef>Throw_None</bpmn:flowNodeRef>
+        <bpmn:flowNodeRef>Wait_Timer</bpmn:flowNodeRef>
+        <bpmn:flowNodeRef>End</bpmn:flowNodeRef>
+        <bpmn:flowNodeRef>Sub_Escalate</bpmn:flowNodeRef>
+      </bpmn:lane>
+    </bpmn:laneSet>
+
+    <bpmn:startEvent id="Start" name="Request">
+      <bpmn:outgoing>Flow_1</bpmn:outgoing>
+    </bpmn:startEvent>
+    <bpmn:userTask id="Task_User" name="Capture request">
+      <bpmn:extensionElements>
+        <zeebe:assignmentDefinition assignee="demo"/>
+        <camunda:inputOutput><camunda:inputParameter name="x">1</camunda:inputParameter></camunda:inputOutput>
+      </bpmn:extensionElements>
+      <bpmn:incoming>Flow_1</bpmn:incoming>
+      <bpmn:outgoing>Flow_2</bpmn:outgoing>
+      <bpmn:property id="Prop_1" name="__targetRef_placeholder"/>
+      <bpmn:dataInputAssociation id="DIA_1">
+        <bpmn:sourceRef>DataRef_Request</bpmn:sourceRef>
+        <bpmn:targetRef>Prop_1</bpmn:targetRef>
+      </bpmn:dataInputAssociation>
+      <bpmn:dataOutputAssociation id="DOA_1">
+        <bpmn:targetRef>StoreRef_Crm</bpmn:targetRef>
+      </bpmn:dataOutputAssociation>
+    </bpmn:userTask>
+    <bpmn:parallelGateway id="Fork">
+      <bpmn:incoming>Flow_2</bpmn:incoming>
+      <bpmn:outgoing>Flow_3</bpmn:outgoing>
+      <bpmn:outgoing>Flow_4</bpmn:outgoing>
+    </bpmn:parallelGateway>
+    <bpmn:manualTask id="Task_Manual" name="Sign paper"/>
+    <bpmn:serviceTask id="Task_Service" name="Look up customer">
+      <bpmn:extensionElements><zeebe:taskDefinition type="lookup"/></bpmn:extensionElements>
+    </bpmn:serviceTask>
+    <bpmn:parallelGateway id="Sync"/>
+    <bpmn:inclusiveGateway id="Or_Split" name="Which checks?" default="Flow_or_default"/>
+    <bpmn:scriptTask id="Task_Script" name="Score" scriptFormat="javascript">
+      <bpmn:script>score = 1;</bpmn:script>
+    </bpmn:scriptTask>
+    <bpmn:businessRuleTask id="Task_Rule" name="Apply rules" implementation="##unspecified"/>
+    <bpmn:inclusiveGateway id="Or_Join"/>
+    <bpmn:task id="Task_Multi" name="Check each item">
+      <bpmn:multiInstanceLoopCharacteristics isSequential="false">
+        <bpmn:loopCardinality xsi:type="bpmn:tFormalExpression">3</bpmn:loopCardinality>
+      </bpmn:multiInstanceLoopCharacteristics>
+    </bpmn:task>
+    <bpmn:task id="Task_Loop" name="Polish">
+      <bpmn:standardLoopCharacteristics testBefore="false" loopMaximum="2">
+        <bpmn:loopCondition xsi:type="bpmn:tFormalExpression">false</bpmn:loopCondition>
+      </bpmn:standardLoopCharacteristics>
+    </bpmn:task>
+    <bpmn:subProcess id="Sub_Handle" name="Handle">
+      <bpmn:startEvent id="Sub_Start"/>
+      <bpmn:subProcess id="Sub_Inner" name="Inner">
+        <bpmn:startEvent id="Inner_Start"/>
+        <bpmn:task id="Inner_Task" name="Inner work"/>
+        <bpmn:endEvent id="Inner_End"/>
+        <bpmn:sequenceFlow id="I1" sourceRef="Inner_Start" targetRef="Inner_Task"/>
+        <bpmn:sequenceFlow id="I2" sourceRef="Inner_Task" targetRef="Inner_End"/>
+      </bpmn:subProcess>
+      <bpmn:endEvent id="Sub_End"/>
+      <bpmn:sequenceFlow id="S1" sourceRef="Sub_Start" targetRef="Sub_Inner"/>
+      <bpmn:sequenceFlow id="S2" sourceRef="Sub_Inner" targetRef="Sub_End"/>
+      <bpmn:dataObject id="DataObj_Inner"/>
+    </bpmn:subProcess>
+    <bpmn:boundaryEvent id="Timer_Remind" name="Reminder" cancelActivity="false" attachedToRef="Sub_Handle">
+      <bpmn:timerEventDefinition id="TimerDef_Remind">
+        <bpmn:timeDuration xsi:type="bpmn:tFormalExpression">PT4H</bpmn:timeDuration>
+      </bpmn:timerEventDefinition>
+    </bpmn:boundaryEvent>
+    <bpmn:task id="Task_Remind" name="Send reminder"/>
+    <bpmn:endEvent id="End_Reminded"/>
+    <bpmn:boundaryEvent id="Err_Rejected" name="Rejected" attachedToRef="Sub_Handle">
+      <bpmn:errorEventDefinition id="ErrDef_1" errorRef="Err_Reject"/>
+    </bpmn:boundaryEvent>
+    <bpmn:endEvent id="End_Rejected" name="Rejected">
+      <bpmn:terminateEventDefinition id="TermDef_1"/>
+    </bpmn:endEvent>
+    <bpmn:intermediateThrowEvent id="Link_Throw" name="to B">
+      <bpmn:linkEventDefinition id="LinkDef_Throw" name="B"/>
+    </bpmn:intermediateThrowEvent>
+    <bpmn:intermediateCatchEvent id="Link_Catch" name="from A">
+      <bpmn:linkEventDefinition id="LinkDef_Catch" name="B"/>
+    </bpmn:intermediateCatchEvent>
+    <bpmn:intermediateThrowEvent id="Throw_None" name="Milestone"/>
+    <bpmn:intermediateCatchEvent id="Wait_Timer" name="Next morning">
+      <bpmn:timerEventDefinition id="TimerDef_Wait">
+        <bpmn:timeCycle xsi:type="bpmn:tFormalExpression">R1/PT12H</bpmn:timeCycle>
+      </bpmn:timerEventDefinition>
+    </bpmn:intermediateCatchEvent>
+    <bpmn:endEvent id="End" name="Done"/>
+    <bpmn:subProcess id="Sub_Escalate" name="On late" triggeredByEvent="true">
+      <bpmn:startEvent id="Esc_Start" name="Late" isInterrupting="false">
+        <bpmn:escalationEventDefinition id="EscDef_1" escalationRef="Esc_Late"/>
+      </bpmn:startEvent>
+      <bpmn:task id="Esc_Task" name="Inform head"/>
+      <bpmn:endEvent id="Esc_End"/>
+      <bpmn:sequenceFlow id="E1" sourceRef="Esc_Start" targetRef="Esc_Task"/>
+      <bpmn:sequenceFlow id="E2" sourceRef="Esc_Task" targetRef="Esc_End"/>
+    </bpmn:subProcess>
+
+    <bpmn:sequenceFlow id="Flow_1" sourceRef="Start" targetRef="Task_User"/>
+    <bpmn:sequenceFlow id="Flow_2" sourceRef="Task_User" targetRef="Fork"/>
+    <bpmn:sequenceFlow id="Flow_3" sourceRef="Fork" targetRef="Task_Manual"/>
+    <bpmn:sequenceFlow id="Flow_4" sourceRef="Fork" targetRef="Task_Service"/>
+    <bpmn:sequenceFlow id="Flow_5" sourceRef="Task_Manual" targetRef="Sync"/>
+    <bpmn:sequenceFlow id="Flow_6" sourceRef="Task_Service" targetRef="Sync"/>
+    <bpmn:sequenceFlow id="Flow_7" sourceRef="Sync" targetRef="Or_Split"/>
+    <bpmn:sequenceFlow id="Flow_or_script" sourceRef="Or_Split" targetRef="Task_Script">
+      <bpmn:conditionExpression xsi:type="bpmn:tFormalExpression">=score &gt; 0</bpmn:conditionExpression>
+    </bpmn:sequenceFlow>
+    <bpmn:sequenceFlow id="Flow_or_default" sourceRef="Or_Split" targetRef="Task_Rule"/>
+    <bpmn:sequenceFlow id="Flow_8" sourceRef="Task_Script" targetRef="Or_Join"/>
+    <bpmn:sequenceFlow id="Flow_9" sourceRef="Task_Rule" targetRef="Or_Join"/>
+    <bpmn:sequenceFlow id="Flow_10" sourceRef="Or_Join" targetRef="Task_Multi"/>
+    <bpmn:sequenceFlow id="Flow_11" sourceRef="Task_Multi" targetRef="Task_Loop"/>
+    <bpmn:sequenceFlow id="Flow_12" sourceRef="Task_Loop" targetRef="Sub_Handle"/>
+    <bpmn:sequenceFlow id="Flow_13" sourceRef="Sub_Handle" targetRef="Link_Throw"/>
+    <bpmn:sequenceFlow id="Flow_14" sourceRef="Link_Catch" targetRef="Throw_None"/>
+    <bpmn:sequenceFlow id="Flow_15" sourceRef="Throw_None" targetRef="Wait_Timer"/>
+    <bpmn:sequenceFlow id="Flow_16" sourceRef="Wait_Timer" targetRef="End"/>
+    <bpmn:sequenceFlow id="Flow_17" sourceRef="Timer_Remind" targetRef="Task_Remind"/>
+    <bpmn:sequenceFlow id="Flow_18" sourceRef="Task_Remind" targetRef="End_Reminded"/>
+    <bpmn:sequenceFlow id="Flow_19" sourceRef="Err_Rejected" targetRef="End_Rejected"/>
+
+    <bpmn:dataObjectReference id="DataRef_Request" name="Request" dataObjectRef="DataObj_Request"/>
+    <bpmn:dataObject id="DataObj_Request" isCollection="false"/>
+    <bpmn:dataStoreReference id="StoreRef_Crm" name="CRM" dataStoreRef="Store_Crm"/>
+    <bpmn:textAnnotation id="Note_1" textFormat="text/plain">
+      <bpmn:text>Annotations &amp; groups are artifacts</bpmn:text>
+    </bpmn:textAnnotation>
+    <bpmn:association id="Assoc_1" sourceRef="Task_User" targetRef="Note_1" associationDirection="None"/>
+    <bpmn:group id="Group_1" categoryValueRef="CatVal_1"/>
+  </bpmn:process>
+
+  <bpmndi:BPMNDiagram id="Diagram_Main" name="Main">
+    <bpmndi:BPMNPlane id="Plane_Main" bpmnElement="Process_Full">
+      <bpmndi:BPMNShape id="Lane_Office_di" bpmnElement="Lane_Office" isHorizontal="true"><dc:Bounds x="100" y="50" width="1600" height="400"/></bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Start_di" bpmnElement="Start"><dc:Bounds x="152" y="102" width="36" height="36"/><bpmndi:BPMNLabel><dc:Bounds x="148" y="145" width="44" height="14"/></bpmndi:BPMNLabel></bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Task_User_di" bpmnElement="Task_User"><dc:Bounds x="240" y="80" width="100" height="80"/></bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Sub_Handle_di" bpmnElement="Sub_Handle" isExpanded="false"><dc:Bounds x="900" y="80" width="100" height="80"/></bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Note_1_di" bpmnElement="Note_1"><dc:Bounds x="240" y="0" width="150" height="30"/></bpmndi:BPMNShape>
+      <bpmndi:BPMNEdge id="Flow_1_di" bpmnElement="Flow_1"><di:waypoint x="188" y="120"/><di:waypoint x="240" y="120"/></bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Assoc_1_di" bpmnElement="Assoc_1"><di:waypoint x="290" y="80"/><di:waypoint x="290" y="30"/></bpmndi:BPMNEdge>
+    </bpmndi:BPMNPlane>
+    <bpmndi:BPMNLabelStyle id="Style_1"><dc:Font name="Arial" size="11" isBold="false" isItalic="false" isUnderline="false" isStrikeThrough="false"/></bpmndi:BPMNLabelStyle>
+  </bpmndi:BPMNDiagram>
+  <bpmndi:BPMNDiagram id="Diagram_Sub" name="Handle (drill-down)">
+    <bpmndi:BPMNPlane id="Plane_Sub" bpmnElement="Sub_Handle">
+      <bpmndi:BPMNShape id="Sub_Start_di" bpmnElement="Sub_Start"><dc:Bounds x="100" y="100" width="36" height="36"/></bpmndi:BPMNShape>
+    </bpmndi:BPMNPlane>
+  </bpmndi:BPMNDiagram>
+</bpmn:definitions>

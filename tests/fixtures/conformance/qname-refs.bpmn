@@ -1,0 +1,57 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- References that the schema types as xsd:QName (processRef, messageRef, signalRef, errorRef,
+     calledElement, ...) written with the prefix of the target namespace, as Signavio and the
+     OMG examples do. The process follows the collaboration that references it. -->
+<semantic:definitions xmlns:semantic="http://www.omg.org/spec/BPMN/20100524/MODEL"
+                      xmlns:tns="http://example.org/bpmn/qname"
+                      xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+                      id="Defs_QName" targetNamespace="http://example.org/bpmn/qname">
+  <semantic:collaboration id="Collab">
+    <semantic:participant id="Part_Customer" name="Customer" processRef="tns:Process_Customer"/>
+    <semantic:participant id="Part_Shop" name="Shop" processRef="tns:Process_Shop"/>
+    <semantic:messageFlow id="MF_Order" name="order" sourceRef="Task_Order" targetRef="Start_Shop" messageRef="tns:Msg_Order"/>
+    <semantic:messageFlow id="MF_Invoice" name="invoice" sourceRef="Task_Invoice" targetRef="Catch_Invoice" messageRef="tns:Msg_Invoice"/>
+  </semantic:collaboration>
+  <semantic:process id="Process_Customer" name="Customer" isExecutable="false">
+    <semantic:startEvent id="Start_Customer" name="Need"/>
+    <semantic:sendTask id="Task_Order" name="Place order" messageRef="tns:Msg_Order"/>
+    <semantic:intermediateCatchEvent id="Catch_Invoice" name="Invoice received">
+      <semantic:messageEventDefinition messageRef="tns:Msg_Invoice"/>
+    </semantic:intermediateCatchEvent>
+    <semantic:endEvent id="End_Customer" name="Paid"/>
+    <semantic:sequenceFlow id="C1" sourceRef="Start_Customer" targetRef="Task_Order"/>
+    <semantic:sequenceFlow id="C2" sourceRef="Task_Order" targetRef="Catch_Invoice"/>
+    <semantic:sequenceFlow id="C3" sourceRef="Catch_Invoice" targetRef="End_Customer"/>
+  </semantic:process>
+  <semantic:process id="Process_Shop" name="Shop" isExecutable="false">
+    <semantic:startEvent id="Start_Shop" name="Order received">
+      <semantic:messageEventDefinition messageRef="tns:Msg_Order"/>
+    </semantic:startEvent>
+    <semantic:callActivity id="Call_Pack" name="Pack" calledElement="tns:Process_Pack"/>
+    <semantic:boundaryEvent id="Err_OutOfStock" name="Out of stock" attachedToRef="Call_Pack">
+      <semantic:errorEventDefinition errorRef="tns:Err_Stock"/>
+    </semantic:boundaryEvent>
+    <semantic:sendTask id="Task_Invoice" name="Send invoice"/>
+    <semantic:intermediateThrowEvent id="Throw_Shipped" name="Shipped">
+      <semantic:signalEventDefinition signalRef="tns:Sig_Shipped"/>
+    </semantic:intermediateThrowEvent>
+    <semantic:endEvent id="End_Shop" name="Done"/>
+    <semantic:endEvent id="End_Apology" name="Apologised"/>
+    <semantic:sequenceFlow id="S1" sourceRef="Start_Shop" targetRef="Call_Pack"/>
+    <semantic:sequenceFlow id="S2" sourceRef="Call_Pack" targetRef="Task_Invoice"/>
+    <semantic:sequenceFlow id="S3" sourceRef="Task_Invoice" targetRef="Throw_Shipped"/>
+    <semantic:sequenceFlow id="S4" sourceRef="Throw_Shipped" targetRef="End_Shop"/>
+    <semantic:sequenceFlow id="S5" sourceRef="Err_OutOfStock" targetRef="End_Apology"/>
+  </semantic:process>
+  <semantic:process id="Process_Pack" name="Pack" isExecutable="false">
+    <semantic:startEvent id="Start_Pack"/>
+    <semantic:task id="Task_Pack" name="Pack goods"/>
+    <semantic:endEvent id="End_Pack"/>
+    <semantic:sequenceFlow id="P1" sourceRef="Start_Pack" targetRef="Task_Pack"/>
+    <semantic:sequenceFlow id="P2" sourceRef="Task_Pack" targetRef="End_Pack"/>
+  </semantic:process>
+  <semantic:message id="Msg_Order" name="Order"/>
+  <semantic:message id="Msg_Invoice" name="Invoice"/>
+  <semantic:signal id="Sig_Shipped" name="Shipped"/>
+  <semantic:error id="Err_Stock" name="Out of stock" errorCode="STOCK"/>
+</semantic:definitions>

@@ -1,0 +1,58 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<!-- BPMN 2.0.2 serialization in the style of the OMG examples: default namespace, root
+     elements in any order, flow elements in any order, redundant incoming/outgoing children,
+     typed formal expressions with CDATA. -->
+<definitions xmlns="http://www.omg.org/spec/BPMN/20100524/MODEL"
+             xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+             xmlns:xsd="http://www.w3.org/2001/XMLSchema"
+             xmlns:tns="http://example.org/bpmn/conformance"
+             id="Defs_DefaultNs"
+             name="Default namespace"
+             targetNamespace="http://example.org/bpmn/conformance"
+             typeLanguage="http://www.w3.org/2001/XMLSchema"
+             expressionLanguage="http://www.w3.org/1999/XPath"
+             exporter="hand written" exporterVersion="1.0"
+             xsi:schemaLocation="http://www.omg.org/spec/BPMN/20100524/MODEL BPMN20.xsd">
+  <documentation>Root documentation is allowed on every base element.</documentation>
+  <process id="Process_Order" name="Order" isExecutable="false" processType="Private" isClosed="false">
+    <documentation textFormat="text/plain">Sequence flows come before the nodes they connect.</documentation>
+    <sequenceFlow id="F1" sourceRef="Start" targetRef="Task_Check"/>
+    <sequenceFlow id="F2" sourceRef="Task_Check" targetRef="Split"/>
+    <sequenceFlow id="F_ok" name="ok" sourceRef="Split" targetRef="Task_Ship">
+      <conditionExpression xsi:type="tFormalExpression" language="http://www.w3.org/1999/XPath"><![CDATA[getDataObject('order')/amount < 1000]]></conditionExpression>
+    </sequenceFlow>
+    <sequenceFlow id="F_other" name="otherwise" sourceRef="Split" targetRef="Task_Review" isImmediate="true"/>
+    <sequenceFlow id="F3" sourceRef="Task_Ship" targetRef="Join"/>
+    <sequenceFlow id="F4" sourceRef="Task_Review" targetRef="Join"/>
+    <sequenceFlow id="F5" sourceRef="Join" targetRef="End"/>
+    <startEvent id="Start" name="Order received" isInterrupting="true" parallelMultiple="false">
+      <outgoing>F1</outgoing>
+    </startEvent>
+    <task id="Task_Check" name="Check order" startQuantity="1" completionQuantity="1" isForCompensation="false">
+      <incoming>F1</incoming>
+      <outgoing>F2</outgoing>
+    </task>
+    <exclusiveGateway id="Split" name="Amount?" gatewayDirection="Diverging" default="F_other">
+      <incoming>F2</incoming>
+      <outgoing>F_ok</outgoing>
+      <outgoing>F_other</outgoing>
+    </exclusiveGateway>
+    <task id="Task_Ship" name="Ship">
+      <incoming>F_ok</incoming>
+      <outgoing>F3</outgoing>
+    </task>
+    <task id="Task_Review" name="Review">
+      <incoming>F_other</incoming>
+      <outgoing>F4</outgoing>
+    </task>
+    <exclusiveGateway id="Join" gatewayDirection="Converging">
+      <incoming>F3</incoming>
+      <incoming>F4</incoming>
+      <outgoing>F5</outgoing>
+    </exclusiveGateway>
+    <endEvent id="End" name="Order done">
+      <incoming>F5</incoming>
+    </endEvent>
+  </process>
+  <itemDefinition id="Item_Order" structureRef="xsd:string" itemKind="Information" isCollection="false"/>
+</definitions>

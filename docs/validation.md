@@ -22,6 +22,7 @@ How the numbers of the simulator are checked (spec §8). `cargo test --workspace
 | M6 | `m6_dmn::*`, `dmn.rs` and `feel.rs` unit tests | decision table routes claims with the expected frequencies (auto 0.4, manual 0.1, reject 0.5 within 5σ), all hit policies, FEEL subset, no match / default flow / probability override |
 | M6 | `m6_diagram::*`, GUI `diagram_*` tests | BPMNDI parsing, heat values equal the statistics, replay counts equal the overlapping log records and never exceed resource capacity; headless GUI: fit, drag pans, wheel zooms, replay advances |
 | M6 | `m6_gateways::*` | inclusive split frequencies (5σ), OR join waits exactly for the chosen / still reachable branches, per instance; event-based gateway: first event wins, the others are cancelled |
+| BPMN | `m17_conformance::*` | every file in `tests/fixtures/conformance` (BPMN 2.0.2 serializations: default namespace, other prefixes, QName references, root event definitions, any element order, vendor extensions, BPMNDI) parses, validates without issues and runs its skeleton scenario to completion; inline edge cases (BOM, character references, foreign elements, other root elements, unsupported elements, duplicate or missing ids, wrong namespaces) |
 
 Further unit tests cover the t quantiles, confidence intervals and the calendar arithmetic
 (`aggregate.rs`, `calendar.rs`).

@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Event definitions declared once as root elements and referenced with eventDefinitionRef
+     (BPMN 2.0.2 §10.5.1, tEvent/eventDefinitionRef). -->
+<bpmn2:definitions xmlns:bpmn2="http://www.omg.org/spec/BPMN/20100524/MODEL"
+                   xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+                   id="Defs_RootDefs" targetNamespace="http://example.org/bpmn/rootdefs">
+  <bpmn2:timerEventDefinition id="Timer_1h">
+    <bpmn2:timeDuration xsi:type="bpmn2:tFormalExpression">PT1H</bpmn2:timeDuration>
+  </bpmn2:timerEventDefinition>
+  <bpmn2:terminateEventDefinition id="Terminate"/>
+  <bpmn2:process id="Process_Wait" isExecutable="false">
+    <bpmn2:startEvent id="Start"/>
+    <bpmn2:intermediateCatchEvent id="Wait" name="One hour">
+      <bpmn2:eventDefinitionRef>Timer_1h</bpmn2:eventDefinitionRef>
+    </bpmn2:intermediateCatchEvent>
+    <bpmn2:task id="Task_Work" name="Work"/>
+    <bpmn2:endEvent id="End" name="Stop everything">
+      <bpmn2:eventDefinitionRef>Terminate</bpmn2:eventDefinitionRef>
+    </bpmn2:endEvent>
+    <bpmn2:sequenceFlow id="F1" sourceRef="Start" targetRef="Wait"/>
+    <bpmn2:sequenceFlow id="F2" sourceRef="Wait" targetRef="Task_Work"/>
+    <bpmn2:sequenceFlow id="F3" sourceRef="Task_Work" targetRef="End"/>
+  </bpmn2:process>
+</bpmn2:definitions>
