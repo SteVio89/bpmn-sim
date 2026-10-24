@@ -390,6 +390,10 @@ pub struct ArrivalSpec {
     pub label: Option<String>,
     pub inter_arrival: DistSpec,
     pub triggers: Vec<String>,
+    /// Working hours (`[calendars]` name): a case that arrives while they are closed starts at
+    /// the next opening.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub calendar: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -527,6 +531,8 @@ pub struct Arrival {
     pub inter_arrival: Dist,
     /// Start events, grouped per process in the order of first appearance.
     pub triggers: Vec<QId>,
+    /// Cases start at the next opening of these working hours.
+    pub calendar: Option<Calendar>,
 }
 
 #[derive(Debug, Clone)]
@@ -900,11 +906,21 @@ impl Scenario {
             if triggers.is_empty() {
                 errors.push(format!("{label}: no valid triggers"));
             }
+            let calendar = a.calendar.as_ref().and_then(|c| {
+                let found = calendars.get(c).cloned();
+                if found.is_none() && !self.calendars.contains_key(c) {
+                    errors.push(format!(
+                        "{label}: calendar '{c}' is not defined under [calendars]"
+                    ));
+                }
+                found
+            });
             if let Some(inter_arrival) = inter_arrival {
                 arrivals.push(Arrival {
                     label: a.label.clone(),
                     inter_arrival,
                     triggers,
+                    calendar,
                 });
             }
         }

@@ -107,6 +107,11 @@ time_unit = "minutes"
 [[arrivals]]
 inter_arrival = { dist = "exponential", mean = "12m" }
 triggers = ["Start"]
+calendar = "office"            # optional: cases arriving outside these hours start at the next opening
+
+[calendars.office]
+days = ["mon", "tue", "wed", "thu", "fri"]
+hours = "09:00-17:00"
 
 [resources.Clerks]
 count = 2

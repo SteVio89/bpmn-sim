@@ -37,6 +37,8 @@ impl Ord for Time {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 enum Ev {
     Arrival(usize),
+    /// A case of generator `g` that arrived outside its working hours starts now.
+    CaseStart(usize),
     TaskDone(usize),
     /// A black box replies: deliver message flow `flow` (index into `Engine::msg_flows`) in `group`.
     Reply {
@@ -179,6 +181,8 @@ pub struct Engine<'a> {
     seq: u64,
     queue: BinaryHeap<Reverse<(Time, u64, Ev)>>,
     started: u64,
+    /// Cases that arrived outside their generator's working hours and start at its opening.
+    deferred: u64,
     cases: Vec<Case>,
     completion_order: Vec<usize>,
     instances: Vec<Instance>,
@@ -301,6 +305,7 @@ impl<'a> Engine<'a> {
             seq: 0,
             queue: BinaryHeap::new(),
             started: 0,
+            deferred: 0,
             cases: Vec::new(),
             completion_order: Vec::new(),
             instances: Vec::new(),
@@ -364,6 +369,10 @@ impl<'a> Engine<'a> {
             self.now = t;
             match ev {
                 Ev::Arrival(g) => self.on_arrival(g),
+                Ev::CaseStart(g) => {
+                    self.deferred -= 1;
+                    self.start_case(g);
+                }
                 Ev::TaskDone(run) => self.on_task_done(run),
                 Ev::Reply { group, flow } => self.deliver(group, flow),
                 Ev::Timer(sub) => self.fire_sub(sub),
@@ -378,9 +387,27 @@ impl<'a> Engine<'a> {
     fn on_arrival(&mut self, g: usize) {
         // Once enough cases are started, the next generator firing only marks the end of the
         // observation window (it advances the clock but starts nothing).
-        if self.started >= self.m.sim.cases {
+        if self.started + self.deferred >= self.m.sim.cases {
             return;
         }
+        // Outside the generator's working hours the case starts at the next opening; the next
+        // arrival is still drawn from now, so the arrival rate stays the same.
+        let opens = self.m.arrivals[g]
+            .calendar
+            .as_ref()
+            .map_or(self.now, |c| c.next_open(self.now));
+        if opens > self.now {
+            self.deferred += 1;
+            self.schedule(opens, Ev::CaseStart(g));
+        } else {
+            self.start_case(g);
+        }
+
+        let gap = self.m.arrivals[g].inter_arrival.sample(&mut self.rng);
+        self.schedule(self.now + gap, Ev::Arrival(g));
+    }
+
+    fn start_case(&mut self, g: usize) {
         let case = self.cases.len();
         let group = self.groups.len();
         self.groups.push(case);
@@ -413,9 +440,6 @@ impl<'a> Engine<'a> {
         for (inst, starts) in created {
             self.start_instance(inst, starts);
         }
-
-        let gap = self.m.arrivals[g].inter_arrival.sample(&mut self.rng);
-        self.schedule(self.now + gap, Ev::Arrival(g));
     }
 
     fn create_instance(

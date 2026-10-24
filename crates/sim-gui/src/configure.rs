@@ -244,10 +244,12 @@ pub fn overlay(
         }
         if is_arrival_start(n) {
             for i in s.arrivals_of(project, &n.id) {
-                parts.push(format!(
-                    "every {}",
-                    dist_short(&s.arrivals[i].inter_arrival)
-                ));
+                let a = &s.arrivals[i];
+                let mut text = format!("every {}", dist_short(&a.inter_arrival));
+                if let Some(c) = &a.calendar {
+                    text.push_str(&format!(" · {c}"));
+                }
+                parts.push(text);
             }
             if let Some(e) = key_of(&s.events, project, &n.id).map(|k| &s.events[&k]) {
                 parts.push(format!("starts after {}", dist_short(&e.delay)));

@@ -1076,6 +1076,34 @@ mod tests {
     }
 
     #[test]
+    fn arrival_editor_picks_and_edits_working_hours() {
+        let ctx = egui::Context::default();
+        let mut app = App::default();
+        app.ws.open(&fixtures().join("v13-model.bpmn"));
+        app.regenerate_skeleton();
+        app.tab = Tab::Diagram;
+        app.diagram.mode = Mode::Configure;
+        let office = crate::editors::add_calendar(&mut app.scenario.calendars);
+        app.scenario.resources.get_mut("Clerks").unwrap().calendar = Some(office.clone());
+        let start = Target::Node(QId::new("v13-model.bpmn", "Start"));
+        // Shared with a pool, and undefined: both draw in the start event's editor.
+        for c in [office.as_str(), "night"] {
+            app.scenario.arrivals[0].calendar = Some(c.into());
+            app.focus(start.clone());
+            frame_with(&mut app, &ctx, vec![]);
+            frame_with(&mut app, &ctx, vec![]);
+            assert_eq!(app.diagram.target, Some(start.clone()));
+        }
+        app.tab = Tab::Scenario;
+        frame_with(&mut app, &ctx, vec![]);
+        // The quick check and the run take the arrivals' working hours.
+        app.scenario.arrivals[0].calendar = Some(office);
+        let project = app.ws.project.clone();
+        let bound = app.scenario.bind(&project).expect("binds");
+        assert!(bound.arrivals[0].calendar.is_some());
+    }
+
+    #[test]
     fn configure_mode_opens_editors_by_clicking() {
         let ctx = egui::Context::default();
         let mut app = App::default();

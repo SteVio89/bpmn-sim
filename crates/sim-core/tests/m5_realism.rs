@@ -176,6 +176,64 @@ fn tasks_without_a_calendar_are_unaffected_and_unknown_calendars_fail() {
     assert!(e.contains("office") && e.contains("overnight"), "{e}");
 }
 
+/// The office calendar on the arrivals instead of the resource.
+fn arriving_in_office_hours(sim: &str, interval: &str) -> String {
+    single(sim, interval, "10m", false).replace(
+        "triggers = [\"Start\"]",
+        "triggers = [\"Start\"]\ncalendar = \"office\"",
+    ) + OFFICE
+}
+
+#[test]
+fn cases_arriving_outside_their_working_hours_start_at_the_next_opening() {
+    // Arrivals every 8h from Monday 00:00: 00:00 and 08:00 start at 09:00, 16:00 is open,
+    // Tuesday 00:00 starts at 09:00. The next arrival is drawn from the arrival, not the start.
+    let r = run(
+        "v1-single-task.bpmn",
+        &arriving_in_office_hours("cases = 4", "8h"),
+    );
+    let starts: Vec<f64> = r.cases.iter().map(|c| c.arrival).collect();
+    assert_eq!(starts, [9.0 * H, 9.0 * H, 16.0 * H, 33.0 * H]);
+    // The second case of Monday 09:00 waits 10m for Dev; nobody waits for the office to open.
+    assert_eq!(
+        r.case_cycle_time.mean,
+        (10.0 + 20.0 + 10.0 + 10.0) / 4.0 * MIN
+    );
+    assert_eq!(r.cases_started, 4);
+    assert_eq!(r.cases_completed, 4);
+
+    let text = arriving_in_office_hours("cases = 4", "8h");
+    let s = Scenario::from_toml(&text).unwrap();
+    assert_eq!(s.arrivals[0].calendar.as_deref(), Some("office"));
+    let saved = s.to_toml().unwrap();
+    assert_eq!(Scenario::from_toml(&saved).unwrap(), s, "{saved}");
+}
+
+#[test]
+fn a_case_waiting_for_its_working_hours_is_not_started_before_the_horizon() {
+    // The first case would start at 09:00, after the horizon.
+    let r = run(
+        "v1-single-task.bpmn",
+        &arriving_in_office_hours("cases = 10\nhorizon = \"5h\"", "8h"),
+    );
+    assert!(r.horizon_reached);
+    assert_eq!(r.cases_started, 0);
+    assert!(r.cases.is_empty());
+}
+
+#[test]
+fn arrivals_with_unknown_working_hours_fail() {
+    let e = bind_err(
+        "v1-single-task.bpmn",
+        &arriving_in_office_hours("cases = 1", "8h")
+            .replace("calendar = \"office\"", "calendar = \"night\""),
+    );
+    assert!(
+        e.contains("calendar 'night' is not defined under [calendars]"),
+        "{e}"
+    );
+}
+
 #[test]
 fn cancelling_a_paused_task_counts_only_the_hours_worked() {
     // Task of 10h starts Monday 09:00; the boundary timer fires after 12 wall-clock hours (21:00),

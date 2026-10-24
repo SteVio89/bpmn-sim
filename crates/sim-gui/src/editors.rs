@@ -738,13 +738,20 @@ pub fn arrival_editor(
                 label: n.name.clone(),
                 inter_arrival: default_dist(3, 3600.0),
                 triggers: vec![n.id.to_string()],
+                calendar: None,
             });
         }
         return;
     }
     let mut stop = None;
     for i in mine {
-        let a = &mut s.arrivals[i];
+        let users = calendar_users(s);
+        let Scenario {
+            arrivals,
+            calendars,
+            ..
+        } = s;
+        let a = &mut arrivals[i];
         ui.horizontal(|ui| {
             ui.label("A new case every");
             dist_edit(ui, Id::unique(("arrival", i)), &mut a.inter_arrival);
@@ -752,6 +759,21 @@ pub fn arrival_editor(
         ui.label(RichText::new(rate_text(&a.inter_arrival)).small());
         if preview {
             dist_preview(ui, &a.inter_arrival);
+        }
+        ui.horizontal(|ui| {
+            ui.label("Starts within");
+            calendar_select(ui, &format!("arrivals {i}"), &mut a.calendar, calendars);
+        })
+        .response
+        .on_hover_text("a case that arrives outside these hours starts at the next opening");
+        if let Some(c) = a.calendar.clone() {
+            let me = arrival_name(a, i);
+            let shared: Vec<&str> = users
+                .iter()
+                .filter(|(cal, who)| *cal == c && *who != me)
+                .map(|(_, who)| who.as_str())
+                .collect();
+            calendar_in_place(ui, &c, calendars, &shared);
         }
         let others: Vec<&String> = a
             .triggers
@@ -830,6 +852,61 @@ fn start_delay_editor(
     });
     if preview {
         dist_preview(ui, &e.delay);
+    }
+}
+
+/// Name of arrival generator `i` in the editors.
+fn arrival_name(a: &ArrivalSpec, i: usize) -> String {
+    format!(
+        "arrivals '{}'",
+        a.label
+            .clone()
+            .unwrap_or_else(|| format!("Arrivals {}", i + 1))
+    )
+}
+
+/// (calendar, who uses it) for every resource pool and arrival generator with working hours.
+fn calendar_users(s: &Scenario) -> Vec<(String, String)> {
+    let pools = s
+        .resources
+        .iter()
+        .filter_map(|(p, r)| Some((r.calendar.clone()?, p.clone())));
+    let arrivals = s
+        .arrivals
+        .iter()
+        .enumerate()
+        .filter_map(|(i, a)| Some((a.calendar.clone()?, arrival_name(a, i))));
+    pools.chain(arrivals).collect()
+}
+
+/// Edits calendar `c` in place (or offers to define it), naming the others that share it.
+fn calendar_in_place(
+    ui: &mut Ui,
+    c: &str,
+    calendars: &mut BTreeMap<String, CalendarSpec>,
+    shared: &[&str],
+) {
+    match calendars.get_mut(c) {
+        Some(spec) => {
+            ui.group(|ui| {
+                calendar_fields(ui, c, spec);
+                if !shared.is_empty() {
+                    ui.label(
+                        RichText::new(format!("also the hours of {}", shared.join(", ")))
+                            .small()
+                            .weak(),
+                    );
+                }
+            });
+        }
+        None => {
+            ui.horizontal(|ui| {
+                ui.colored_label(ui.visuals().error_fg_color, format!("'{c}' is not defined"));
+                if ui.small_button("define").clicked() {
+                    calendars.insert(c.to_string(), office_hours());
+                }
+            });
+        }
     }
 }
 
@@ -945,6 +1022,7 @@ pub fn pool_editor(ui: &mut Ui, project: &Project, s: &mut Scenario, name: &str)
         })
         .map(|n| n.label())
         .collect();
+    let hours_users = calendar_users(s);
     let Scenario {
         resources,
         calendars,
@@ -982,33 +1060,12 @@ pub fn pool_editor(ui: &mut Ui, project: &Project, s: &mut Scenario, name: &str)
             ui.end_row();
         });
     if let Some(c) = r.calendar.clone() {
-        let shared: Vec<&str> = resources
+        let shared: Vec<&str> = hours_users
             .iter()
-            .filter(|(p, o)| p.as_str() != name && o.calendar.as_ref() == Some(&c))
-            .map(|(p, _)| p.as_str())
+            .filter(|(cal, who)| *cal == c && who != name)
+            .map(|(_, who)| who.as_str())
             .collect();
-        match calendars.get_mut(&c) {
-            Some(spec) => {
-                ui.group(|ui| {
-                    calendar_fields(ui, &c, spec);
-                    if !shared.is_empty() {
-                        ui.label(
-                            RichText::new(format!("also the hours of {}", shared.join(", ")))
-                                .small()
-                                .weak(),
-                        );
-                    }
-                });
-            }
-            None => {
-                ui.horizontal(|ui| {
-                    ui.colored_label(ui.visuals().error_fg_color, format!("'{c}' is not defined"));
-                    if ui.small_button("define").clicked() {
-                        calendars.insert(c.clone(), office_hours());
-                    }
-                });
-            }
-        }
+        calendar_in_place(ui, &c, calendars, &shared);
     }
     if users.is_empty() {
         ui.label(RichText::new("No task uses this pool.").small().weak());

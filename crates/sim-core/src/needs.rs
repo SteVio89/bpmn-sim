@@ -696,6 +696,7 @@ impl Scenario {
                 label: Some("Arrivals".into()),
                 inter_arrival: fixed(3600.0),
                 triggers,
+                calendar: None,
             });
             u.arrival_added = true;
         }

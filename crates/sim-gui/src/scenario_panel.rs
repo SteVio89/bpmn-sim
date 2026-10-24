@@ -457,6 +457,26 @@ fn arrivals(
                     a.triggers.extend(add);
                 });
             });
+            tracked(s, unreviewed, &targets, |s| {
+                let Scenario {
+                    arrivals,
+                    calendars,
+                    ..
+                } = s;
+                ui.horizontal(|ui| {
+                    ui.label("Starts within");
+                    editors::calendar_select(
+                        ui,
+                        &format!("arrivals {i}"),
+                        &mut arrivals[i].calendar,
+                        calendars,
+                    );
+                })
+                .response
+                .on_hover_text(
+                    "a case that arrives outside these hours starts at the next opening",
+                );
+            });
         });
     }
     if let Some(i) = remove {
@@ -471,6 +491,7 @@ fn arrivals(
                 .map(|n| n.id.to_string())
                 .into_iter()
                 .collect(),
+            calendar: None,
         });
     }
 }
