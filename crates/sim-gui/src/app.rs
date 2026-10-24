@@ -939,6 +939,40 @@ mod tests {
                 r.save(&ctx, out, &dir.join("diagram-task-types-zoom4.png"));
             }
         }
+        // Replay: the camera follows Ops into the called process, the customer on the right;
+        // the heat map colours the call activities by what happens inside them.
+        for (name, follow_ops) in [("replay-camera", true), ("heat-scopes", false)] {
+            let ctx = egui::Context::default();
+            ctx.set_theme(egui::ThemePreference::Light);
+            let mut r = crate::snapshot::Renderer::new(1400, 800);
+            let mut app = with_results("multi-file/main.bpmn", "multi-file/scenario.toml");
+            app.tab = Tab::Diagram;
+            let res = app.results.as_ref().unwrap().data[0].clone();
+            if follow_ops {
+                app.diagram.mode = Mode::Replay;
+                app.diagram.follow = true;
+                let ops = res
+                    .instances
+                    .iter()
+                    .find(|i| i.case == 0 && i.parent.is_none() && i.process.id == "Process_Ops")
+                    .unwrap()
+                    .id;
+                app.diagram.camera.promote(ops);
+                let inside = res
+                    .records
+                    .iter()
+                    .find(|x| x.case == 0 && x.activity.file == "subprocess-a.bpmn")
+                    .unwrap();
+                app.diagram.time = (inside.start + inside.end) / 2.0;
+            } else {
+                app.diagram.metric = Some(sim_core::diagram::HeatMetric::Waiting);
+            }
+            let mut out = None;
+            for _ in 0..30 {
+                out = Some(r.frame(&ctx, r.input(), |ui| app.draw(ui)));
+            }
+            r.save(&ctx, out.unwrap(), &dir.join(format!("{name}.png")));
+        }
     }
 
     #[test]
@@ -1091,6 +1125,79 @@ mod tests {
             } else {
                 assert!(t < 120.0, "{t}");
             }
+        }
+    }
+
+    #[test]
+    fn replay_camera_follows_into_called_files_and_shows_the_other_pools() {
+        use crate::camera;
+        let ctx = egui::Context::default();
+        let mut app = with_results("multi-file/main.bpmn", "multi-file/scenario.toml");
+        app.tab = Tab::Diagram;
+        app.diagram.mode = Mode::Replay;
+        app.diagram.follow = true;
+        frame_with(&mut app, &ctx, vec![]);
+        let r = app.results.as_ref().unwrap().data[0].clone();
+        let project = app.ws.project.clone();
+        let top = |process: &str| {
+            r.instances
+                .iter()
+                .find(|i| i.case == 0 && i.parent.is_none() && i.process.id == process)
+                .unwrap()
+                .id
+        };
+        let (customer, ops) = (top("Process_Customer"), top("Process_Ops"));
+        // By default the main view follows the pool of the first start event.
+        assert_eq!(app.diagram.camera.main_root(&r, 0), Some(customer));
+        assert_eq!(camera::name_of(&project, &r, customer), "Customer");
+
+        // Following Ops while it works in the called process: the camera switches files.
+        app.diagram.camera.promote(ops);
+        let inside = r
+            .records
+            .iter()
+            .find(|x| x.case == 0 && x.activity.file == "subprocess-a.bpmn")
+            .unwrap();
+        let t = (inside.start + inside.end) / 2.0;
+        app.diagram.time = t;
+        for _ in 0..3 {
+            frame_with(&mut app, &ctx, vec![]);
+        }
+        assert_eq!(app.diagram.file.as_deref(), Some("subprocess-a.bpmn"));
+        assert_eq!(app.diagram.history, ["main.bpmn"]);
+        // The customer waits in main.bpmn, out of sight: an action cam or a chip.
+        let v = &mut app.diagram;
+        let tokens = sim_core::diagram::token_positions(&r, &v.followed(), t, v.travel(&r));
+        let busy_for = v.speed_of(&r) * camera::BUSY_SECONDS;
+        let lineages = camera::lineages(&project, &r, 0, &tokens, t, busy_for);
+        assert!(lineages.iter().any(|l| l.root == ops));
+        let side = camera::side(v, &project, &r, lineages);
+        let shown: Vec<u64> = side
+            .cams
+            .iter()
+            .chain(&side.chips)
+            .map(|l| l.root)
+            .collect();
+        assert!(shown.contains(&customer), "{shown:?}");
+        assert!(!shown.contains(&ops), "the main view shows it");
+
+        // Moved by hand: the view stays, even when the followed token is elsewhere.
+        app.diagram.camera.paused = true;
+        app.diagram.camera.promote(customer);
+        app.diagram.camera.paused = true;
+        frame_with(&mut app, &ctx, vec![]);
+        assert_eq!(app.diagram.file.as_deref(), Some("subprocess-a.bpmn"));
+        // Following the customer again brings the view back to its pool.
+        app.diagram.camera.paused = false;
+        for _ in 0..3 {
+            frame_with(&mut app, &ctx, vec![]);
+        }
+        assert_eq!(app.diagram.file.as_deref(), Some("main.bpmn"));
+        assert!(app.diagram.history.is_empty());
+        // Playing on draws the side column and keeps working to the end of the case.
+        app.diagram.playing = true;
+        for _ in 0..120 {
+            frame_with(&mut app, &ctx, vec![]);
         }
     }
 

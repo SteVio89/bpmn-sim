@@ -129,6 +129,8 @@ pub struct TokenView {
     pub instance: u64,
     pub token: u64,
     pub place: TokenPlace,
+    /// When the token last moved (reached the element it is at or travelling to).
+    pub since: f64,
 }
 
 /// Positions of the tokens of `cases` at time `t`, from the token trace. Moving from one element
@@ -194,6 +196,7 @@ pub fn token_positions(
             instance,
             token,
             place,
+            since: e.time,
         });
     }
     out

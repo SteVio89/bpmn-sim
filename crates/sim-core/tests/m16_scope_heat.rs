@@ -94,3 +94,24 @@ fn runs_cut_short_by_the_horizon_are_left_out() {
     assert_eq!(r.scopes[&QId::new("outer.bpmn", "Call_Inner")].runs, 1);
     assert_eq!(r.scopes[&QId::new("inner.bpmn", "Sub")].runs, 2);
 }
+
+#[test]
+fn called_instances_know_their_caller() {
+    let p = load();
+    let s = Scenario::from_toml(SCENARIO).unwrap();
+    let r = run_replications(&s.bind(&p).unwrap()).remove(0);
+    for c in 0..3 {
+        let of_case: Vec<&InstanceRecord> = r.instances.iter().filter(|i| i.case == c).collect();
+        assert_eq!(of_case.len(), 2);
+        let (outer, inner) = (of_case[0], of_case[1]);
+        assert_eq!(outer.process.id, "Process_Outer");
+        assert_eq!((outer.parent, &outer.call), (None, &None));
+        assert_eq!(inner.parent, Some(outer.id));
+        assert_eq!(inner.call, Some(QId::new("outer.bpmn", "Call_Inner")));
+        assert!(inner.end.is_some() && inner.start >= outer.start);
+        assert_eq!(
+            r.instances[inner.id as usize].id, inner.id,
+            "ids are positions"
+        );
+    }
+}

@@ -22,6 +22,7 @@ use sim_core::{
 };
 
 use crate::app::App;
+use crate::camera::{self, COLUMN, Camera};
 use crate::configure::{ConfigOverlay, PopoverAction, Status, Target};
 use crate::diagram_icons::{self, Icon};
 use crate::manual_panel::{ManualState, Marks, accent};
@@ -60,6 +61,8 @@ pub struct DiagramView {
     pub ff: Option<FastForward>,
     /// Follow individual (traced) cases instead of showing queues of all cases.
     pub follow: bool,
+    /// Following cases: the main view follows one instance, action cams show the others.
+    pub camera: Camera,
     pub case: u64,
     pub cases_shown: u64,
     /// Manual token game (when switched on).
@@ -99,6 +102,8 @@ pub struct DrawOut {
     pub hovered_pool: Option<Target>,
     /// Screen rectangles of the drawn elements, lanes and pools.
     pub rects: BTreeMap<Target, Rect>,
+    /// The view was moved by hand (dragged or swiped, not zoomed).
+    pub panned: bool,
 }
 
 /// What the replay draws on top of the diagram.
@@ -169,7 +174,7 @@ fn format_span(seconds: f64) -> String {
 }
 
 impl DiagramView {
-    fn followed(&self) -> BTreeSet<u64> {
+    pub fn followed(&self) -> BTreeSet<u64> {
         (self.case..self.case + self.cases_shown.max(1)).collect()
     }
 
@@ -321,6 +326,7 @@ impl Default for DiagramView {
             skip_quiet: true,
             ff: None,
             follow: true,
+            camera: Camera::default(),
             case: 0,
             cases_shown: 1,
             manual: None,
@@ -415,6 +421,7 @@ pub fn show(app: &mut App, ui: &mut Ui) {
         v.mode = Mode::View;
     }
 
+    let file_before = v.file.clone();
     ui.horizontal(|ui| {
         if let Some(back) = v.history.last().cloned()
             && ui
@@ -490,10 +497,32 @@ pub fn show(app: &mut App, ui: &mut Ui) {
                 .on_disabled_hover_text("run a simulation for a heat map");
         });
     });
+    // Another diagram picked by hand: the camera stays there until "follow".
+    if v.mode == Mode::Replay && v.file != file_before {
+        v.camera.paused = true;
+    }
     if v.mode == Mode::Replay
         && let Some(r) = result
     {
-        replay_controls(ui, v, r);
+        replay_controls(ui, v, &project, r);
+    }
+    // Following cases: move the main view along and pick the action cams.
+    let mut side = None;
+    if v.mode == Mode::Replay
+        && v.follow
+        && v.camera.on
+        && let Some(r) = result
+    {
+        v.camera.reset_for(v.case);
+        let tokens = token_positions(r, &v.followed(), v.time, v.travel(r));
+        let busy_for = v.speed_of(r) * camera::BUSY_SECONDS;
+        let lineages = camera::lineages(&project, r, v.case, &tokens, v.time, busy_for);
+        let dt = ui.input(|i| i.stable_dt).min(0.1);
+        camera::follow_main(v, &project, r, &lineages, dt);
+        if v.camera.moving() {
+            ui.ctx().request_repaint();
+        }
+        side = Some(camera::side(v, &project, r, lineages)).filter(|s| !s.is_empty());
     }
     // Configure mode: what needs input, the next one, and the quick check.
     let checked = (v.mode == Mode::Configure).then(|| app.scenario.check(&project));
@@ -590,7 +619,34 @@ pub fn show(app: &mut App, ui: &mut Ui) {
         _ => Overlay::None,
     };
     let legend = !heat_values.is_empty();
-    let out = draw(ui, v, &project, file, &heat_values, &overlay, &marks);
+    let out = match (&side, result) {
+        (Some(s), Some(r)) => {
+            let full = ui.available_rect_before_wrap();
+            let split = (full.right() - COLUMN).max(full.left() + 200.0);
+            let main_rect = Rect::from_min_max(full.min, Pos2::new(split - 6.0, full.bottom()));
+            let side_rect = Rect::from_min_max(Pos2::new(split, full.top()), full.max);
+            let out = ui
+                .scope_builder(egui::UiBuilder::new().max_rect(main_rect), |ui| {
+                    draw(ui, v, &project, file, &heat_values, &overlay, &marks)
+                })
+                .inner;
+            let promoted = ui
+                .scope_builder(egui::UiBuilder::new().max_rect(side_rect), |ui| {
+                    egui::ScrollArea::vertical()
+                        .show(ui, |ui| side_column(ui, &project, r, s, &overlay, v.metric))
+                        .inner
+                })
+                .inner;
+            if let Some(root) = promoted {
+                v.camera.promote(root);
+            }
+            out
+        }
+        _ => draw(ui, v, &project, file, &heat_values, &overlay, &marks),
+    };
+    if v.mode == Mode::Replay && out.panned {
+        v.camera.paused = true;
+    }
     // In configure mode the open editor would hide behind the tooltip.
     if let Some(id) = &out.hovered
         && (v.mode != Mode::Configure || v.target.is_none())
@@ -619,7 +675,10 @@ pub fn show(app: &mut App, ui: &mut Ui) {
         .filter(|id| !matches!(&overlay, Overlay::Config(o) if o.clickable.contains(id)));
     if let Some(n) = clicked.as_ref().and_then(|id| project.node(id)) {
         match called_file(&project, n) {
-            Some((_, f)) if !f.diagram.shapes.is_empty() => v.open(f.name.clone()),
+            Some((_, f)) if !f.diagram.shapes.is_empty() => {
+                v.open(f.name.clone());
+                v.camera.paused |= v.mode == Mode::Replay;
+            }
             Some((q, f)) => {
                 app.status = format!("{} ({}) has no diagram information", q.id, f.name)
             }
@@ -780,7 +839,7 @@ fn draw(
     overlay: &Overlay,
     marks: &Marks,
 ) -> DrawOut {
-    let size = ui.available_size().max(Vec2::new(200.0, 200.0));
+    let size = ui.available_size().max(Vec2::new(120.0, 90.0));
     let (response, painter) = ui.allocate_painter(size, Sense::click_and_drag());
     let area = response.rect;
     v.area = area;
@@ -798,14 +857,17 @@ fn draw(
         v.pan = (area.size() - w * v.zoom) / 2.0 - lo.to_vec2() * v.zoom;
         v.fit = false;
     }
+    let mut panned = false;
     if response.dragged() {
         v.pan += response.drag_delta();
+        panned = response.drag_delta() != Vec2::ZERO;
     }
     if response.hovered() {
         // Two-finger swipe (or mouse wheel) moves the view with the fingers; pinch (or
         // Ctrl/Cmd + wheel, which egui turns into a zoom) zooms around the pointer.
         let (scroll, factor) = ui.input(|i| (i.smooth_scroll_delta, i.zoom_delta()));
         v.pan += scroll;
+        panned |= scroll != Vec2::ZERO;
         if factor != 1.0
             && let Some(p) = response.hover_pos()
         {
@@ -1601,6 +1663,7 @@ fn draw(
     }
     let clicked = response.clicked();
     DrawOut {
+        panned,
         clicked_node: hovered.clone().filter(|h| {
             clicked && (marks.nodes.contains(h) || openable.is_some_and(|n| n.id == *h))
         }),
@@ -1682,7 +1745,7 @@ fn tooltip(ui: &Ui, project: &Project, r: Option<&ReplicationResult>, id: &QId, 
 }
 
 /// The point at `fraction` (0..1) of the length of a polyline.
-fn point_along(pts: &[Pos2], fraction: f64) -> Pos2 {
+pub fn point_along(pts: &[Pos2], fraction: f64) -> Pos2 {
     let total: f32 = pts.windows(2).map(|w| (w[1] - w[0]).length()).sum();
     let mut left = total * fraction.clamp(0.0, 1.0) as f32;
     for w in pts.windows(2) {
@@ -1695,8 +1758,76 @@ fn point_along(pts: &[Pos2], fraction: f64) -> Pos2 {
     pts.last().copied().unwrap_or_default()
 }
 
+/// Action cams (a close-up of each busy instance the main view does not show) and chips (the
+/// instances that only wait). Returns the instance clicked to follow it with the main view.
+fn side_column(
+    ui: &mut Ui,
+    project: &Project,
+    r: &ReplicationResult,
+    side: &camera::Side,
+    overlay: &Overlay,
+    metric: Option<HeatMetric>,
+) -> Option<u64> {
+    let mut promoted = None;
+    for l in &side.cams {
+        ui.group(|ui| {
+            let title = match l.more {
+                0 => l.name.clone(),
+                n => format!("{}  +{n}", l.name),
+            };
+            let head = ui
+                .add(egui::Label::new(RichText::new(title).strong()).sense(Sense::click()))
+                .on_hover_text("follow this one in the main view");
+            ui.label(RichText::new(camera::status(project, &l.focus)).small());
+            let Some((name, p)) = camera::token_point(project, &l.focus.place) else {
+                return;
+            };
+            let Some(f) = project.files.get(&name) else {
+                return;
+            };
+            let size = Vec2::new(ui.available_width(), camera::CAM_HEIGHT);
+            let mut cam = DiagramView {
+                file: Some(name.clone()),
+                zoom: camera::CAM_ZOOM,
+                pan: camera::cam_pan(size, p),
+                fit: false,
+                mode: Mode::Replay,
+                ..DiagramView::default()
+            };
+            let heat_values = metric.map_or_else(BTreeMap::new, |m| heat(project, &name, r, m));
+            let out = ui
+                .allocate_ui(size, |ui| {
+                    draw(
+                        ui,
+                        &mut cam,
+                        project,
+                        f,
+                        &heat_values,
+                        overlay,
+                        &Marks::default(),
+                    )
+                })
+                .inner;
+            if head.clicked() || out.clicked {
+                promoted = Some(l.root);
+            }
+        });
+    }
+    for l in &side.chips {
+        let text = format!("{} · {}", l.name, camera::status(project, &l.focus));
+        if ui
+            .add(egui::Button::new(RichText::new(text).small()).wrap())
+            .on_hover_text("follow this one in the main view")
+            .clicked()
+        {
+            promoted = Some(l.root);
+        }
+    }
+    promoted
+}
+
 /// Play/pause, speed, clock, case selection and the time slider.
-fn replay_controls(ui: &mut Ui, v: &mut DiagramView, r: &ReplicationResult) {
+fn replay_controls(ui: &mut Ui, v: &mut DiagramView, project: &Project, r: &ReplicationResult) {
     let traced: u64 = r.trace.iter().map(|e| e.case + 1).max().unwrap_or(0);
     ui.horizontal(|ui| {
         if ui
@@ -1777,6 +1908,37 @@ fn replay_controls(ui: &mut Ui, v: &mut DiagramView, r: &ReplicationResult) {
             }
         }
     });
+    if v.follow && v.case < traced {
+        ui.horizontal(|ui| {
+            ui.checkbox(&mut v.camera.on, "camera follows").on_hover_text(
+                "the view follows one pool of the case into the processes it calls; the others show on the right",
+            );
+            if !v.camera.on {
+                return;
+            }
+            v.camera.reset_for(v.case);
+            let main = v.camera.main_root(r, v.case);
+            let mut picked = main;
+            egui::ComboBox::from_id_salt("camera-main")
+                .selected_text(main.map(|m| camera::name_of(project, r, m)).unwrap_or_default())
+                .show_ui(ui, |ui| {
+                    for root in camera::roots(r, v.case) {
+                        ui.selectable_value(&mut picked, Some(root), camera::name_of(project, r, root));
+                    }
+                });
+            if let Some(p) = picked.filter(|p| Some(*p) != main) {
+                v.camera.promote(p);
+            }
+            if v.camera.paused
+                && ui
+                    .button("follow")
+                    .on_hover_text("moved by hand: follow again")
+                    .clicked()
+            {
+                v.camera.paused = false;
+            }
+        });
+    }
     let (lo, hi) = if v.follow {
         let (a, b) = v.follow_window(r);
         (a, b + v.travel(r))

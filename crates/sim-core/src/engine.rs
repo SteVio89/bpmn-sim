@@ -2448,6 +2448,21 @@ impl<'a> Engine<'a> {
             })
             .collect();
 
+        let instances = self
+            .instances
+            .iter()
+            .enumerate()
+            .map(|(id, i)| InstanceRecord {
+                id: id as u64,
+                case: i.case as u64,
+                process: i.process.clone(),
+                parent: i.parent.map(|(p, _)| p as u64),
+                call: i.run.map(|r| self.scope_runs[r].node.clone()),
+                start: i.started,
+                end: i.finished,
+            })
+            .collect();
+
         let mut by_process: BTreeMap<&QId, Vec<f64>> = BTreeMap::new();
         for i in &self.instances {
             if let (Some(end), false) = (i.finished, cases[i.case].warm_up) {
@@ -2547,6 +2562,7 @@ impl<'a> Engine<'a> {
             case_cost: Summary::of(&cost),
             activities,
             scopes,
+            instances,
             resources,
             end_events: self.end_events,
             stuck,

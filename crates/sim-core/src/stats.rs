@@ -125,6 +125,21 @@ pub struct DecisionStats {
     pub outcomes: BTreeMap<String, u64>,
 }
 
+/// One process instance: a pool of a case, a process started by a message or signal, or the
+/// process a call activity called.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct InstanceRecord {
+    /// The `instance` of activity records and trace events.
+    pub id: u64,
+    pub case: u64,
+    pub process: QId,
+    /// For a called process: the instance whose call activity called it, and that call activity.
+    pub parent: Option<u64>,
+    pub call: Option<QId>,
+    pub start: f64,
+    pub end: Option<f64>,
+}
+
 /// Completed runs of an embedded subprocess, event subprocess or call activity.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct ScopeStats {
@@ -234,6 +249,8 @@ pub struct ReplicationResult {
     /// Embedded subprocesses, event subprocesses and call activities (of a loaded process):
     /// what happens inside them per run.
     pub scopes: BTreeMap<QId, ScopeStats>,
+    /// Every process instance, in the order they were created.
+    pub instances: Vec<InstanceRecord>,
     pub resources: BTreeMap<String, ResourceStats>,
     /// Tokens consumed per end event.
     pub end_events: BTreeMap<QId, u64>,

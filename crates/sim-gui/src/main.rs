@@ -2,6 +2,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod app;
+mod camera;
 mod configure;
 mod decision_inputs;
 mod diagram_icons;
