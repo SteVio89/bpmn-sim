@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<definitions xmlns="https://www.omg.org/spec/DMN/20191111/MODEL/" id="Defs_Triage" name="Ticket triage" namespace="http://camunda.org/schema/1.0/dmn">
+  <decision id="ticket-triage" name="Ticket triage">
+    <decisionTable id="DT_Triage" hitPolicy="FIRST">
+      <input id="In_Category" label="Category"><inputExpression id="IE_1" typeRef="string"><text>category</text></inputExpression></input>
+      <input id="In_Severity" label="Severity"><inputExpression id="IE_2" typeRef="number"><text>severity</text></inputExpression></input>
+      <output id="Out_Queue" name="queue" typeRef="string"/>
+      <output id="Out_Priority" name="priority" typeRef="string"/>
+      <rule id="R1"><inputEntry id="R1_1"><text>"billing"</text></inputEntry><inputEntry id="R1_2"><text>-</text></inputEntry><outputEntry id="R1_O1"><text>"front"</text></outputEntry><outputEntry id="R1_O2"><text>"normal"</text></outputEntry></rule>
+      <rule id="R2"><inputEntry id="R2_1"><text>"account"</text></inputEntry><inputEntry id="R2_2"><text>&lt; 3</text></inputEntry><outputEntry id="R2_O1"><text>"back"</text></outputEntry><outputEntry id="R2_O2"><text>"normal"</text></outputEntry></rule>
+      <rule id="R3"><inputEntry id="R3_1"><text>"account"</text></inputEntry><inputEntry id="R3_2"><text>-</text></inputEntry><outputEntry id="R3_O1"><text>"back"</text></outputEntry><outputEntry id="R3_O2"><text>"urgent"</text></outputEntry></rule>
+      <rule id="R4"><inputEntry id="R4_1"><text>"outage"</text></inputEntry><inputEntry id="R4_2"><text>-</text></inputEntry><outputEntry id="R4_O1"><text>"specialist"</text></outputEntry><outputEntry id="R4_O2"><text>"urgent"</text></outputEntry></rule>
+    </decisionTable>
+  </decision>
+</definitions>

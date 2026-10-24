@@ -6,6 +6,8 @@
 use std::collections::BTreeMap;
 
 use crate::dist::{DistSpec, Seconds};
+use crate::dmn::{HitPolicy, Table};
+use crate::feel::Value;
 use crate::model::*;
 use crate::project::Project;
 use crate::scenario::*;
@@ -43,6 +45,275 @@ fn decided(project: &Project) -> Vec<String> {
         .flat_map(|t| t.outputs.iter().cloned())
         .chain(project.nodes().filter_map(|n| n.result_variable.clone()))
         .collect()
+}
+
+/// A variable that a business rule task's decision sets and a gateway can follow.
+#[derive(Debug, Clone, PartialEq)]
+pub struct DecisionOutput {
+    /// Names the value is stored under: the preferred one first (the result variable, or
+    /// `<resultVariable>.<output>` when the table has several outputs), then the output name.
+    pub names: Vec<String>,
+    pub decision: String,
+    /// The business rule task that evaluates the decision.
+    pub task: QId,
+    /// The values the decision can give; `None` when an aggregation computes them. COLLECT
+    /// without aggregation gives a list of these.
+    pub values: Option<Vec<Value>>,
+    /// COLLECT without aggregation: the variable holds a list.
+    pub list: bool,
+}
+
+impl DecisionOutput {
+    pub fn variable(&self) -> &str {
+        &self.names[0]
+    }
+}
+
+/// The outputs of the decisions that business rule tasks evaluate (loaded decision tables
+/// only), in model order.
+pub fn decision_outputs(project: &Project) -> Vec<DecisionOutput> {
+    let mut out = Vec::new();
+    for n in project.nodes() {
+        let Some(id) = &n.called_decision else {
+            continue;
+        };
+        let Some(table) = project
+            .decisions
+            .get(id)
+            .and_then(|f| project.dmn.get(f))
+            .and_then(|f| f.decisions.get(id))
+            .and_then(|d| d.table.as_ref())
+            .and_then(|raw| Table::compile(id, raw).ok())
+        else {
+            continue;
+        };
+        let single = table.outputs.len() == 1;
+        for o in &table.outputs {
+            let mut names = Vec::new();
+            if let Some(r) = &n.result_variable {
+                names.push(if single {
+                    r.clone()
+                } else {
+                    format!("{r}.{o}")
+                });
+            }
+            if !o.is_empty() && !names.contains(o) {
+                names.push(o.clone());
+            }
+            if names.is_empty() {
+                continue;
+            }
+            out.push(DecisionOutput {
+                names,
+                decision: id.clone(),
+                task: n.id.clone(),
+                values: table.values(o),
+                list: table.hit_policy == HitPolicy::Collect(None),
+            });
+        }
+    }
+    out
+}
+
+/// Every `DecisionOutput` stored under `variable`.
+pub fn outputs_named<'a>(outputs: &'a [DecisionOutput], variable: &str) -> Vec<&'a DecisionOutput> {
+    outputs
+        .iter()
+        .filter(|o| o.names.iter().any(|n| n == variable))
+        .collect()
+}
+
+/// For a split without conditions: the decision output whose values match the names of its
+/// outgoing flows, and the value(s) for each non-default flow. Outputs of decisions evaluated
+/// closer before the split are tried first. A flow name matches a value when both are equal,
+/// or one contains the other, ignoring case, spaces and punctuation ("yes"/"no" also match
+/// true/false). Every non-default flow must match, and no value may match two flows.
+pub fn suggest_output(
+    project: &Project,
+    n: &FlowNode,
+) -> Option<(String, BTreeMap<String, OutputValues>)> {
+    let outputs = decision_outputs(project);
+    let order = upstream(project, n);
+    let mut candidates: Vec<&DecisionOutput> = outputs
+        .iter()
+        .filter(|o| {
+            project
+                .node(&o.task)
+                .is_some_and(|t| t.process == n.process)
+                && o.values.as_ref().is_some_and(|v| !v.is_empty())
+        })
+        .collect();
+    candidates.sort_by_key(|o| {
+        order
+            .iter()
+            .position(|t| *t == o.task)
+            .unwrap_or(usize::MAX)
+    });
+    let flows: Vec<(&QId, String)> = n
+        .outgoing
+        .iter()
+        .filter(|f| n.default_flow.as_ref() != Some(*f))
+        .map(|f| {
+            let name = project
+                .flow(f)
+                .and_then(|fl| fl.name.as_deref())
+                .unwrap_or("");
+            (f, normalize(name))
+        })
+        .collect();
+    if flows.iter().any(|(_, name)| name.is_empty()) {
+        return None;
+    }
+    'candidates: for o in candidates {
+        let words: Vec<(&Value, String)> = o
+            .values
+            .iter()
+            .flatten()
+            .filter_map(|v| value_word(v).map(|w| (v, w)))
+            .collect();
+        let mut taken: Vec<&Value> = Vec::new();
+        let mut map = BTreeMap::new();
+        for (f, name) in &flows {
+            let mut hits: Vec<&Value> = words
+                .iter()
+                .filter(|(v, w)| w == name || bool_word(v, name))
+                .map(|(v, _)| *v)
+                .collect();
+            if hits.is_empty() {
+                hits = words
+                    .iter()
+                    .filter(|(_, w)| {
+                        !w.is_empty() && (name.contains(w.as_str()) || w.contains(name.as_str()))
+                    })
+                    .map(|(v, _)| *v)
+                    .collect();
+            }
+            if hits.is_empty() || hits.iter().any(|v| taken.contains(v)) {
+                continue 'candidates;
+            }
+            taken.extend(&hits);
+            let literals = hits
+                .iter()
+                .filter_map(|v| OutputValue::from_value(v))
+                .collect();
+            map.insert(f.id.clone(), OutputValues::from_vec(literals));
+        }
+        return Some((o.variable().to_string(), map));
+    }
+    None
+}
+
+/// Lower-case letters and digits only.
+fn normalize(text: &str) -> String {
+    text.chars()
+        .filter(|c| c.is_alphanumeric())
+        .flat_map(char::to_lowercase)
+        .collect()
+}
+
+fn value_word(v: &Value) -> Option<String> {
+    match v {
+        Value::Str(s) => Some(normalize(s)),
+        Value::Num(x) => Some(x.to_string()),
+        Value::Bool(b) => Some(b.to_string()),
+        Value::Null | Value::List(_) => None,
+    }
+}
+
+fn bool_word(v: &Value, name: &str) -> bool {
+    match v {
+        Value::Bool(true) => matches!(name, "yes" | "y"),
+        Value::Bool(false) => matches!(name, "no" | "n"),
+        _ => false,
+    }
+}
+
+/// Business rule tasks before `n`, nearest first: a breadth-first walk back along incoming
+/// sequence flows.
+fn upstream(project: &Project, n: &FlowNode) -> Vec<QId> {
+    let mut seen = vec![n.id.clone()];
+    let mut queue = std::collections::VecDeque::from([n.id.clone()]);
+    let mut out = Vec::new();
+    while let Some(q) = queue.pop_front() {
+        let Some(node) = project.node(&q) else {
+            continue;
+        };
+        for f in &node.incoming {
+            let Some(src) = project.flow(f).map(|fl| fl.source.clone()) else {
+                continue;
+            };
+            if seen.contains(&src) {
+                continue;
+            }
+            seen.push(src.clone());
+            if project
+                .node(&src)
+                .is_some_and(|s| s.called_decision.is_some())
+            {
+                out.push(src.clone());
+            }
+            queue.push_back(src);
+        }
+    }
+    out
+}
+
+/// A placeholder distribution for decision input `input`, from what the rules compare it
+/// with: equal shares of the strings (plus "other" when a rule tests `not(...)`), true half
+/// of the time, or numbers spread around the compared ones (not below 0 unless a compared
+/// number is), so that every rule can match.
+fn placeholder_input(project: &Project, decision: &str, input: &str) -> InputSpec {
+    let (literals, negated) = project
+        .decisions
+        .get(decision)
+        .and_then(|f| project.dmn.get(f))
+        .and_then(|f| f.decisions.get(decision))
+        .and_then(|d| d.table.as_ref())
+        .and_then(|raw| Table::compile(decision, raw).ok())
+        .map(|t| t.literals(input))
+        .unwrap_or_default();
+    let mut strings: Vec<String> = literals
+        .iter()
+        .filter_map(|v| match v {
+            Value::Str(s) => Some(s.clone()),
+            _ => None,
+        })
+        .collect();
+    if !strings.is_empty() {
+        if negated && !strings.iter().any(|s| s == "other") {
+            strings.push("other".into());
+        }
+        let p = 1.0 / strings.len() as f64;
+        return InputSpec::Choice(ChoiceSpec {
+            choice: strings.into_iter().map(|s| (s, p)).collect(),
+        });
+    }
+    if literals.iter().any(|v| matches!(v, Value::Bool(_))) {
+        return InputSpec::Chance(ChanceSpec { p_true: 0.5 });
+    }
+    let numbers: Vec<f64> = literals
+        .iter()
+        .filter_map(|v| match v {
+            Value::Num(x) => Some(*x),
+            _ => None,
+        })
+        .collect();
+    let (min, max) = match (
+        numbers.iter().copied().reduce(f64::min),
+        numbers.iter().copied().reduce(f64::max),
+    ) {
+        (Some(lo), Some(hi)) => {
+            let margin = if hi > lo {
+                (hi - lo) / 2.0
+            } else {
+                lo.abs().max(1.0)
+            };
+            let floor = if lo >= 0.0 { 0.0 } else { f64::MIN };
+            ((lo - margin).max(floor), hi + margin)
+        }
+        _ => (0.0, 100.0),
+    };
+    InputSpec::Number(NumberSpec::Uniform { min, max })
 }
 
 /// The parameters `n` takes from the scenario, in the order they are usually edited.
@@ -320,26 +591,40 @@ impl Scenario {
                     );
                 }
                 Need::Branching { inclusive } => {
-                    // Inclusive: each non-default flow taken half of the time; XOR: equal shares.
-                    let flows: Vec<&QId> = n
-                        .outgoing
-                        .iter()
-                        .filter(|f| !inclusive || n.default_flow.as_ref() != Some(*f))
-                        .collect();
-                    let p = if inclusive {
-                        0.5
-                    } else {
-                        1.0 / flows.len() as f64
-                    };
-                    self.gateways.insert(
-                        key.clone(),
-                        GatewaySpec {
+                    let spec = match suggest_output(project, n) {
+                        // The names of the flows say which decision output picks them.
+                        Some((output, values)) => GatewaySpec {
                             label: n.name.clone(),
-                            probabilities: flows.iter().map(|f| (f.id.clone(), p)).collect(),
+                            probabilities: BTreeMap::new(),
                             if_completed: None,
                             then: None,
+                            output: Some(output),
+                            values,
                         },
-                    );
+                        // Inclusive: each non-default flow taken half of the time; XOR: equal
+                        // shares.
+                        None => {
+                            let flows: Vec<&QId> = n
+                                .outgoing
+                                .iter()
+                                .filter(|f| !inclusive || n.default_flow.as_ref() != Some(*f))
+                                .collect();
+                            let p = if inclusive {
+                                0.5
+                            } else {
+                                1.0 / flows.len() as f64
+                            };
+                            GatewaySpec {
+                                label: n.name.clone(),
+                                probabilities: flows.iter().map(|f| (f.id.clone(), p)).collect(),
+                                if_completed: None,
+                                then: None,
+                                output: None,
+                                values: BTreeMap::new(),
+                            }
+                        }
+                    };
+                    self.gateways.insert(key.clone(), spec);
                 }
                 Need::Delay => {
                     self.events.insert(
@@ -389,13 +674,7 @@ impl Scenario {
                                 .entry(decision.clone())
                                 .or_default()
                                 .inputs
-                                .insert(
-                                    i,
-                                    InputSpec::Number(NumberSpec::Uniform {
-                                        min: 0.0,
-                                        max: 100.0,
-                                    }),
-                                );
+                                .insert(i.clone(), placeholder_input(project, &decision, &i));
                         }
                     }
                 }

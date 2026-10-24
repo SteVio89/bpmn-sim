@@ -892,12 +892,16 @@ impl<'a> Engine<'a> {
                     Some(d) => chosen.push(d.clone()),
                     None => {
                         // BPMN would raise an error; the token stays here and is reported as stuck.
-                        self.set_token(
-                            inst,
-                            tok,
-                            &node.id,
-                            "no outgoing condition is true and there is no default flow",
-                        );
+                        let state = match &cfg.output {
+                            Some(var) => format!(
+                                "decision output {var} = {} takes no flow and there is no default flow",
+                                vars.get(var).unwrap_or(&Value::Null)
+                            ),
+                            None => {
+                                "no outgoing condition is true and there is no default flow".into()
+                            }
+                        };
+                        self.set_token(inst, tok, &node.id, &state);
                         return;
                     }
                 }

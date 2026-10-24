@@ -1,0 +1,47 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL" xmlns:zeebe="http://camunda.org/schema/zeebe/1.0" id="Defs_Ticket">
+  <bpmn:process id="Process_Ticket" isExecutable="false">
+    <bpmn:startEvent id="Start"/>
+    <bpmn:task id="Task_Intake" name="Record ticket"/>
+    <bpmn:businessRuleTask id="Task_Triage" name="Triage ticket">
+      <bpmn:extensionElements><zeebe:calledDecision decisionId="ticket-triage" resultVariable="triage"/></bpmn:extensionElements>
+    </bpmn:businessRuleTask>
+    <bpmn:exclusiveGateway id="Gateway_Queue" name="Queue?"/>
+    <bpmn:task id="Task_Front" name="Handle at the front office"/>
+    <bpmn:task id="Task_Back" name="Handle at the back office"/>
+    <bpmn:task id="Task_Expert" name="Handle by a specialist"/>
+    <bpmn:exclusiveGateway id="Join_Queue"/>
+    <bpmn:exclusiveGateway id="Gateway_Priority" name="Priority?" default="Flow_normal"/>
+    <bpmn:task id="Task_Escalate" name="Inform the duty manager"/>
+    <bpmn:exclusiveGateway id="Join_Priority"/>
+    <bpmn:businessRuleTask id="Task_Checks" name="Determine follow-up checks">
+      <bpmn:extensionElements><zeebe:calledDecision decisionId="ticket-checks" resultVariable="checks"/></bpmn:extensionElements>
+    </bpmn:businessRuleTask>
+    <bpmn:inclusiveGateway id="Gateway_Checks" name="Checks?" default="Flow_nocheck"/>
+    <bpmn:task id="Task_Legal" name="Legal check"/>
+    <bpmn:task id="Task_Tech" name="Technical check"/>
+    <bpmn:inclusiveGateway id="Join_Checks"/>
+    <bpmn:endEvent id="End"/>
+    <bpmn:sequenceFlow id="F1" sourceRef="Start" targetRef="Task_Intake"/>
+    <bpmn:sequenceFlow id="F2" sourceRef="Task_Intake" targetRef="Task_Triage"/>
+    <bpmn:sequenceFlow id="F3" sourceRef="Task_Triage" targetRef="Gateway_Queue"/>
+    <bpmn:sequenceFlow id="Flow_front" name="Front office" sourceRef="Gateway_Queue" targetRef="Task_Front"/>
+    <bpmn:sequenceFlow id="Flow_back" name="Back office" sourceRef="Gateway_Queue" targetRef="Task_Back"/>
+    <bpmn:sequenceFlow id="Flow_expert" name="Specialist" sourceRef="Gateway_Queue" targetRef="Task_Expert"/>
+    <bpmn:sequenceFlow id="F4" sourceRef="Task_Front" targetRef="Join_Queue"/>
+    <bpmn:sequenceFlow id="F5" sourceRef="Task_Back" targetRef="Join_Queue"/>
+    <bpmn:sequenceFlow id="F6" sourceRef="Task_Expert" targetRef="Join_Queue"/>
+    <bpmn:sequenceFlow id="F7" sourceRef="Join_Queue" targetRef="Gateway_Priority"/>
+    <bpmn:sequenceFlow id="Flow_urgent" name="Urgent" sourceRef="Gateway_Priority" targetRef="Task_Escalate"/>
+    <bpmn:sequenceFlow id="Flow_normal" name="Normal" sourceRef="Gateway_Priority" targetRef="Join_Priority"/>
+    <bpmn:sequenceFlow id="F8" sourceRef="Task_Escalate" targetRef="Join_Priority"/>
+    <bpmn:sequenceFlow id="F9" sourceRef="Join_Priority" targetRef="Task_Checks"/>
+    <bpmn:sequenceFlow id="F10" sourceRef="Task_Checks" targetRef="Gateway_Checks"/>
+    <bpmn:sequenceFlow id="Flow_legal" name="Legal" sourceRef="Gateway_Checks" targetRef="Task_Legal"/>
+    <bpmn:sequenceFlow id="Flow_tech" name="Technical" sourceRef="Gateway_Checks" targetRef="Task_Tech"/>
+    <bpmn:sequenceFlow id="Flow_nocheck" name="None" sourceRef="Gateway_Checks" targetRef="Join_Checks"/>
+    <bpmn:sequenceFlow id="F11" sourceRef="Task_Legal" targetRef="Join_Checks"/>
+    <bpmn:sequenceFlow id="F12" sourceRef="Task_Tech" targetRef="Join_Checks"/>
+    <bpmn:sequenceFlow id="F13" sourceRef="Join_Checks" targetRef="End"/>
+  </bpmn:process>
+</bpmn:definitions>

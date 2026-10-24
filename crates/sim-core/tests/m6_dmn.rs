@@ -219,11 +219,32 @@ fn skeleton_contains_decision_inputs_and_runs() {
         sk.gateways.is_empty(),
         "the gateway is decided by its conditions"
     );
-    // The placeholder string input `segment` is sampled as a number, so only rule R1 (< 1000,
-    // any segment) can match: all claims go the automatic way.
+    // Placeholders follow what the rules compare: the strings in equal shares (and another
+    // value for `not("gold")`), numbers around the compared ones, so every rule can match.
+    let inputs = &sk.decisions["claim-route"].inputs;
+    assert_eq!(
+        inputs["segment"],
+        scenario::InputSpec::Choice(scenario::ChoiceSpec {
+            choice: [("gold".to_string(), 0.5), ("other".to_string(), 0.5)].into()
+        })
+    );
+    assert_eq!(
+        inputs["amount"],
+        scenario::InputSpec::Number(scenario::NumberSpec::Uniform {
+            min: 0.0,
+            max: 7000.0
+        })
+    );
     let back = Scenario::from_toml(&sk.to_toml().unwrap()).unwrap();
     let r = run_replications(&back.bind(&p).unwrap()).remove(0);
     assert_eq!(r.cases_completed, 100);
+    assert!(r.stuck.is_empty());
+    for route in ["\"auto\"", "\"manual\"", "\"reject\""] {
+        assert!(
+            r.decisions["claim-route"].outcomes.contains_key(route),
+            "{route}"
+        );
+    }
 }
 
 #[test]

@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<definitions xmlns="https://www.omg.org/spec/DMN/20191111/MODEL/" id="Defs_Checks" name="Ticket checks" namespace="http://camunda.org/schema/1.0/dmn">
+  <decision id="ticket-checks" name="Follow-up checks">
+    <decisionTable id="DT_Checks" hitPolicy="COLLECT">
+      <input id="In_Category" label="Category"><inputExpression id="IE_1" typeRef="string"><text>category</text></inputExpression></input>
+      <output id="Out_Check" name="check" typeRef="string"/>
+      <rule id="R1"><inputEntry id="R1_1"><text>"billing","account"</text></inputEntry><outputEntry id="R1_O"><text>"legal"</text></outputEntry></rule>
+      <rule id="R2"><inputEntry id="R2_1"><text>"account","outage"</text></inputEntry><outputEntry id="R2_O"><text>"technical"</text></outputEntry></rule>
+    </decisionTable>
+  </decision>
+</definitions>

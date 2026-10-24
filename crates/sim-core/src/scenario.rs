@@ -199,11 +199,14 @@ pub struct BoundDecision {
     pub samplers: BTreeMap<String, Sampler>,
 }
 
-/// A split decided by its flows' condition expressions.
+/// A split decided by its flows' condition expressions, or by a decision output
+/// (`[gateways]` entry with `output`, turned into `output = value` conditions).
 #[derive(Debug, Clone)]
 pub struct ConditionCfg {
     pub flows: Vec<(QId, crate::feel::Expr)>,
     pub default: Option<QId>,
+    /// The decision output the conditions compare, if the split follows one.
+    pub output: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -398,6 +401,77 @@ pub struct GatewaySpec {
     pub if_completed: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub then: Option<String>,
+    /// Instead of probabilities: the variable a decision sets (a business rule task's output)
+    /// whose value picks the flow, by `values`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output: Option<String>,
+    /// Outgoing flow -> the value(s) of `output` that take it.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub values: BTreeMap<String, OutputValues>,
+}
+
+impl GatewaySpec {
+    /// Whether the split follows a decision output instead of probabilities.
+    pub fn by_output(&self) -> bool {
+        self.output.is_some() || !self.values.is_empty()
+    }
+}
+
+/// A literal a decision output is compared with.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum OutputValue {
+    Bool(bool),
+    Num(f64),
+    Str(String),
+}
+
+impl OutputValue {
+    pub fn to_value(&self) -> crate::feel::Value {
+        use crate::feel::Value;
+        match self {
+            OutputValue::Bool(b) => Value::Bool(*b),
+            OutputValue::Num(n) => Value::Num(*n),
+            OutputValue::Str(s) => Value::Str(s.clone()),
+        }
+    }
+
+    /// The literal for a decision value; `None` for null and lists.
+    pub fn from_value(v: &crate::feel::Value) -> Option<Self> {
+        use crate::feel::Value;
+        match v {
+            Value::Bool(b) => Some(OutputValue::Bool(*b)),
+            Value::Num(n) => Some(OutputValue::Num(*n)),
+            Value::Str(s) => Some(OutputValue::Str(s.clone())),
+            Value::Null | Value::List(_) => None,
+        }
+    }
+}
+
+/// One value or a list of values (`Flow_a = "x"` or `Flow_a = ["x", "y"]`).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum OutputValues {
+    One(OutputValue),
+    Many(Vec<OutputValue>),
+}
+
+impl OutputValues {
+    pub fn as_slice(&self) -> &[OutputValue] {
+        match self {
+            OutputValues::One(v) => std::slice::from_ref(v),
+            OutputValues::Many(vs) => vs,
+        }
+    }
+
+    /// One value as `One`, several as `Many`.
+    pub fn from_vec(mut vs: Vec<OutputValue>) -> Self {
+        if vs.len() == 1 {
+            OutputValues::One(vs.remove(0))
+        } else {
+            OutputValues::Many(vs)
+        }
+    }
 }
 
 impl Scenario {
@@ -1538,6 +1612,7 @@ impl Scenario {
         let mut inclusive = BTreeMap::new();
         let mut conditions = BTreeMap::new();
         let mut gw_specs: BTreeMap<QId, &GatewaySpec> = BTreeMap::new();
+        let decision_outputs = crate::needs::decision_outputs(project);
         for (key, spec) in &self.gateways {
             match resolve(project, key, "gateway") {
                 Ok(q) => match project.node(&q) {
@@ -1591,6 +1666,7 @@ impl Scenario {
                     ConditionCfg {
                         flows,
                         default: n.default_flow.clone(),
+                        output: None,
                     },
                 );
                 continue;
@@ -1613,6 +1689,18 @@ impl Scenario {
                 ));
                 continue;
             };
+            if spec.by_output() {
+                match output_cfg(n, spec, &decision_outputs) {
+                    Ok((cfg, notes)) => {
+                        for w in notes {
+                            warnings.at(&n.id, format!("{} ({}): {w}", n.id, n.label()));
+                        }
+                        conditions.insert(n.id.clone(), cfg);
+                    }
+                    Err(e) => errors.at(&n.id, format!("{} ({}): {e}", n.id, n.label())),
+                }
+                continue;
+            }
             if spec.if_completed.is_some() || spec.then.is_some() {
                 match history_cfg(project, n, spec) {
                     Ok(cfg) => {
@@ -1686,6 +1774,17 @@ impl Scenario {
                 continue;
             };
             let rule = match gw_specs.get(&n.id) {
+                Some(spec) if spec.by_output() => {
+                    errors.at(
+                        &n.id,
+                        format!(
+                            "{} ({}): output only works for an XOR or inclusive gateway; this element's flows have conditions",
+                            n.id,
+                            n.label()
+                        ),
+                    );
+                    continue;
+                }
                 Some(spec) if spec.if_completed.is_some() || spec.then.is_some() => {
                     errors.at(
                         &n.id,
@@ -1875,6 +1974,121 @@ fn history_cfg(project: &Project, n: &FlowNode, spec: &GatewaySpec) -> Result<Hi
         then,
         otherwise,
     })
+}
+
+/// A split that follows a decision output (`[gateways]` entry with `output` and `values`):
+/// each flow becomes the condition `output = value` (or any of its values); with a list
+/// (COLLECT) a flow is taken when the list holds one of its values. Also returns warnings
+/// about values the decisions cannot give or flows no value leads to.
+fn output_cfg(
+    n: &FlowNode,
+    spec: &GatewaySpec,
+    outputs: &[crate::needs::DecisionOutput],
+) -> Result<(ConditionCfg, Vec<String>), String> {
+    use crate::feel::{Expr, Op, Value};
+    if !spec.probabilities.is_empty() || spec.if_completed.is_some() || spec.then.is_some() {
+        return Err("give either probabilities, if_completed or output, not several".into());
+    }
+    let Some(var) = &spec.output else {
+        return Err(
+            "values need output: the decision output (variable) they are compared with".into(),
+        );
+    };
+    let setters = crate::needs::outputs_named(outputs, var);
+    if setters.is_empty() {
+        let mut known: Vec<&str> = outputs.iter().map(|o| o.variable()).collect();
+        known.dedup();
+        // A result variable of a table with several outputs holds them all.
+        let parts: Vec<&str> = known
+            .iter()
+            .copied()
+            .filter(|k| {
+                k.strip_prefix(var.as_str())
+                    .is_some_and(|r| r.starts_with('.'))
+            })
+            .collect();
+        return Err(if !parts.is_empty() {
+            format!(
+                "output '{var}' holds several decision outputs; name one: {}",
+                parts.join(", ")
+            )
+        } else if known.is_empty() {
+            format!("output '{var}': no business rule task evaluates a loaded decision table")
+        } else {
+            format!(
+                "output '{var}' is not set by any decision; decision outputs are: {}",
+                known.join(", ")
+            )
+        });
+    }
+    let default = n.default_flow.clone();
+    let mut by_flow: BTreeMap<QId, Vec<Value>> = BTreeMap::new();
+    for (k, vs) in &spec.values {
+        let q = match k.split_once('#') {
+            Some((f, i)) => QId::new(f, i),
+            None => QId::new(&n.id.file, k),
+        };
+        if !n.outgoing.contains(&q) {
+            return Err(format!("'{k}' is not an outgoing flow of this gateway"));
+        }
+        if default.as_ref() == Some(&q) {
+            return Err(format!(
+                "'{k}' is the default flow and takes no value (it is taken when no other flow's value matches)"
+            ));
+        }
+        if vs.as_slice().is_empty() {
+            return Err(format!("no value for flow '{k}'"));
+        }
+        by_flow.insert(q, vs.as_slice().iter().map(OutputValue::to_value).collect());
+    }
+    let mut flows = Vec::new();
+    for f in n.outgoing.iter().filter(|f| default.as_ref() != Some(*f)) {
+        let Some(vs) = by_flow.get(f) else {
+            return Err(format!("no value for outgoing flow '{}'", f.id));
+        };
+        let mut eqs: Vec<Expr> = vs
+            .iter()
+            .map(|v| Expr::Cmp(var.clone(), Op::Eq, v.clone()))
+            .collect();
+        let e = if eqs.len() == 1 {
+            eqs.remove(0)
+        } else {
+            Expr::Or(eqs)
+        };
+        flows.push((f.clone(), e));
+    }
+    // What the decisions can give against what the flows take.
+    let mut notes = Vec::new();
+    let mapped: Vec<&Value> = by_flow.values().flatten().collect();
+    for o in &setters {
+        let Some(possible) = &o.values else {
+            continue;
+        };
+        for (f, vs) in &by_flow {
+            for v in vs.iter().filter(|v| !possible.contains(v)) {
+                notes.push(format!(
+                    "flow '{}': decision '{}' never gives {v} for '{var}'",
+                    f.id, o.decision
+                ));
+            }
+        }
+        if default.is_none() && !o.list {
+            for v in possible.iter().filter(|v| !mapped.contains(v)) {
+                notes.push(format!(
+                    "decision '{}' can give {v} for '{var}', which no flow takes; the token then stays at the gateway",
+                    o.decision
+                ));
+            }
+        }
+    }
+    Ok((
+        ConditionCfg {
+            flows,
+            default,
+            output: Some(var.clone()),
+        },
+        notes,
+    ))
 }
 
 fn resolve_participant(project: &Project, key: &str) -> Result<QId, String> {

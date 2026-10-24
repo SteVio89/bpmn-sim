@@ -6,7 +6,7 @@ use std::collections::BTreeMap;
 use roxmltree::Node;
 
 use crate::error::ParseError;
-use crate::feel::{UnaryTests, Value, parse_output};
+use crate::feel::{Test, UnaryTests, Value, parse_output};
 
 #[derive(Debug, Clone, Default)]
 pub struct DmnFile {
@@ -223,6 +223,55 @@ impl Table {
             outputs: raw.outputs.clone(),
             rules,
         })
+    }
+
+    /// The values output `output` can take, in rule order and without repeats; a null entry
+    /// is left out (a rule that gives null is like no match). `None` when an aggregation
+    /// computes the value. Without aggregation COLLECT gives a list of these values.
+    pub fn values(&self, output: &str) -> Option<Vec<Value>> {
+        let i = self.outputs.iter().position(|o| o == output)?;
+        if matches!(self.hit_policy, HitPolicy::Collect(Some(_))) {
+            return None;
+        }
+        let mut out: Vec<Value> = Vec::new();
+        for (_, outs) in &self.rules {
+            if outs[i] != Value::Null && !out.contains(&outs[i]) {
+                out.push(outs[i].clone());
+            }
+        }
+        Some(out)
+    }
+
+    /// The literals the rules compare input `input` with (range bounds included), in rule
+    /// order and without repeats, and whether a rule negates its tests (`not(...)`).
+    pub fn literals(&self, input: &str) -> (Vec<Value>, bool) {
+        let Some(i) = self.inputs.iter().position(|x| x == input) else {
+            return (Vec::new(), false);
+        };
+        let negated = self
+            .rules
+            .iter()
+            .any(|(tests, _)| matches!(tests[i], UnaryTests::Tests { negated: true, .. }));
+        let mut out: Vec<Value> = Vec::new();
+        let mut add = |v: &Value| {
+            if *v != Value::Null && !out.contains(v) {
+                out.push(v.clone());
+            }
+        };
+        for (tests, _) in &self.rules {
+            if let UnaryTests::Tests { tests, .. } = &tests[i] {
+                for t in tests {
+                    match t {
+                        Test::Cmp(_, v) => add(v),
+                        Test::Range { lo, hi, .. } => {
+                            add(lo);
+                            add(hi);
+                        }
+                    }
+                }
+            }
+        }
+        (out, negated)
     }
 
     /// `input(name)` gives the value of an input expression.

@@ -1,0 +1,47 @@
+# Tickets are triaged by a decision table with two outputs: `triage.queue` picks the queue,
+# `triage.priority` (read again after the queues have joined) whether the duty manager is told.
+# A COLLECT decision gives a list of checks; the inclusive gateway takes a flow per check.
+# Expected: front 0.5, back 0.3, specialist 0.2; urgent 0.3 * 0.4 + 0.2 = 0.32;
+# legal 0.5 + 0.3 = 0.8, technical 0.3 + 0.2 = 0.5, no check never.
+[simulation]
+seed = 7
+cases = 4000
+
+[[arrivals]]
+inter_arrival = { dist = "fixed", value = "60m" }
+triggers = ["Start"]
+
+[activities.Task_Intake]
+duration = { dist = "fixed", value = "5m" }
+[activities.Task_Triage]
+duration = { dist = "fixed", value = "1m" }
+[activities.Task_Front]
+duration = { dist = "fixed", value = "10m" }
+[activities.Task_Back]
+duration = { dist = "fixed", value = "10m" }
+[activities.Task_Expert]
+duration = { dist = "fixed", value = "10m" }
+[activities.Task_Escalate]
+duration = { dist = "fixed", value = "2m" }
+[activities.Task_Checks]
+duration = { dist = "fixed", value = "1m" }
+[activities.Task_Legal]
+duration = { dist = "fixed", value = "5m" }
+[activities.Task_Tech]
+duration = { dist = "fixed", value = "5m" }
+
+[gateways.Gateway_Queue]
+output = "triage.queue"
+values = { Flow_front = "front", Flow_back = "back", Flow_expert = "specialist" }
+
+[gateways.Gateway_Priority]
+output = "triage.priority"
+values = { Flow_urgent = "urgent" }
+
+[gateways.Gateway_Checks]
+output = "checks"
+values = { Flow_legal = "legal", Flow_tech = "technical" }
+
+[decisions."ticket-triage".inputs]
+category = { choice = { billing = 0.5, account = 0.3, outage = 0.2 } }
+severity = { dist = "uniform", min = 0.0, max = 5.0 }
