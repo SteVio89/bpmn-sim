@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL" id="Defs_Outer">
+  <bpmn:process id="Process_Outer">
+    <bpmn:startEvent id="Start_Outer"/>
+    <bpmn:callActivity id="Call_Inner" name="Handle" calledElement="Process_Inner"/>
+    <bpmn:endEvent id="End_Outer"/>
+    <bpmn:sequenceFlow id="FO1" sourceRef="Start_Outer" targetRef="Call_Inner"/>
+    <bpmn:sequenceFlow id="FO2" sourceRef="Call_Inner" targetRef="End_Outer"/>
+  </bpmn:process>
+</bpmn:definitions>

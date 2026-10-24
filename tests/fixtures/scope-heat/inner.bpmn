@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL" id="Defs_Inner">
+  <bpmn:process id="Process_Inner">
+    <bpmn:startEvent id="Start_Inner"/>
+    <bpmn:subProcess id="Sub" name="Prepare">
+      <bpmn:startEvent id="Start_Sub"/>
+      <bpmn:task id="Task_A" name="Check"/>
+      <bpmn:endEvent id="End_Sub"/>
+      <bpmn:sequenceFlow id="FS1" sourceRef="Start_Sub" targetRef="Task_A"/>
+      <bpmn:sequenceFlow id="FS2" sourceRef="Task_A" targetRef="End_Sub"/>
+    </bpmn:subProcess>
+    <bpmn:task id="Task_B" name="Close"/>
+    <bpmn:endEvent id="End_Inner"/>
+    <bpmn:sequenceFlow id="FI1" sourceRef="Start_Inner" targetRef="Sub"/>
+    <bpmn:sequenceFlow id="FI2" sourceRef="Sub" targetRef="Task_B"/>
+    <bpmn:sequenceFlow id="FI3" sourceRef="Task_B" targetRef="End_Inner"/>
+  </bpmn:process>
+</bpmn:definitions>

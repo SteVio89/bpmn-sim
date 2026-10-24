@@ -20,7 +20,9 @@ pub enum HeatMetric {
 }
 
 /// Heat value per element of `file`: activities, and for utilisation also lanes and pools whose
-/// name is a resource pool.
+/// name is a resource pool. Subprocesses and call activities show what happens inside them per
+/// run: the waiting and working time of their tasks summed, how often they ran, and the busiest
+/// resource pool their tasks used.
 pub fn heat(
     project: &Project,
     file: &str,
@@ -39,8 +41,27 @@ pub fn heat(
                 };
                 out.insert(id.clone(), v);
             }
+            for (id, s) in r.scopes.iter().filter(|(id, _)| in_file(id)) {
+                let v = match metric {
+                    HeatMetric::Waiting => s.waiting.mean,
+                    HeatMetric::Processing => s.processing.mean,
+                    _ => s.runs as f64,
+                };
+                out.insert(id.clone(), v);
+            }
         }
         HeatMetric::Utilisation => {
+            for (id, s) in r.scopes.iter().filter(|(id, _)| in_file(id)) {
+                let busiest = s
+                    .pools
+                    .iter()
+                    .filter_map(|p| r.resources.get(p))
+                    .map(|res| res.utilisation)
+                    .fold(None, |m: Option<f64>, u| Some(m.map_or(u, |m| m.max(u))));
+                if let Some(u) = busiest {
+                    out.insert(id.clone(), u);
+                }
+            }
             // Which pool each activity used, from the event log.
             let mut pool_of: BTreeMap<&QId, &str> = BTreeMap::new();
             for x in r.records.iter().filter(|x| in_file(&x.activity)) {

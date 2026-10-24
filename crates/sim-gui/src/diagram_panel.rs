@@ -1305,15 +1305,13 @@ fn draw(
                     ));
                 }
                 if n.kind == NodeKind::SubProcess {
-                    // Expanded subprocess: only an outline, its content is drawn on top.
-                    if !n.triggered_by_event {
-                        painter.rect(
-                            r,
-                            rounding,
-                            Color32::TRANSPARENT,
-                            stroke,
-                            StrokeKind::Inside,
-                        );
+                    // Expanded subprocess: only an outline (tinted by the heat map), its content
+                    // is drawn on top.
+                    let tint = heat_of(id).map_or(Color32::TRANSPARENT, |c| c.gamma_multiply(0.35));
+                    if n.triggered_by_event {
+                        painter.rect_filled(r, rounding, tint);
+                    } else {
+                        painter.rect(r, rounding, tint, stroke, StrokeKind::Inside);
                     }
                     painter.text(
                         r.left_top() + Vec2::splat(4.0 * zoom),
@@ -1660,6 +1658,18 @@ fn tooltip(ui: &Ui, project: &Project, r: Option<&ReplicationResult>, id: &QId, 
                 "waiting {:.2}, processing {:.2}",
                 a.waiting.mean / unit,
                 a.processing.mean / unit
+            ));
+        }
+        if let Some(s) = r.scopes.get(id) {
+            ui.label(format!(
+                "runs {}, duration {:.2} per run",
+                s.runs,
+                s.duration.mean / unit
+            ));
+            ui.label(format!(
+                "inside per run: waiting {:.2}, processing {:.2}",
+                s.waiting.mean / unit,
+                s.processing.mean / unit
             ));
         }
         if let Some(c) = r.end_events.get(id) {

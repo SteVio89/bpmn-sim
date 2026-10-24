@@ -80,6 +80,21 @@ struct Scope {
     node: QId,
     parent: u64,
     repeat: Option<Repeat>,
+    /// Run of an embedded or event subprocess (index into `Engine::scope_runs`).
+    run: Option<usize>,
+}
+
+/// One run of an embedded subprocess, event subprocess or call activity, with the waiting and
+/// working time of the tasks inside it (at any depth).
+struct ScopeRun {
+    case: usize,
+    node: QId,
+    start: f64,
+    /// `None` while running or when cut short.
+    end: Option<f64>,
+    waiting: f64,
+    working: f64,
+    pools: BTreeSet<String>,
 }
 
 /// Iterations of a multi-instance (`total`) or standard loop (`chance`, `maximum`) activity.
@@ -115,6 +130,8 @@ struct Instance {
     group: usize,
     /// Call activity token (instance, token) waiting for this instance to complete.
     parent: Option<(usize, u64)>,
+    /// The call activity's run (index into `Engine::scope_runs`).
+    run: Option<usize>,
     started: f64,
     finished: Option<f64>,
     /// Process variables (decision inputs and outputs).
@@ -187,6 +204,7 @@ pub struct Engine<'a> {
     completion_order: Vec<usize>,
     instances: Vec<Instance>,
     scopes: Vec<Scope>,
+    scope_runs: Vec<ScopeRun>,
     subs: Vec<Sub>,
     next_token: u64,
     runs: Vec<TaskRun>,
@@ -310,6 +328,7 @@ impl<'a> Engine<'a> {
             completion_order: Vec::new(),
             instances: Vec::new(),
             scopes: Vec::new(),
+            scope_runs: Vec::new(),
             subs: Vec::new(),
             next_token: 0,
             runs: Vec::new(),
@@ -454,6 +473,7 @@ impl<'a> Engine<'a> {
             case,
             group,
             parent,
+            run: None,
             started: self.now,
             finished: None,
             variables: BTreeMap::new(),
@@ -1010,6 +1030,38 @@ impl<'a> Engine<'a> {
 
     // ------------------------------------------------------------ scopes
 
+    fn start_scope_run(&mut self, inst: usize, node: &QId) -> usize {
+        self.scope_runs.push(ScopeRun {
+            case: self.instances[inst].case,
+            node: node.clone(),
+            start: self.now,
+            end: None,
+            waiting: 0.0,
+            working: 0.0,
+            pools: BTreeSet::new(),
+        });
+        self.scope_runs.len() - 1
+    }
+
+    /// The subprocess and call activity runs token `tok` of `inst` is inside, innermost first.
+    fn enclosing_runs(&self, inst: usize, tok: u64) -> Vec<usize> {
+        let mut out = Vec::new();
+        let (mut i, mut t) = (inst, tok);
+        loop {
+            let tokens = &self.instances[i].tokens;
+            let mut scope = tokens.get(&t).and_then(|x| x.scope);
+            while let Some(sc) = scope {
+                out.extend(self.scopes[sc].run);
+                scope = tokens.get(&self.scopes[sc].parent).and_then(|x| x.scope);
+            }
+            out.extend(self.instances[i].run);
+            match self.instances[i].parent {
+                Some((pi, pt)) => (i, t) = (pi, pt),
+                None => return out,
+            }
+        }
+    }
+
     /// Remove a token that reached an end; the enclosing subprocess completes with its last token.
     fn consume(&mut self, inst: usize, tok: u64, work: &mut Vec<Work>) {
         let Some(t) = self.remove_token(inst, tok) else {
@@ -1043,6 +1095,11 @@ impl<'a> Engine<'a> {
                 .any(|x| x.scope == Some(sc))
         {
             let (parent, node_id) = (self.scopes[sc].parent, self.scopes[sc].node.clone());
+            if let Some(run) = self.scopes[sc].run
+                && self.alive(inst, parent)
+            {
+                self.scope_runs[run].end = Some(self.now);
+            }
             if self.alive(inst, parent) && self.next_iteration(sc) {
                 self.spawn_iteration(inst, sc, 1, work);
                 return;
@@ -1104,6 +1161,7 @@ impl<'a> Engine<'a> {
             node: node.id.clone(),
             parent: tok,
             repeat: Some(repeat),
+            run: None,
         });
         // A loop that tests before the first iteration may not run at all.
         let first = match cfg {
@@ -1171,10 +1229,12 @@ impl<'a> Engine<'a> {
 
     fn enter_scope(&mut self, inst: usize, tok: u64, node: &FlowNode, work: &mut Vec<Work>) {
         let sc = self.scopes.len();
+        let run = self.start_scope_run(inst, &node.id);
         self.scopes.push(Scope {
             node: node.id.clone(),
             parent: tok,
             repeat: None,
+            run: Some(run),
         });
         self.set_token(inst, tok, &node.id, "inside embedded subprocess");
         if let Some(t) = self.instances[inst].tokens.get_mut(&tok) {
@@ -1274,6 +1334,7 @@ impl<'a> Engine<'a> {
         );
         self.arm_boundaries(inst, tok, node);
         let child = self.create_instance(case, group, process.clone(), Some((inst, tok)));
+        self.instances[child].run = Some(self.start_scope_run(inst, &node.id));
         if let Some(t) = self.instances[inst].tokens.get_mut(&tok) {
             t.child_instance = Some(child);
         }
@@ -1756,10 +1817,12 @@ impl<'a> Engine<'a> {
             },
         );
         let sc = self.scopes.len();
+        let run = self.start_scope_run(inst, &es);
         self.scopes.push(Scope {
             node: es.clone(),
             parent: tok,
             repeat: None,
+            run: Some(run),
         });
         if let Some(t) = self.instances[inst].tokens.get_mut(&tok) {
             t.child_scope = Some(sc);
@@ -1925,6 +1988,12 @@ impl<'a> Engine<'a> {
             cost,
             cancelled: false,
         });
+        for run in self.enclosing_runs(inst, tok) {
+            let r = &mut self.scope_runs[run];
+            r.waiting += start - queued;
+            r.working += duration;
+            r.pools.extend(cfg.pool.clone());
+        }
         if let Some(t) = self.instances[inst].tokens.get_mut(&tok) {
             t.run = None;
         }
@@ -2269,6 +2338,9 @@ impl<'a> Engine<'a> {
         i.done = true;
         i.finished = Some(self.now);
         let (case, parent) = (i.case, i.parent);
+        if let Some(run) = i.run {
+            self.scope_runs[run].end = Some(self.now);
+        }
         self.deactivate_event_subs(inst, None, NO_TOKEN);
         let c = &mut self.cases[case];
         c.open_instances -= 1;
@@ -2344,6 +2416,33 @@ impl<'a> Engine<'a> {
                         waiting: Summary::of(&waits),
                         processing: Summary::of(&procs),
                         total_cost: rs.iter().map(|r| r.cost).sum(),
+                    },
+                )
+            })
+            .collect();
+
+        let mut by_scope: BTreeMap<&QId, Vec<&ScopeRun>> = BTreeMap::new();
+        for r in self
+            .scope_runs
+            .iter()
+            .filter(|r| r.end.is_some() && !cases[r.case].warm_up)
+        {
+            by_scope.entry(&r.node).or_default().push(r);
+        }
+        let scopes = by_scope
+            .into_iter()
+            .map(|(id, rs)| {
+                let of = |f: fn(&ScopeRun) -> f64| {
+                    Summary::of(&rs.iter().map(|r| f(r)).collect::<Vec<_>>())
+                };
+                (
+                    id.clone(),
+                    ScopeStats {
+                        runs: rs.len(),
+                        waiting: of(|r| r.waiting),
+                        processing: of(|r| r.working),
+                        duration: of(|r| r.end.unwrap_or(r.start) - r.start),
+                        pools: rs.iter().flat_map(|r| r.pools.iter().cloned()).collect(),
                     },
                 )
             })
@@ -2447,6 +2546,7 @@ impl<'a> Engine<'a> {
             case_cycle_time: Summary::of(&cycle),
             case_cost: Summary::of(&cost),
             activities,
+            scopes,
             resources,
             end_events: self.end_events,
             stuck,

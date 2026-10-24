@@ -125,6 +125,21 @@ pub struct DecisionStats {
     pub outcomes: BTreeMap<String, u64>,
 }
 
+/// Completed runs of an embedded subprocess, event subprocess or call activity.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct ScopeStats {
+    /// Completed runs (cut-short runs are left out, like cancelled tasks).
+    pub runs: usize,
+    /// Waiting time of the tasks inside, summed per run.
+    pub waiting: Summary,
+    /// Working time of the tasks inside, summed per run.
+    pub processing: Summary,
+    /// From entering the subprocess (or calling the process) to leaving it.
+    pub duration: Summary,
+    /// Resource pools the tasks inside used.
+    pub pools: std::collections::BTreeSet<String>,
+}
+
 /// Completed instances of one process (a call activity or message start creates its own).
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct ProcessStats {
@@ -216,6 +231,9 @@ pub struct ReplicationResult {
     pub case_cycle_time: Summary,
     pub case_cost: Summary,
     pub activities: BTreeMap<QId, ActivityStats>,
+    /// Embedded subprocesses, event subprocesses and call activities (of a loaded process):
+    /// what happens inside them per run.
+    pub scopes: BTreeMap<QId, ScopeStats>,
     pub resources: BTreeMap<String, ResourceStats>,
     /// Tokens consumed per end event.
     pub end_events: BTreeMap<QId, u64>,
