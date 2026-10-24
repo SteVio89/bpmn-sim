@@ -446,9 +446,31 @@ impl<'a> Engine<'a> {
         let process = self.instances[inst].process.clone();
         self.arm_event_subs(inst, NO_TOKEN, None, &process, None);
         let mut work = Vec::new();
+        let mut first_start: Option<f64> = None;
         for s in starts.into_iter().rev() {
+            // A timer start event with an `[events]` delay starts that long after the case.
+            if let Some(d) = self.m.events.get(&s) {
+                let delay = d.sample(&mut self.rng);
+                let tok = self.new_token(inst, &s, "waiting for timer", None);
+                self.trace(
+                    inst,
+                    tok,
+                    TraceKind::Arrive {
+                        node: s.clone(),
+                        via: None,
+                    },
+                );
+                self.timer_sub(inst, tok, &s, false, delay);
+                first_start = Some(first_start.map_or(delay, |f| f.min(delay)));
+                continue;
+            }
+            first_start = Some(0.0);
             let tok = self.new_token(inst, &s, "starting", None);
             work.push((tok, s, None));
+        }
+        // The instance starts with its first token.
+        if let Some(d) = first_start {
+            self.instances[inst].started = self.now + d;
         }
         self.process(inst, work);
     }

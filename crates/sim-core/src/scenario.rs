@@ -1091,8 +1091,22 @@ impl Scenario {
                     {
                         event_specs.insert(q, spec);
                     }
+                    // A timer start event that arrivals fire: it starts this long after the case.
+                    Some(NodeKind::StartEvent)
+                        if project.node(&q).is_some_and(|n| {
+                            n.parent.is_none()
+                                && matches!(n.event_defs.as_slice(), [EventDef::Timer])
+                        }) =>
+                    {
+                        if !arrivals.iter().any(|a| a.triggers.contains(&q)) {
+                            warnings.at(&q, format!(
+                                "[events.{key}]: '{q}' is not a trigger of any arrival, the delay is not used"
+                            ));
+                        }
+                        event_specs.insert(q, spec);
+                    }
                     _ => errors.at(&q, format!(
-                        "[events.{key}]: '{q}' is not an intermediate catch event, receive task or timer/message/signal start event of an event subprocess"
+                        "[events.{key}]: '{q}' is not an intermediate catch event, receive task, timer start event of an arrival or timer/message/signal start event of an event subprocess"
                     )),
                 },
                 Err(e) => errors.push(format!("[events]: {e}")),

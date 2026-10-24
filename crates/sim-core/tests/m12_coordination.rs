@@ -219,3 +219,54 @@ fn a_duration_for_a_call_activity_whose_process_is_loaded_is_ignored() {
     // Pre 5 + child task 10 + Post 15: the called process runs, not the 20 minutes.
     assert_eq!(r.case_cycle_time.max, 30.0 * MIN);
 }
+
+// ------------------------------------------------- pools of one case starting later
+
+#[test]
+fn a_timer_start_event_with_a_delay_starts_later_in_the_same_case() {
+    // A makes from 0 to 30 m; B only starts at 40 m, finds it made and goes straight on.
+    let s = format!(
+        "{}\n[events.Start_B]\ndelay = {{ dist = \"fixed\", value = \"40m\" }}\n",
+        history(1, 30, 10, IF_MADE)
+    );
+    let r = run("history-gateway.bpmn", &s);
+    assert_eq!(r.case_cycle_time.max, 55.0 * MIN);
+    assert_eq!(r.signals[0].receivers, 0);
+    // B's instance counts from its own start.
+    let b = &r.processes[&QId::new("history-gateway.bpmn", "Process_B")];
+    assert_eq!(b.cycle_time.max, 15.0 * MIN);
+    // The token waits at the start event meanwhile (shown in the replay).
+    assert!(r.trace.iter().any(|t| matches!(
+        &t.kind,
+        TraceKind::Arrive { node, .. } if node.id == "Start_B"
+    ) && t.time == 0.0));
+}
+
+#[test]
+fn random_start_delays_vary_who_comes_first_without_getting_stuck() {
+    let s = format!(
+        "{}\n[events.Start_B]\ndelay = {{ dist = \"uniform\", min = \"0m\", max = \"60m\" }}\n",
+        history(200, 30, 10, IF_MADE)
+    );
+    let r = run("history-gateway.bpmn", &s);
+    assert!(r.stuck.is_empty(), "{:?}", r.stuck);
+    assert_eq!(r.cases_completed, 200);
+    // Sometimes B waits for the signal, sometimes it finds the work done.
+    let waited = r.signals.iter().filter(|x| x.receivers == 1).count();
+    assert!(waited > 20 && waited < 180, "{waited}");
+}
+
+#[test]
+fn a_delay_for_a_timer_start_event_no_arrival_fires_is_reported() {
+    let s = history(1, 30, 10, IF_MADE).replace(r#""Start_A", "Start_B""#, r#""Start_A""#)
+        + "\n[events.Start_B]\ndelay = { dist = \"fixed\", value = \"40m\" }\n";
+    let p = load("history-gateway.bpmn");
+    let c = Scenario::from_toml(&s).unwrap().check(&p);
+    assert!(
+        c.warnings
+            .iter()
+            .any(|w| w.message.contains("not a trigger of any arrival")),
+        "{:?}",
+        c.warnings
+    );
+}
