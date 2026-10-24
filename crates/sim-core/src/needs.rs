@@ -459,12 +459,18 @@ pub fn needs(project: &Project, n: &FlowNode) -> Vec<Need> {
         // A call activity whose process is not loaded runs as a task.
         NodeKind::CallActivity if !calls_loaded_process(project, n) => out.push(Need::Duration),
         NodeKind::ExclusiveGateway | NodeKind::InclusiveGateway if n.outgoing.len() > 1 => {
-            // A split whose every (non-default) flow has a condition is decided by them.
+            // A split whose every (non-default) flow has a FEEL condition is decided by them;
+            // conditions in other languages (XPath, the BPMN default, or JUEL) need shares.
             let conditioned = n
                 .outgoing
                 .iter()
                 .filter(|f| n.default_flow.as_ref() != Some(*f))
-                .all(|f| project.flow(f).is_some_and(|fl| fl.condition.is_some()));
+                .all(|f| {
+                    project
+                        .flow(f)
+                        .and_then(|fl| fl.condition.as_deref())
+                        .is_some_and(|c| crate::feel::Expr::parse(c).is_ok())
+                });
             if !conditioned {
                 out.push(Need::Branching {
                     inclusive: n.kind == NodeKind::InclusiveGateway,
