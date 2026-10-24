@@ -1040,10 +1040,15 @@ impl Scenario {
             if let Some(n) = src
                 && !sends_messages(n)
             {
-                errors.at(&f.source, format!(
-                    "message flow {}: source '{}' is not a send task or message throw/end event",
-                    f.id, f.source
-                ));
+                errors.at(
+                    &f.source,
+                    format!(
+                        "message flow {}: source '{}' cannot send a message: {}",
+                        f.id,
+                        f.source,
+                        send_hint(n)
+                    ),
+                );
             }
             match project.node(&f.target) {
                 Some(t) => {
@@ -1051,8 +1056,10 @@ impl Scenario {
                         errors.at(
                             &f.target,
                             format!(
-                                "message flow {}: target '{}' cannot receive a message",
-                                f.id, f.target
+                                "message flow {}: target '{}' cannot receive a message: {}",
+                                f.id,
+                                f.target,
+                                receive_hint(t)
                             ),
                         );
                     } else if !processes.contains(&t.process)
@@ -1968,6 +1975,36 @@ impl Scenario {
             errors: errors.0,
             warnings: warnings.0,
         }
+    }
+}
+
+/// Why `n` cannot be the source of a message flow, and what to model instead.
+fn send_hint(n: &FlowNode) -> String {
+    let receiver = match n.kind {
+        NodeKind::Task(TaskKind::Receive) => Some("a receive task"),
+        _ if receives_messages(n) => Some("a message event that receives"),
+        _ => None,
+    };
+    match receiver {
+        Some(what) => format!(
+            "it is {what}, which only receives; send from a send task or a message throw event next to it"
+        ),
+        None => "only send tasks and message throw/end events send; make it a send task, or add a send task or message throw event next to it".into(),
+    }
+}
+
+/// Why `n` cannot be the target of a message flow, and what to model instead.
+fn receive_hint(n: &FlowNode) -> String {
+    let sender = match n.kind {
+        NodeKind::Task(TaskKind::Send) => Some("a send task"),
+        _ if sends_messages(n) => Some("a message event that sends"),
+        _ => None,
+    };
+    match sender {
+        Some(what) => format!(
+            "it is {what}, which only sends; to wait for the answer, add a receive task or message catch event after it and let the message flow end there"
+        ),
+        None => "only receive tasks and message start, catch and boundary events receive; make it a receive task, or add a message catch event before it (or a message boundary event on it)".into(),
     }
 }
 

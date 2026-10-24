@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL" id="Defs_Helper">
+  <bpmn:collaboration id="Collab_Helper">
+    <bpmn:participant id="Part_Team" name="Team" processRef="Process_Team"/>
+    <bpmn:participant id="Part_Helper" name="Helper"/>
+    <!-- Modelling mistakes: a user task that sends, a send task that receives, a receive
+         task that sends. -->
+    <bpmn:messageFlow id="MF_Call" sourceRef="Task_Call" targetRef="Part_Helper"/>
+    <bpmn:messageFlow id="MF_Ask" sourceRef="Send_Ask" targetRef="Part_Helper"/>
+    <bpmn:messageFlow id="MF_Back" sourceRef="Part_Helper" targetRef="Send_Ask"/>
+    <bpmn:messageFlow id="MF_Ack" sourceRef="Wait_Ack" targetRef="Part_Helper"/>
+  </bpmn:collaboration>
+  <bpmn:process id="Process_Team">
+    <bpmn:startEvent id="Start_Team"/>
+    <bpmn:userTask id="Task_Call" name="Call helper"/>
+    <bpmn:sendTask id="Send_Ask" name="Ask helper"/>
+    <bpmn:receiveTask id="Wait_Ack" name="Wait for answer"/>
+    <bpmn:endEvent id="End_Team"/>
+    <bpmn:sequenceFlow id="FT1" sourceRef="Start_Team" targetRef="Task_Call"/>
+    <bpmn:sequenceFlow id="FT2" sourceRef="Task_Call" targetRef="Send_Ask"/>
+    <bpmn:sequenceFlow id="FT3" sourceRef="Send_Ask" targetRef="Wait_Ack"/>
+    <bpmn:sequenceFlow id="FT4" sourceRef="Wait_Ack" targetRef="End_Team"/>
+  </bpmn:process>
+</bpmn:definitions>

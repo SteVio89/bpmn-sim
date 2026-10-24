@@ -172,6 +172,40 @@ fn message_flows_at_an_embedded_subprocess_match_its_inside() {
 }
 
 #[test]
+fn send_and_receive_mix_ups_say_what_to_model_instead() {
+    let p = load(&["helper.bpmn"]);
+    let s = scenario(
+        r#""helper.bpmn#Start_Team""#,
+        r#"
+[activities.Task_Call]
+duration = { dist = "fixed", value = "5m" }
+resource = "Staff"
+[activities.Send_Ask]
+duration = { dist = "fixed", value = "5m" }
+resource = "Staff"
+[messages.black_box_reply]
+Part_Helper = { dist = "fixed", value = "10m" }
+"#,
+    );
+    let errors: Vec<String> = s.check(&p).errors.into_iter().map(|e| e.message).collect();
+    let has = |text: &str| {
+        assert!(
+            errors.iter().any(|e| e.contains(text)),
+            "{text}\n{errors:#?}"
+        );
+    };
+    has(
+        "message flow helper.bpmn#MF_Back: target 'helper.bpmn#Send_Ask' cannot receive a message: it is a send task, which only sends; to wait for the answer, add a receive task or message catch event after it and let the message flow end there",
+    );
+    has(
+        "message flow helper.bpmn#MF_Ack: source 'helper.bpmn#Wait_Ack' cannot send a message: it is a receive task, which only receives",
+    );
+    has(
+        "message flow helper.bpmn#MF_Call: source 'helper.bpmn#Task_Call' cannot send a message: only send tasks and message throw/end events send; make it a send task",
+    );
+}
+
+#[test]
 fn in_the_manual_game_a_receiver_behind_a_mirror_flow_is_fired_by_hand() {
     use sim_core::manual::{Action, Game, Pending};
     use std::sync::Arc;
