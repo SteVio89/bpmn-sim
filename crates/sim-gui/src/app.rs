@@ -434,12 +434,7 @@ mod tests {
         app.regenerate_skeleton();
         app.scenario.calendars.insert(
             "office".into(),
-            CalendarSpec {
-                days: ["mon", "tue", "wed", "thu", "fri"]
-                    .map(String::from)
-                    .to_vec(),
-                hours: "09:00-17:00".into(),
-            },
+            CalendarSpec::uniform(&["mon", "tue", "wed", "thu", "fri"], "09:00-17:00"),
         );
         app.scenario.resources.get_mut("TeamA").unwrap().calendar = Some("office".into());
         app.scenario.simulation.replications = 3;
@@ -1056,7 +1051,13 @@ mod tests {
         assert_eq!(crate::editors::add_calendar(cals), "office");
         assert_eq!(crate::editors::add_calendar(cals), "office 2");
         assert_eq!(cals["office"], crate::editors::office_hours());
-        cals.get_mut("office 2").unwrap().hours = "17:00-09:00".into();
+        cals.get_mut("office 2").unwrap().periods[0].hours = "17:00-09:00".into();
+        // Other hours at the weekend.
+        let weekend = sim_core::calendar::PeriodSpec {
+            days: vec!["sat".into(), "sun".into()],
+            hours: "08:00-24:00".into(),
+        };
+        cals.get_mut("office").unwrap().periods.push(weekend);
         // Shared, invalid and undefined working hours all draw in the pool's editor.
         for (clerks, experts) in [
             ("office", "office"),

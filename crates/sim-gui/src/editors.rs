@@ -4,7 +4,7 @@
 use std::collections::BTreeMap;
 
 use eframe::egui::{self, ComboBox, DragValue, Id, RichText, Sense, Ui};
-use sim_core::calendar::{Calendar, CalendarSpec, SimClock};
+use sim_core::calendar::{Calendar, CalendarSpec, PeriodSpec, SimClock, WEEKDAYS};
 use sim_core::needs::{
     DecisionOutput, Need, default_pool, is_arrival_start, key_of, match_flows, needs, outputs_for,
     suggest_output,
@@ -835,32 +835,59 @@ fn start_delay_editor(
 
 /// The working hours a new calendar starts with: Mon–Fri 09:00–17:00.
 pub fn office_hours() -> CalendarSpec {
-    CalendarSpec {
-        days: ["mon", "tue", "wed", "thu", "fri"]
-            .map(String::from)
-            .to_vec(),
-        hours: "09:00-17:00".into(),
-    }
+    CalendarSpec::uniform(&WEEKDAYS[..5], "09:00-17:00")
 }
 
-/// The working days and hours of calendar `name`, and what is wrong with them.
+/// The periods of calendar `name` (days and their hours), and what is wrong with them.
 pub fn calendar_fields(ui: &mut Ui, name: &str, c: &mut CalendarSpec) {
-    ui.horizontal_wrapped(|ui| {
-        for day in ["mon", "tue", "wed", "thu", "fri", "sat", "sun"] {
-            let mut on = c.days.iter().any(|d| d.eq_ignore_ascii_case(day));
-            if ui.checkbox(&mut on, day).changed() {
-                c.days.retain(|d| !d.eq_ignore_ascii_case(day));
-                if on {
-                    c.days.push(day.to_string());
+    let several = c.periods.len() > 1;
+    let mut remove = None;
+    for (i, p) in c.periods.iter_mut().enumerate() {
+        ui.horizontal_wrapped(|ui| {
+            for day in WEEKDAYS {
+                let mut on = p.days.iter().any(|d| d.eq_ignore_ascii_case(day));
+                if ui.checkbox(&mut on, day).changed() {
+                    p.days.retain(|d| !d.eq_ignore_ascii_case(day));
+                    if on {
+                        p.days.push(day.to_string());
+                        p.days.sort_by_key(|d| {
+                            WEEKDAYS.iter().position(|w| w.eq_ignore_ascii_case(d))
+                        });
+                    }
                 }
             }
-        }
-    });
-    ui.horizontal(|ui| {
-        ui.label("hours");
-        ui.text_edit_singleline(&mut c.hours)
-            .on_hover_text("e.g. 09:00-12:00,13:00-17:00");
-    });
+        });
+        ui.horizontal(|ui| {
+            ui.label("hours");
+            ui.text_edit_singleline(&mut p.hours)
+                .on_hover_text("e.g. 09:00-12:00,13:00-17:00; 24:00 ends at midnight");
+            if several && ui.small_button("remove").clicked() {
+                remove = Some(i);
+            }
+        });
+    }
+    if let Some(i) = remove {
+        c.periods.remove(i);
+    }
+    if ui
+        .small_button("other hours on other days")
+        .on_hover_text("e.g. sat and sun 08:00-24:00")
+        .clicked()
+    {
+        let free = WEEKDAYS
+            .iter()
+            .filter(|w| {
+                !c.periods
+                    .iter()
+                    .any(|p| p.days.iter().any(|d| d.eq_ignore_ascii_case(w)))
+            })
+            .map(|w| w.to_string())
+            .collect();
+        c.periods.push(PeriodSpec {
+            days: free,
+            hours: "09:00-17:00".into(),
+        });
+    }
     // The weekday of the start does not change whether the calendar is valid.
     let clock = SimClock::parse("2024-01-01").expect("valid date");
     if let Err(e) = Calendar::new(name, c, clock) {

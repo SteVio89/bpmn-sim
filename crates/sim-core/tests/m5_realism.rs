@@ -132,6 +132,31 @@ fn utilisation_is_busy_time_over_opening_time() {
 }
 
 #[test]
+fn a_calendar_can_have_other_hours_on_other_days() {
+    // Weekday evenings and long weekends; the case arrives Friday 23:00 with two hours of work.
+    let shifts = r#"[calendars.office]
+periods = [
+  { days = ["mon", "tue", "wed", "thu", "fri"], hours = "20:00-24:00" },
+  { days = ["sat", "sun"], hours = "08:00-24:00" },
+]
+"#;
+    let text =
+        single("cases = 1\nstart = \"2024-01-05T23:00\"", "1d", "2h", true).replace(OFFICE, shifts);
+    let s = Scenario::from_toml(&text).unwrap();
+    assert_eq!(s.calendars["office"].periods.len(), 2);
+    let saved = s.to_toml().unwrap();
+    assert_eq!(Scenario::from_toml(&saved).unwrap(), s, "{saved}");
+    let r = run("v1-single-task.bpmn", &text);
+    let rec = &r.records[0];
+    assert_eq!(
+        (rec.start, rec.end),
+        (0.0, 10.0 * H),
+        "1h on Friday, 1h from Saturday 08:00"
+    );
+    assert_eq!(rec.processing(), 2.0 * H);
+}
+
+#[test]
 fn tasks_without_a_calendar_are_unaffected_and_unknown_calendars_fail() {
     let r = run(
         "v1-single-task.bpmn",

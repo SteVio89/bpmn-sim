@@ -9,13 +9,76 @@ use serde::{Deserialize, Serialize};
 
 const DAY: f64 = 86_400.0;
 
+/// Working hours: one or more periods, each with its own days and hours. In a scenario a
+/// single period is written as `days` + `hours`, several as `periods = [{ days, hours }, ...]`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(try_from = "RawCalendar", into = "RawCalendar")]
+pub struct CalendarSpec {
+    pub periods: Vec<PeriodSpec>,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct CalendarSpec {
+pub struct PeriodSpec {
     /// Working days: "mon" .. "sun".
     pub days: Vec<String>,
     /// One or more comma-separated intervals, e.g. "09:00-12:00,13:00-17:00".
     pub hours: String,
+}
+
+/// How a calendar is written in a scenario.
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawCalendar {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    days: Option<Vec<String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    hours: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    periods: Vec<PeriodSpec>,
+}
+
+impl TryFrom<RawCalendar> for CalendarSpec {
+    type Error = String;
+
+    fn try_from(r: RawCalendar) -> Result<Self, String> {
+        let mut periods = match (r.days, r.hours) {
+            (Some(days), Some(hours)) => vec![PeriodSpec { days, hours }],
+            (None, None) => vec![],
+            _ => return Err("a calendar needs both `days` and `hours`".into()),
+        };
+        periods.extend(r.periods);
+        Ok(Self { periods })
+    }
+}
+
+impl From<CalendarSpec> for RawCalendar {
+    fn from(c: CalendarSpec) -> Self {
+        match <[PeriodSpec; 1]>::try_from(c.periods) {
+            Ok([p]) => Self {
+                days: Some(p.days),
+                hours: Some(p.hours),
+                periods: vec![],
+            },
+            Err(periods) => Self {
+                days: None,
+                hours: None,
+                periods,
+            },
+        }
+    }
+}
+
+impl CalendarSpec {
+    /// The same hours on each of `days`.
+    pub fn uniform(days: &[&str], hours: &str) -> Self {
+        Self {
+            periods: vec![PeriodSpec {
+                days: days.iter().map(|d| d.to_string()).collect(),
+                hours: hours.into(),
+            }],
+        }
+    }
 }
 
 /// Days from 1970-01-01 for a civil date (proleptic Gregorian).
@@ -114,12 +177,13 @@ impl SimClock {
     }
 }
 
+pub const WEEKDAYS: [&str; 7] = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"];
+
 /// A resource calendar bound to a simulation start.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Calendar {
-    days: [bool; 7],
-    /// Sorted, non-overlapping (start, end) in seconds of the day.
-    intervals: Vec<(f64, f64)>,
+    /// Per weekday (Monday first): sorted, non-overlapping (start, end) in seconds of the day.
+    intervals: [Vec<(f64, f64)>; 7],
     /// Seconds from Monday 00:00 to simulation time 0.
     offset: f64,
 }
@@ -132,38 +196,53 @@ fn parse_hhmm(s: &str) -> Option<f64> {
 
 impl Calendar {
     pub fn new(name: &str, spec: &CalendarSpec, clock: SimClock) -> Result<Self, String> {
-        let mut days = [false; 7];
-        for d in &spec.days {
-            let i = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]
-                .iter()
-                .position(|x| x.eq_ignore_ascii_case(d))
-                .ok_or_else(|| format!("calendar '{name}': unknown day '{d}' (use mon..sun)"))?;
-            days[i] = true;
-        }
-        let mut intervals = Vec::new();
-        for part in spec.hours.split(',') {
-            let bad = || format!("calendar '{name}': hours '{part}' must look like 09:00-17:00");
-            let (a, b) = part.split_once('-').ok_or_else(bad)?;
-            let (a, b) = (
-                parse_hhmm(a).ok_or_else(bad)?,
-                parse_hhmm(b).ok_or_else(bad)?,
-            );
-            if a >= b {
+        let mut intervals: [Vec<(f64, f64)>; 7] = Default::default();
+        for p in &spec.periods {
+            let mut days = Vec::new();
+            for d in &p.days {
+                let i = WEEKDAYS
+                    .iter()
+                    .position(|x| x.eq_ignore_ascii_case(d))
+                    .ok_or_else(|| {
+                        format!("calendar '{name}': unknown day '{d}' (use mon..sun)")
+                    })?;
+                days.push(i);
+            }
+            if days.is_empty() && spec.periods.len() > 1 {
                 return Err(format!(
-                    "calendar '{name}': interval '{part}' must end after it starts (no overnight intervals)"
+                    "calendar '{name}': hours '{}' are on no day",
+                    p.hours
                 ));
             }
-            intervals.push((a, b));
+            for part in p.hours.split(',') {
+                let bad =
+                    || format!("calendar '{name}': hours '{part}' must look like 09:00-17:00");
+                let (a, b) = part.split_once('-').ok_or_else(bad)?;
+                let (a, b) = (
+                    parse_hhmm(a).ok_or_else(bad)?,
+                    parse_hhmm(b).ok_or_else(bad)?,
+                );
+                if a >= b {
+                    return Err(format!(
+                        "calendar '{name}': interval '{part}' must end after it starts (no overnight intervals)"
+                    ));
+                }
+                for &i in &days {
+                    intervals[i].push((a, b));
+                }
+            }
         }
-        intervals.sort_by(|x, y| x.0.total_cmp(&y.0));
-        if intervals.windows(2).any(|w| w[0].1 > w[1].0) {
-            return Err(format!("calendar '{name}': intervals overlap"));
+        for (day, iv) in WEEKDAYS.iter().zip(&mut intervals) {
+            iv.sort_by(|x, y| x.0.total_cmp(&y.0));
+            iv.dedup();
+            if iv.windows(2).any(|w| w[0].1 > w[1].0) {
+                return Err(format!("calendar '{name}': hours overlap on {day}"));
+            }
         }
-        if !days.iter().any(|d| *d) || intervals.is_empty() {
+        if intervals.iter().all(Vec::is_empty) {
             return Err(format!("calendar '{name}': no working time"));
         }
         Ok(Self {
-            days,
             intervals,
             offset: clock.week_offset(),
         })
@@ -171,11 +250,9 @@ impl Calendar {
 
     /// Open spans (absolute seconds on the calendar's own timeline) of day number `d`.
     fn spans(&self, d: i64) -> impl Iterator<Item = (f64, f64)> + '_ {
-        let open = self.days[d.rem_euclid(7) as usize];
         let base = d as f64 * DAY;
-        self.intervals
+        self.intervals[d.rem_euclid(7) as usize]
             .iter()
-            .filter(move |_| open)
             .map(move |(a, b)| (base + a, base + b))
     }
 
@@ -238,12 +315,7 @@ mod tests {
     use super::*;
 
     fn office(start: &str) -> Calendar {
-        let spec = CalendarSpec {
-            days: ["mon", "tue", "wed", "thu", "fri"]
-                .map(String::from)
-                .to_vec(),
-            hours: "09:00-17:00".into(),
-        };
+        let spec = CalendarSpec::uniform(&WEEKDAYS[..5], "09:00-17:00");
         Calendar::new("office", &spec, SimClock::parse(start).unwrap()).unwrap()
     }
 
@@ -306,10 +378,7 @@ mod tests {
 
     #[test]
     fn split_shifts_and_bad_input() {
-        let spec = CalendarSpec {
-            days: vec!["mon".into()],
-            hours: "09:00-12:00, 13:00-17:00".into(),
-        };
+        let spec = CalendarSpec::uniform(&["mon"], "09:00-12:00, 13:00-17:00");
         let c = Calendar::new("split", &spec, SimClock::default()).unwrap();
         assert_eq!(c.advance(11.0 * H, 2.0 * H), 14.0 * H);
         for (days, hours) in [
@@ -319,14 +388,80 @@ mod tests {
             (vec![], "09:00-17:00"),
             (vec!["mon"], "9-17"),
         ] {
-            let spec = CalendarSpec {
-                days: days.into_iter().map(String::from).collect(),
-                hours: hours.into(),
-            };
+            let spec = CalendarSpec::uniform(&days, hours);
             assert!(
                 Calendar::new("bad", &spec, SimClock::default()).is_err(),
                 "{hours}"
             );
         }
+    }
+
+    #[test]
+    fn different_hours_on_different_days() {
+        let toml = r#"periods = [
+            { days = ["mon", "tue", "wed", "thu", "fri"], hours = "20:00-24:00" },
+            { days = ["sat", "sun"], hours = "08:00-24:00" },
+        ]"#;
+        let spec: CalendarSpec = toml::from_str(toml).unwrap();
+        let c = Calendar::new("shifts", &spec, SimClock::default()).unwrap(); // Monday 00:00
+        assert_eq!(c.next_open(0.0), 20.0 * H);
+        assert_eq!(
+            c.open_between(0.0, 7.0 * DAY),
+            5.0 * 4.0 * H + 2.0 * 16.0 * H
+        );
+        // Friday 23:00 + 2h: 1h until midnight, 1h from Saturday 08:00.
+        assert_eq!(
+            c.advance(4.0 * DAY + 23.0 * H, 2.0 * H),
+            5.0 * DAY + 9.0 * H
+        );
+        // Days may appear in several periods as long as the hours do not overlap.
+        let spec = CalendarSpec {
+            periods: vec![
+                PeriodSpec {
+                    days: vec!["mon".into()],
+                    hours: "08:00-12:00".into(),
+                },
+                PeriodSpec {
+                    days: vec!["mon".into()],
+                    hours: "11:00-13:00".into(),
+                },
+            ],
+        };
+        let e = Calendar::new("x", &spec, SimClock::default()).unwrap_err();
+        assert!(e.contains("overlap on mon"), "{e}");
+        let spec = CalendarSpec {
+            periods: vec![
+                PeriodSpec {
+                    days: vec!["mon".into()],
+                    hours: "08:00-12:00".into(),
+                },
+                PeriodSpec {
+                    days: vec![],
+                    hours: "13:00-17:00".into(),
+                },
+            ],
+        };
+        let e = Calendar::new("x", &spec, SimClock::default()).unwrap_err();
+        assert!(e.contains("on no day"), "{e}");
+    }
+
+    #[test]
+    fn one_period_is_written_as_days_and_hours() {
+        let one = CalendarSpec::uniform(&["mon"], "09:00-17:00");
+        let text = toml::to_string(&one).unwrap();
+        assert_eq!(text, "days = [\"mon\"]\nhours = \"09:00-17:00\"\n");
+        assert_eq!(toml::from_str::<CalendarSpec>(&text).unwrap(), one);
+        let mut two = one.clone();
+        two.periods.push(PeriodSpec {
+            days: vec!["sat".into()],
+            hours: "08:00-12:00".into(),
+        });
+        let text = toml::to_string(&two).unwrap();
+        assert!(text.contains("periods"), "{text}");
+        assert_eq!(toml::from_str::<CalendarSpec>(&text).unwrap(), two);
+        assert!(toml::from_str::<CalendarSpec>("days = [\"mon\"]").is_err());
+        assert!(
+            toml::from_str::<CalendarSpec>("days = [\"mon\"]\nhours = \"9-5\"\nx = 1").is_err()
+        );
     }
 }
