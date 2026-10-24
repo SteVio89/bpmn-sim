@@ -4,10 +4,10 @@
 use eframe::egui::{self, ComboBox, DragValue, Id, RichText, Sense, Ui};
 use sim_core::needs::{Need, default_pool, is_arrival_start, key_of, needs};
 use sim_core::scenario::{
-    ArrivalSpec, BoundarySpec, ChanceSpec, ChoiceSpec, CountSpec, GatewaySpec, InputSpec, LoopSpec,
-    MultiInstanceSpec, NumberSpec, ResourceSpec,
+    ArrivalSpec, BoundarySpec, ChanceSpec, ChoiceSpec, CountSpec, EventSpec, GatewaySpec,
+    InputSpec, LoopSpec, MultiInstanceSpec, NumberSpec, ResourceSpec,
 };
-use sim_core::{FlowNode, NodeKind, Project, QId, Scenario};
+use sim_core::{EventDef, FlowNode, NodeKind, Project, QId, Scenario};
 
 use crate::configure::{find_node, node_kind_name};
 use crate::diagram_panel::case_color;
@@ -569,7 +569,7 @@ pub fn arrival_editor(
         if !others.is_empty() {
             ui.label(
                 RichText::new(format!(
-                    "also starts {} at the same time",
+                    "also starts {} in the same case",
                     others
                         .iter()
                         .map(|t| t.as_str())
@@ -584,6 +584,9 @@ pub fn arrival_editor(
             stop = Some(i);
         }
     }
+    if n.event_defs.iter().any(|d| matches!(d, EventDef::Timer)) {
+        start_delay_editor(ui, project, s, n, preview);
+    }
     if let Some(i) = stop {
         let full = n.id.to_string();
         s.arrivals[i]
@@ -592,6 +595,49 @@ pub fn arrival_editor(
         if s.arrivals[i].triggers.is_empty() {
             s.arrivals.remove(i);
         }
+    }
+}
+
+/// A timer start event fired by an arrival may start later than the case (`[events]` delay),
+/// e.g. when each pool of a collaboration begins at its own time after a common date.
+fn start_delay_editor(
+    ui: &mut Ui,
+    project: &Project,
+    s: &mut Scenario,
+    n: &FlowNode,
+    preview: bool,
+) {
+    let key = key_of(&s.events, project, &n.id);
+    let mut later = key.is_some();
+    if ui
+        .checkbox(&mut later, "starts later than the case")
+        .changed()
+    {
+        match &key {
+            Some(k) if !later => {
+                s.events.remove(k);
+            }
+            None if later => {
+                s.events.insert(
+                    n.id.to_string(),
+                    EventSpec {
+                        label: n.name.clone(),
+                        delay: default_dist(1, 86_400.0),
+                    },
+                );
+            }
+            _ => {}
+        }
+    }
+    let Some(e) = key_of(&s.events, project, &n.id).and_then(|k| s.events.get_mut(&k)) else {
+        return;
+    };
+    ui.horizontal(|ui| {
+        ui.label("after");
+        dist_edit(ui, Id::unique(("start-delay", &n.id)), &mut e.delay);
+    });
+    if preview {
+        dist_preview(ui, &e.delay);
     }
 }
 

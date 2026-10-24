@@ -228,6 +228,9 @@ pub fn overlay(
                     dist_short(&s.arrivals[i].inter_arrival)
                 ));
             }
+            if let Some(e) = key_of(&s.events, project, &n.id).map(|k| &s.events[&k]) {
+                parts.push(format!("starts after {}", dist_short(&e.delay)));
+            }
             o.clickable.insert(n.id.clone());
         }
         if !needs(project, n).is_empty() {
