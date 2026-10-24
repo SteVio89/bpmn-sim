@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL" id="Defs_PaymentAsks">
+  <bpmn:collaboration id="Collab_Payment">
+    <bpmn:participant id="Part_Payment" name="Payment" processRef="Process_Pay"/>
+    <bpmn:participant id="Part_Bank" name="Bank"/>
+    <bpmn:messageFlow id="MF_Charge" sourceRef="Send_Charge" targetRef="Part_Bank"/>
+    <bpmn:messageFlow id="MF_Confirm" sourceRef="Part_Bank" targetRef="Wait_Confirm"/>
+  </bpmn:collaboration>
+  <bpmn:process id="Process_Pay">
+    <bpmn:startEvent id="Start_Pay"/>
+    <bpmn:sendTask id="Send_Charge" name="Charge card"/>
+    <bpmn:receiveTask id="Wait_Confirm" name="Receive confirmation"/>
+    <bpmn:endEvent id="End_Pay"/>
+    <bpmn:sequenceFlow id="FP1" sourceRef="Start_Pay" targetRef="Send_Charge"/>
+    <bpmn:sequenceFlow id="FP2" sourceRef="Send_Charge" targetRef="Wait_Confirm"/>
+    <bpmn:sequenceFlow id="FP3" sourceRef="Wait_Confirm" targetRef="End_Pay"/>
+  </bpmn:process>
+</bpmn:definitions>

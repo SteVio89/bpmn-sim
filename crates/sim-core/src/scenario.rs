@@ -1268,6 +1268,73 @@ impl Scenario {
             }
         }
 
+        // A token at a receive task or message catch event whose only senders are black boxes
+        // that never answer waits forever. (A black box answers only messages it gets.)
+        let sent_flows: Vec<&MessageFlow> = project
+            .files
+            .values()
+            .flat_map(|f| f.message_flows.values())
+            .filter(|f| !project.is_mirror_flow(f))
+            .collect();
+        let silent_black_box = |p: &QId| -> Option<String> {
+            let name = project
+                .files
+                .get(&p.file)?
+                .participants
+                .get(p)
+                .filter(|p| p.process.is_none())?
+                .name
+                .clone()
+                .unwrap_or_else(|| p.id.clone());
+            let contacted = sent_flows.iter().any(|g| {
+                g.target == *p
+                    && project
+                        .node(&g.source)
+                        .is_some_and(|s| processes.contains(&s.process))
+            });
+            if !contacted {
+                Some(format!(
+                    "black-box pool '{name}', which answers only messages it gets, and nothing in the model sends it one"
+                ))
+            } else if !black_box_reply.contains_key(p) {
+                Some(format!(
+                    "black-box pool '{name}', which has no reply in [messages.black_box_reply]"
+                ))
+            } else {
+                None
+            }
+        };
+        for n in &nodes {
+            let waits = matches!(
+                n.kind,
+                NodeKind::Task(TaskKind::Receive) | NodeKind::IntermediateCatchEvent
+            ) && receives_messages(n);
+            // (After an event-based gateway another event can still move the token on.)
+            let after_event_gateway = n.incoming.iter().any(|f| {
+                project
+                    .flow(f)
+                    .and_then(|f| project.node(&f.source))
+                    .is_some_and(|s| s.kind == NodeKind::EventBasedGateway)
+            });
+            if !waits || after_event_gateway || events.contains_key(&n.id) {
+                continue;
+            }
+            let senders: Vec<&QId> = sent_flows
+                .iter()
+                .filter(|f| f.target == n.id)
+                .map(|f| &f.source)
+                .collect();
+            let silent: Option<Vec<String>> = senders.iter().map(|s| silent_black_box(s)).collect();
+            if let Some(silent) = silent.filter(|s| !s.is_empty()) {
+                warnings.at(&n.id, format!(
+                    "{} ({}): waits for a message only from {}, so every token stops here; give it an [events] entry with the delay until the message comes from outside the model, or a message flow to the pool and a reply in [messages.black_box_reply]",
+                    n.id,
+                    n.label(),
+                    silent.join(" and from ")
+                ));
+            }
+        }
+
         let mut boundary_specs: BTreeMap<QId, &BoundarySpec> = BTreeMap::new();
         for (key, spec) in &self.boundary {
             match resolve(project, key, "boundary event") {

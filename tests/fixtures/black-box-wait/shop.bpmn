@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL" id="Defs_Shop">
+  <bpmn:collaboration id="Collab_Shop">
+    <bpmn:participant id="Part_Shop" name="Shop" processRef="Process_Shop"/>
+  </bpmn:collaboration>
+  <bpmn:process id="Process_Shop">
+    <bpmn:startEvent id="Start_Shop"/>
+    <bpmn:callActivity id="Call_Pay" name="Take payment" calledElement="Process_Pay"/>
+    <bpmn:endEvent id="End_Shop"/>
+    <bpmn:sequenceFlow id="FS1" sourceRef="Start_Shop" targetRef="Call_Pay"/>
+    <bpmn:sequenceFlow id="FS2" sourceRef="Call_Pay" targetRef="End_Shop"/>
+  </bpmn:process>
+</bpmn:definitions>
