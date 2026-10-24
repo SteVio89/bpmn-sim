@@ -9,6 +9,7 @@ use sim_core::scenario::{
 };
 use sim_core::{FlowNode, NodeKind, Project, QId, Scenario};
 
+use crate::configure::{find_node, node_kind_name};
 use crate::diagram_panel::case_color;
 use crate::widgets::{default_dist, dist_edit, dist_preview, rate_text};
 
@@ -94,6 +95,8 @@ pub fn need_editor(
             let g = s.gateways.get_mut(&k).expect("key exists");
             if inclusive {
                 inclusive_editor(ui, project, n, g);
+            } else if decide_by(ui, n, g) {
+                history_editor(ui, project, n, g);
             } else {
                 xor_editor(ui, project, n, g);
             }
@@ -172,6 +175,131 @@ pub fn resource_combo(
                 ui.selectable_value(resource, Some(p.clone()), p);
             }
         });
+}
+
+/// An XOR split with two flows is decided by shares or by what happened in the case; returns
+/// whether it asks the case's history.
+fn decide_by(ui: &mut Ui, n: &FlowNode, g: &mut GatewaySpec) -> bool {
+    if n.outgoing.len() != 2 {
+        return false;
+    }
+    let history = g.if_completed.is_some() || g.then.is_some();
+    let mut chosen = history;
+    ui.horizontal(|ui| {
+        ui.label("Decide by");
+        ComboBox::from_id_salt(("decide-by", &n.id))
+            .selected_text(if history {
+                "what happened in the case"
+            } else {
+                "shares"
+            })
+            .show_ui(ui, |ui| {
+                ui.selectable_value(&mut chosen, false, "shares");
+                ui.selectable_value(&mut chosen, true, "what happened in the case");
+            });
+    });
+    if chosen != history {
+        if chosen {
+            g.probabilities.clear();
+            // The default flow usually is the "yes, already done" answer.
+            let then = n.default_flow.as_ref().unwrap_or(&n.outgoing[0]);
+            g.then = Some(then.id.clone());
+        } else {
+            g.if_completed = None;
+            g.then = None;
+            g.probabilities = n.outgoing.iter().map(|f| (f.id.clone(), 0.5)).collect();
+        }
+    }
+    chosen
+}
+
+/// XOR split asking whether an element has completed in the case: one flow once it has, the
+/// other until then.
+fn history_editor(ui: &mut Ui, project: &Project, n: &FlowNode, g: &mut GatewaySpec) {
+    let asked = g
+        .if_completed
+        .as_deref()
+        .and_then(|k| find_node(project, k));
+    let mut candidates: Vec<(String, &FlowNode)> = project
+        .nodes()
+        .filter(|e| {
+            e.id != n.id
+                && !matches!(
+                    e.kind,
+                    NodeKind::ExclusiveGateway
+                        | NodeKind::InclusiveGateway
+                        | NodeKind::ParallelGateway
+                        | NodeKind::EventBasedGateway
+                        | NodeKind::Unsupported(_)
+                )
+        })
+        .map(|e| {
+            let pool = project
+                .participant_name(&e.process)
+                .unwrap_or(e.id.file.as_str());
+            (format!("{pool}: {}", e.label()), e)
+        })
+        .collect();
+    candidates.sort_by(|a, b| a.0.cmp(&b.0));
+    let then = g
+        .then
+        .as_deref()
+        .and_then(|t| n.outgoing.iter().find(|f| f.id == t || f.to_string() == t))
+        .cloned();
+    egui::Grid::new(("history", &n.id))
+        .num_columns(2)
+        .show(ui, |ui| {
+            ui.label("Once");
+            ComboBox::from_id_salt(("asked", &n.id))
+                .width(240.0)
+                .selected_text(
+                    asked.map_or("choose an element".to_string(), |e| e.label().to_string()),
+                )
+                .show_ui(ui, |ui| {
+                    for (text, e) in &candidates {
+                        let on = asked.is_some_and(|a| a.id == e.id);
+                        if ui
+                            .selectable_label(on, text)
+                            .on_hover_text(format!("{} {}", node_kind_name(&e.kind), e.id))
+                            .clicked()
+                        {
+                            g.if_completed = Some(e.id.to_string());
+                        }
+                    }
+                });
+            ui.end_row();
+            ui.label("has completed, take");
+            ComboBox::from_id_salt(("then", &n.id))
+                .selected_text(
+                    then.as_ref()
+                        .map_or("choose a flow".to_string(), |f| flow_label(project, f)),
+                )
+                .show_ui(ui, |ui| {
+                    for f in &n.outgoing {
+                        if ui
+                            .selectable_label(then.as_ref() == Some(f), flow_label(project, f))
+                            .clicked()
+                        {
+                            g.then = Some(f.id.clone());
+                        }
+                    }
+                });
+            ui.end_row();
+            ui.label("until then");
+            match n.outgoing.iter().find(|f| Some(*f) != then.as_ref()) {
+                Some(other) if then.is_some() => ui.label(flow_label(project, other)),
+                _ => ui.label(""),
+            };
+            ui.end_row();
+        });
+    ui.label(
+        RichText::new(
+            "Only this case counts: what the pools started with it, and the processes they \
+             called, have done before the token reaches the gateway.",
+        )
+        .small()
+        .weak(),
+    );
 }
 
 /// XOR split: one share per flow, always adding up to 100 % (the last flow takes the rest),

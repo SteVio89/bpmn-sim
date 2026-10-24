@@ -86,6 +86,27 @@ pub fn statuses(
     out
 }
 
+/// The element a scenario key names: a qualified id, or a bare id unique in the project.
+pub fn find_node<'p>(project: &'p Project, key: &str) -> Option<&'p sim_core::FlowNode> {
+    match key.split_once('#') {
+        Some((f, i)) => project.node(&QId::new(f, i)),
+        None => {
+            let mut it = project.nodes().filter(|n| n.id.id == key);
+            let one = it.next()?;
+            it.next().is_none().then_some(one)
+        }
+    }
+}
+
+/// `text` cut to at most `max` characters, with an ellipsis.
+fn short(text: &str, max: usize) -> String {
+    if text.chars().count() <= max {
+        return text.to_string();
+    }
+    let cut: String = text.chars().take(max - 1).collect();
+    format!("{}…", cut.trim_end())
+}
+
 fn percent(p: f64) -> String {
     let v = p * 100.0;
     if (v - v.round()).abs() < 0.05 {
@@ -133,6 +154,26 @@ pub fn overlay(
                 }
                 Need::Branching { inclusive } => {
                     if let Some(g) = key_of(&s.gateways, project, &n.id).map(|k| &s.gateways[&k]) {
+                        if g.if_completed.is_some() || g.then.is_some() {
+                            let asked = g
+                                .if_completed
+                                .as_deref()
+                                .and_then(|k| find_node(project, k))
+                                .map_or("?".to_string(), |e| short(e.label(), 24));
+                            for f in &n.outgoing {
+                                let then = g
+                                    .then
+                                    .as_deref()
+                                    .is_some_and(|t| t == f.id || *t == f.to_string());
+                                let text = if then {
+                                    format!("once {asked} done")
+                                } else {
+                                    "until then".into()
+                                };
+                                o.flow_badges.insert(f.clone(), text);
+                            }
+                            continue;
+                        }
                         for f in &n.outgoing {
                             let p = g
                                 .probabilities
@@ -276,17 +317,25 @@ fn kind_name(project: &Project, t: &Target) -> &'static str {
     match t {
         Target::Pool(_) => "resource pool",
         Target::BlackBox(_) => "black-box pool",
-        Target::Node(q) => match project.node(q).map(|n| &n.kind) {
-            Some(NodeKind::Task(_)) => "task",
-            Some(NodeKind::ExclusiveGateway) => "exclusive gateway",
-            Some(NodeKind::InclusiveGateway) => "inclusive gateway",
-            Some(NodeKind::StartEvent) => "start event",
-            Some(NodeKind::BoundaryEvent) => "boundary event",
-            Some(NodeKind::IntermediateCatchEvent) => "intermediate event",
-            Some(NodeKind::SubProcess) => "subprocess",
-            Some(NodeKind::CallActivity) => "call activity",
-            _ => "element",
-        },
+        Target::Node(q) => project
+            .node(q)
+            .map_or("element", |n| node_kind_name(&n.kind)),
+    }
+}
+
+/// What kind of element a node is, in words.
+pub fn node_kind_name(kind: &NodeKind) -> &'static str {
+    match kind {
+        NodeKind::Task(_) => "task",
+        NodeKind::ExclusiveGateway => "exclusive gateway",
+        NodeKind::InclusiveGateway => "inclusive gateway",
+        NodeKind::StartEvent => "start event",
+        NodeKind::EndEvent => "end event",
+        NodeKind::BoundaryEvent => "boundary event",
+        NodeKind::IntermediateCatchEvent | NodeKind::IntermediateThrowEvent => "intermediate event",
+        NodeKind::SubProcess => "subprocess",
+        NodeKind::CallActivity => "call activity",
+        _ => "element",
     }
 }
 
