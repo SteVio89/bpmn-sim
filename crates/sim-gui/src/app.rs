@@ -294,6 +294,57 @@ mod tests {
     }
 
     #[test]
+    fn splits_that_follow_a_decision_output_draw_and_run() {
+        let ctx = egui::Context::default();
+        let mut app = App::default();
+        app.ws.open(&fixtures().join("dmn-output/ticket.bpmn"));
+        assert!(app.ws.load_error.is_none());
+        app.regenerate_skeleton();
+        let project = app.ws.project.clone();
+        let gateways = ["Gateway_Queue", "Gateway_Priority", "Gateway_Checks"];
+        for id in gateways {
+            let g = &app.scenario.gateways[&format!("ticket.bpmn#{id}")];
+            assert!(g.by_output(), "{id}: {g:?}");
+        }
+        let draw = |app: &mut App| {
+            for _ in 0..2 {
+                let mut out = ctx.run_ui(egui::RawInput::default(), |ui| {
+                    for id in gateways {
+                        let n = project.node(&QId::new("ticket.bpmn", id)).unwrap();
+                        crate::editors::node_editor(ui, &project, &mut app.scenario, n, true);
+                    }
+                });
+                out.textures_delta.clear();
+            }
+        };
+        draw(&mut app);
+        // A split that has gone back to shares draws its share editor.
+        let queue = app
+            .scenario
+            .gateways
+            .get_mut("ticket.bpmn#Gateway_Queue")
+            .unwrap();
+        queue.output = None;
+        queue.values.clear();
+        queue.probabilities = [
+            ("Flow_front", 0.5),
+            ("Flow_back", 0.25),
+            ("Flow_expert", 0.25),
+        ]
+        .map(|(k, p)| (k.to_string(), p))
+        .into();
+        draw(&mut app);
+        app.tab = Tab::Diagram;
+        app.diagram.mode = Mode::Configure;
+        frames(&mut app, &ctx, 2);
+        assert!(
+            app.scenario.bind(&project).is_ok(),
+            "{:?}",
+            app.scenario.bind(&project).err()
+        );
+    }
+
+    #[test]
     fn boundary_and_timer_sections_draw_and_run() {
         for fixture in [
             "v9-boundary-timer.bpmn",
@@ -618,6 +669,28 @@ mod tests {
                 out = Some(r.frame(&ctx, r.input(), |ui| app.draw(ui)));
             }
             r.save(&ctx, out.unwrap(), &dir.join(format!("{name}.png")));
+        }
+        {
+            // Editors of splits that follow a decision output.
+            let ctx = egui::Context::default();
+            ctx.set_theme(egui::ThemePreference::Light);
+            let mut r = crate::snapshot::Renderer::new(520, 560);
+            let mut app = App::default();
+            app.ws.open(&fixtures().join("dmn-output/ticket.bpmn"));
+            app.regenerate_skeleton();
+            let project = app.ws.project.clone();
+            let mut out = None;
+            for _ in 0..3 {
+                out = Some(r.frame(&ctx, r.input(), |ui| {
+                    for id in ["Gateway_Queue", "Gateway_Priority", "Gateway_Checks"] {
+                        let n = project.node(&QId::new("ticket.bpmn", id)).unwrap();
+                        ui.strong(n.label());
+                        crate::editors::node_editor(ui, &project, &mut app.scenario, n, true);
+                        ui.separator();
+                    }
+                }));
+            }
+            r.save(&ctx, out.unwrap(), &dir.join("editor-decision-output.png"));
         }
         {
             // Which characters the default fonts can draw.

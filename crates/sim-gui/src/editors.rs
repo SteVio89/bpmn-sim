@@ -2,10 +2,13 @@
 //! in the diagram and the scenario tab.
 
 use eframe::egui::{self, ComboBox, DragValue, Id, RichText, Sense, Ui};
-use sim_core::needs::{Need, default_pool, is_arrival_start, key_of, needs};
+use sim_core::needs::{
+    DecisionOutput, Need, default_pool, is_arrival_start, key_of, match_flows, needs, outputs_for,
+    suggest_output,
+};
 use sim_core::scenario::{
     ArrivalSpec, BoundarySpec, ChanceSpec, ChoiceSpec, CountSpec, EventSpec, GatewaySpec,
-    InputSpec, LoopSpec, MultiInstanceSpec, NumberSpec, ResourceSpec,
+    InputSpec, LoopSpec, MultiInstanceSpec, NumberSpec, OutputValue, OutputValues, ResourceSpec,
 };
 use sim_core::{EventDef, FlowNode, NodeKind, Project, QId, Scenario};
 
@@ -93,12 +96,11 @@ pub fn need_editor(
                 return;
             };
             let g = s.gateways.get_mut(&k).expect("key exists");
-            if inclusive {
-                inclusive_editor(ui, project, n, g);
-            } else if decide_by(ui, n, g) {
-                history_editor(ui, project, n, g);
-            } else {
-                xor_editor(ui, project, n, g);
+            match decide_by(ui, project, n, g) {
+                DecideBy::Output => output_editor(ui, project, n, g),
+                DecideBy::History => history_editor(ui, project, n, g),
+                DecideBy::Shares if inclusive => inclusive_editor(ui, project, n, g),
+                DecideBy::Shares => xor_editor(ui, project, n, g),
             }
         }
         Need::Delay => {
@@ -177,40 +179,241 @@ pub fn resource_combo(
         });
 }
 
-/// An XOR split with two flows is decided by shares or by what happened in the case; returns
-/// whether it asks the case's history.
-fn decide_by(ui: &mut Ui, n: &FlowNode, g: &mut GatewaySpec) -> bool {
-    if n.outgoing.len() != 2 {
-        return false;
+/// How a split without conditions is decided.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DecideBy {
+    Shares,
+    /// What happened in the case (XOR split with two flows).
+    History,
+    /// A decision output set by a business rule task.
+    Output,
+}
+
+impl DecideBy {
+    fn text(self) -> &'static str {
+        match self {
+            DecideBy::Shares => "shares",
+            DecideBy::History => "what happened in the case",
+            DecideBy::Output => "a decision output",
+        }
     }
-    let history = g.if_completed.is_some() || g.then.is_some();
-    let mut chosen = history;
+}
+
+/// Lets the user choose how split `n` is decided, among the ways that work for it, and
+/// switches the entry over when the choice changes.
+fn decide_by(ui: &mut Ui, project: &Project, n: &FlowNode, g: &mut GatewaySpec) -> DecideBy {
+    let inclusive = n.kind == NodeKind::InclusiveGateway;
+    let current = if g.by_output() {
+        DecideBy::Output
+    } else if g.if_completed.is_some() || g.then.is_some() {
+        DecideBy::History
+    } else {
+        DecideBy::Shares
+    };
+    let outputs = outputs_for(project, n);
+    let mut ways = vec![DecideBy::Shares];
+    if !inclusive && n.outgoing.len() == 2 {
+        ways.push(DecideBy::History);
+    }
+    if !outputs.is_empty() {
+        ways.push(DecideBy::Output);
+    }
+    if ways.len() == 1 && current == DecideBy::Shares {
+        return current;
+    }
+    let mut chosen = current;
     ui.horizontal(|ui| {
         ui.label("Decide by");
         ComboBox::from_id_salt(("decide-by", &n.id))
-            .selected_text(if history {
-                "what happened in the case"
-            } else {
-                "shares"
-            })
+            .selected_text(current.text())
             .show_ui(ui, |ui| {
-                ui.selectable_value(&mut chosen, false, "shares");
-                ui.selectable_value(&mut chosen, true, "what happened in the case");
+                for w in &ways {
+                    ui.selectable_value(&mut chosen, *w, w.text());
+                }
             });
     });
-    if chosen != history {
-        if chosen {
-            g.probabilities.clear();
-            // The default flow usually is the "yes, already done" answer.
-            let then = n.default_flow.as_ref().unwrap_or(&n.outgoing[0]);
-            g.then = Some(then.id.clone());
-        } else {
-            g.if_completed = None;
-            g.then = None;
-            g.probabilities = n.outgoing.iter().map(|f| (f.id.clone(), 0.5)).collect();
+    if chosen != current {
+        g.probabilities.clear();
+        g.if_completed = None;
+        g.then = None;
+        g.output = None;
+        g.values.clear();
+        match chosen {
+            DecideBy::Shares => {
+                let flows: Vec<&QId> = n
+                    .outgoing
+                    .iter()
+                    .filter(|f| !inclusive || n.default_flow.as_ref() != Some(*f))
+                    .collect();
+                let p = if inclusive {
+                    0.5
+                } else {
+                    1.0 / flows.len() as f64
+                };
+                g.probabilities = flows.iter().map(|f| (f.id.clone(), p)).collect();
+            }
+            DecideBy::History => {
+                // The default flow usually is the "yes, already done" answer.
+                let then = n.default_flow.as_ref().unwrap_or(&n.outgoing[0]);
+                g.then = Some(then.id.clone());
+            }
+            DecideBy::Output => {
+                // The output whose values the flow names match, else the closest decision's.
+                let (output, values) = suggest_output(project, n)
+                    .unwrap_or_else(|| (outputs[0].variable().to_string(), Default::default()));
+                g.output = Some(output);
+                g.values = values;
+            }
         }
     }
     chosen
+}
+
+/// A split that follows a decision output: which output, and which of its values take each
+/// flow.
+fn output_editor(ui: &mut Ui, project: &Project, n: &FlowNode, g: &mut GatewaySpec) {
+    let outputs = outputs_for(project, n);
+    let current = g
+        .output
+        .as_deref()
+        .and_then(|v| outputs.iter().find(|o| o.names.iter().any(|x| x == v)));
+    let task_label = |o: &DecisionOutput| {
+        project
+            .node(&o.task)
+            .map_or(o.task.id.clone(), |t| t.label().to_string())
+    };
+    ui.horizontal(|ui| {
+        ui.label("Output");
+        ComboBox::from_id_salt(("output", &n.id))
+            .width(240.0)
+            .selected_text(g.output.clone().unwrap_or("choose an output".into()))
+            .show_ui(ui, |ui| {
+                for o in &outputs {
+                    let on = current.is_some_and(|c| c == o);
+                    if ui
+                        .selectable_label(on, format!("{} ({})", o.variable(), task_label(o)))
+                        .on_hover_text(format!("decision {}", o.decision))
+                        .clicked()
+                        && !on
+                    {
+                        g.output = Some(o.variable().to_string());
+                        g.values = match_flows(project, n, o).unwrap_or_default();
+                    }
+                }
+            });
+    });
+    let possible = current.and_then(|o| o.values.clone());
+    egui::Grid::new(("output-values", &n.id))
+        .num_columns(2)
+        .show(ui, |ui| {
+            for (i, f) in n
+                .outgoing
+                .iter()
+                .filter(|f| n.default_flow.as_ref() != Some(*f))
+                .enumerate()
+            {
+                ui.colored_label(case_color(i as u64), flow_label(project, f));
+                let key = if g.values.contains_key(&f.to_string()) {
+                    f.to_string()
+                } else {
+                    f.id.clone()
+                };
+                let mut chosen: Vec<OutputValue> = g
+                    .values
+                    .get(&key)
+                    .map(|v| v.as_slice().to_vec())
+                    .unwrap_or_default();
+                let before = chosen.clone();
+                match &possible {
+                    // Toggle the values the decision can give (and keep any others).
+                    Some(values) => {
+                        ui.horizontal_wrapped(|ui| {
+                            for v in values.iter().filter_map(OutputValue::from_value) {
+                                let mut on = chosen.contains(&v);
+                                if ui.toggle_value(&mut on, value_text(&v)).changed() {
+                                    if on {
+                                        chosen.push(v);
+                                    } else {
+                                        chosen.retain(|c| *c != v);
+                                    }
+                                }
+                            }
+                            for v in before.iter().filter(|v| !values.contains(&v.to_value())) {
+                                ui.colored_label(ui.visuals().warn_fg_color, value_text(v))
+                                    .on_hover_text("the decision never gives this value");
+                            }
+                        });
+                    }
+                    // Computed values (aggregation): typed in, separated by commas.
+                    None => {
+                        let id = Id::unique(("output-text", &n.id, &f.id));
+                        let mut text = ui.data_mut(|d| {
+                            d.get_temp::<String>(id).unwrap_or_else(|| {
+                                chosen.iter().map(value_text).collect::<Vec<_>>().join(", ")
+                            })
+                        });
+                        if ui
+                            .add(egui::TextEdit::singleline(&mut text).desired_width(160.0))
+                            .changed()
+                        {
+                            chosen = text
+                                .split(',')
+                                .map(str::trim)
+                                .filter(|t| !t.is_empty())
+                                .map(parse_value)
+                                .collect();
+                        }
+                        ui.data_mut(|d| d.insert_temp(id, text));
+                    }
+                }
+                if chosen != before {
+                    if chosen.is_empty() {
+                        g.values.remove(&key);
+                    } else {
+                        g.values.insert(key, OutputValues::from_vec(chosen));
+                    }
+                }
+                ui.end_row();
+            }
+        });
+    let otherwise = match &n.default_flow {
+        Some(d) => format!(
+            "A value no flow takes goes along the default flow ({}).",
+            flow_label(project, d)
+        ),
+        None => "A value no flow takes leaves the token stuck at the gateway (there is no default flow).".into(),
+    };
+    let how = match (
+        n.kind == NodeKind::InclusiveGateway,
+        current.is_some_and(|o| o.list),
+    ) {
+        (true, true) => "The decision gives a list: every flow with a value in it is taken. ",
+        (true, false) => "Every flow whose value matches is taken. ",
+        (false, true) => "The decision gives a list: the first flow with a value in it is taken. ",
+        (false, false) => "",
+    };
+    ui.label(RichText::new(format!("{how}{otherwise}")).small().weak());
+}
+
+/// A value as written in the scenario: strings in quotes.
+pub fn value_text(v: &OutputValue) -> String {
+    match v {
+        OutputValue::Str(s) => format!("\"{s}\""),
+        OutputValue::Num(x) => x.to_string(),
+        OutputValue::Bool(b) => b.to_string(),
+    }
+}
+
+/// A typed value: true/false, a number, else a string (quotes optional).
+fn parse_value(t: &str) -> OutputValue {
+    match t {
+        "true" => OutputValue::Bool(true),
+        "false" => OutputValue::Bool(false),
+        _ => t.parse().map_or_else(
+            |_| OutputValue::Str(t.trim_matches('"').to_string()),
+            OutputValue::Num,
+        ),
+    }
 }
 
 /// XOR split asking whether an element has completed in the case: one flow once it has, the

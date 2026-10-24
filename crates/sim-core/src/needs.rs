@@ -123,84 +123,95 @@ pub fn outputs_named<'a>(outputs: &'a [DecisionOutput], variable: &str) -> Vec<&
         .collect()
 }
 
-/// For a split without conditions: the decision output whose values match the names of its
-/// outgoing flows, and the value(s) for each non-default flow. Outputs of decisions evaluated
-/// closer before the split are tried first. A flow name matches a value when both are equal,
-/// or one contains the other, ignoring case, spaces and punctuation ("yes"/"no" also match
-/// true/false). Every non-default flow must match, and no value may match two flows.
-pub fn suggest_output(
-    project: &Project,
-    n: &FlowNode,
-) -> Option<(String, BTreeMap<String, OutputValues>)> {
-    let outputs = decision_outputs(project);
+/// The decision outputs a split in `n`'s process can follow, those of decisions evaluated
+/// closest before `n` first (a breadth-first walk back along incoming flows), then the rest
+/// in model order.
+pub fn outputs_for(project: &Project, n: &FlowNode) -> Vec<DecisionOutput> {
     let order = upstream(project, n);
-    let mut candidates: Vec<&DecisionOutput> = outputs
-        .iter()
+    let mut out: Vec<DecisionOutput> = decision_outputs(project)
+        .into_iter()
         .filter(|o| {
             project
                 .node(&o.task)
                 .is_some_and(|t| t.process == n.process)
-                && o.values.as_ref().is_some_and(|v| !v.is_empty())
         })
         .collect();
-    candidates.sort_by_key(|o| {
+    out.sort_by_key(|o| {
         order
             .iter()
             .position(|t| *t == o.task)
             .unwrap_or(usize::MAX)
     });
-    let flows: Vec<(&QId, String)> = n
+    out
+}
+
+/// For a split without conditions: the first of `outputs_for` whose values match the names
+/// of its outgoing flows (see `match_flows`), and the value(s) for each non-default flow.
+pub fn suggest_output(
+    project: &Project,
+    n: &FlowNode,
+) -> Option<(String, BTreeMap<String, OutputValues>)> {
+    outputs_for(project, n)
+        .iter()
+        .find_map(|o| match_flows(project, n, o).map(|m| (o.variable().to_string(), m)))
+}
+
+/// The value(s) of `o` for each non-default outgoing flow of `n`, by the flows' names: a name
+/// matches a value when both are equal, or else when one contains the other, ignoring case,
+/// spaces and punctuation ("yes"/"no" also match true/false). Every non-default flow must
+/// match, and no value may match two flows.
+pub fn match_flows(
+    project: &Project,
+    n: &FlowNode,
+    o: &DecisionOutput,
+) -> Option<BTreeMap<String, OutputValues>> {
+    let words: Vec<(&Value, String)> = o
+        .values
+        .iter()
+        .flatten()
+        .filter_map(|v| value_word(v).map(|w| (v, w)))
+        .collect();
+    let mut taken: Vec<&Value> = Vec::new();
+    let mut map = BTreeMap::new();
+    for f in n
         .outgoing
         .iter()
         .filter(|f| n.default_flow.as_ref() != Some(*f))
-        .map(|f| {
-            let name = project
+    {
+        let name = normalize(
+            project
                 .flow(f)
                 .and_then(|fl| fl.name.as_deref())
-                .unwrap_or("");
-            (f, normalize(name))
-        })
-        .collect();
-    if flows.iter().any(|(_, name)| name.is_empty()) {
-        return None;
-    }
-    'candidates: for o in candidates {
-        let words: Vec<(&Value, String)> = o
-            .values
+                .unwrap_or(""),
+        );
+        if name.is_empty() {
+            return None;
+        }
+        let mut hits: Vec<&Value> = words
             .iter()
-            .flatten()
-            .filter_map(|v| value_word(v).map(|w| (v, w)))
+            .filter(|(v, w)| *w == name || bool_word(v, &name))
+            .map(|(v, _)| *v)
             .collect();
-        let mut taken: Vec<&Value> = Vec::new();
-        let mut map = BTreeMap::new();
-        for (f, name) in &flows {
-            let mut hits: Vec<&Value> = words
+        if hits.is_empty() {
+            hits = words
                 .iter()
-                .filter(|(v, w)| w == name || bool_word(v, name))
+                .filter(|(_, w)| {
+                    !w.is_empty() && (name.contains(w.as_str()) || w.contains(name.as_str()))
+                })
                 .map(|(v, _)| *v)
                 .collect();
-            if hits.is_empty() {
-                hits = words
-                    .iter()
-                    .filter(|(_, w)| {
-                        !w.is_empty() && (name.contains(w.as_str()) || w.contains(name.as_str()))
-                    })
-                    .map(|(v, _)| *v)
-                    .collect();
-            }
-            if hits.is_empty() || hits.iter().any(|v| taken.contains(v)) {
-                continue 'candidates;
-            }
-            taken.extend(&hits);
-            let literals = hits
-                .iter()
-                .filter_map(|v| OutputValue::from_value(v))
-                .collect();
-            map.insert(f.id.clone(), OutputValues::from_vec(literals));
         }
-        return Some((o.variable().to_string(), map));
+        if hits.is_empty() || hits.iter().any(|v| taken.contains(v)) {
+            return None;
+        }
+        taken.extend(&hits);
+        let literals = hits
+            .iter()
+            .filter_map(|v| OutputValue::from_value(v))
+            .collect();
+        map.insert(f.id.clone(), OutputValues::from_vec(literals));
     }
-    None
+    Some(map)
 }
 
 /// Lower-case letters and digits only.

@@ -12,6 +12,7 @@ use sim_core::pilot::{Pilot, pilot};
 use sim_core::scenario::{CountSpec, NumberSpec, Problem};
 use sim_core::{NodeKind, Project, QId, Scenario};
 
+use crate::editors::value_text;
 use crate::widgets::dist_short;
 
 /// Something in the diagram that takes parameters.
@@ -154,6 +155,26 @@ pub fn overlay(
                 }
                 Need::Branching { inclusive } => {
                     if let Some(g) = key_of(&s.gateways, project, &n.id).map(|k| &s.gateways[&k]) {
+                        if g.by_output() {
+                            let var = g.output.as_deref().unwrap_or("?");
+                            for f in &n.outgoing {
+                                let values =
+                                    g.values.get(&f.id).or_else(|| g.values.get(&f.to_string()));
+                                let text = match values {
+                                    Some(vs) => {
+                                        let parts: Vec<String> =
+                                            vs.as_slice().iter().map(value_text).collect();
+                                        short(&format!("{var} = {}", parts.join(" | ")), 32)
+                                    }
+                                    None if n.default_flow.as_ref() == Some(f) => {
+                                        "otherwise".into()
+                                    }
+                                    None => format!("{var} = ?"),
+                                };
+                                o.flow_badges.insert(f.clone(), text);
+                            }
+                            continue;
+                        }
                         if g.if_completed.is_some() || g.then.is_some() {
                             let asked = g
                                 .if_completed
