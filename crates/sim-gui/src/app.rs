@@ -58,6 +58,7 @@ pub struct App {
     /// What the last "Update from model" (or load) changed, shown in the scenario tab.
     pub update_note: Option<sim_core::needs::Update>,
     pub updater: crate::update::Updater,
+    pub files: crate::platform::Files,
 }
 
 impl Default for App {
@@ -80,6 +81,7 @@ impl Default for App {
             pilot: PilotRunner::default(),
             update_note: None,
             updater: Default::default(),
+            files: Default::default(),
         }
     }
 }
@@ -93,10 +95,16 @@ impl App {
     /// Load a scenario file, replacing the current scenario. A saved scenario counts as
     /// checked; only what it lacks is new.
     pub fn load_scenario(&mut self, f: PathBuf) {
-        match std::fs::read_to_string(&f)
-            .map_err(|e| e.to_string())
-            .and_then(|t| Scenario::from_toml(&t).map_err(|e| e.to_string()))
-        {
+        match std::fs::read_to_string(&f) {
+            Ok(text) => self.load_scenario_text(&text, f),
+            Err(e) => self.status = format!("Could not load scenario: {e}"),
+        }
+    }
+
+    /// Load a scenario from its TOML text. `f` is where it came from; in the browser and for
+    /// the built-in examples that is just the file name (used as the name to save under).
+    pub fn load_scenario_text(&mut self, text: &str, f: PathBuf) {
+        match Scenario::from_toml(text).map_err(|e| e.to_string()) {
             Ok(s) => {
                 self.scenario = s;
                 self.unreviewed.clear();
@@ -107,6 +115,77 @@ impl App {
             }
             Err(e) => self.status = format!("Could not load scenario: {e}"),
         }
+    }
+
+    /// After the model files changed: report, and fit the scenario to the new model.
+    pub fn after_load(&mut self) {
+        self.selected = None;
+        self.status = match &self.ws.load_error {
+            None => format!("Loaded {} file(s).", self.ws.project.files.len()),
+            Some(_) => "Loading failed, see the Model tab.".into(),
+        };
+        if self.ws.load_error.is_some() {
+            return;
+        }
+        if self.scenario_is_pristine() {
+            self.regenerate_skeleton();
+        } else {
+            // Keep what was set; add placeholders for new elements and report removed ones.
+            let u = self.update_from_model();
+            if !u.is_empty() {
+                self.update_note = Some(u);
+            }
+        }
+    }
+
+    /// Act on files picked in a dialog or dropped onto the window.
+    fn handle_files(&mut self, ctx: &egui::Context) {
+        use crate::platform::{Picked, Purpose};
+        self.files.take_dropped(ctx);
+        for (purpose, picked) in self.files.take() {
+            match purpose {
+                Purpose::OpenModel => {
+                    match picked.as_slice() {
+                        // One file on disk: with the files it references from its folder.
+                        [Picked::Path(p)] => self.ws.open(p),
+                        _ => self
+                            .ws
+                            .open_sources(picked.into_iter().map(source).collect()),
+                    }
+                    self.scenario_candidates.clear();
+                    self.after_load();
+                }
+                Purpose::AddModel => {
+                    for p in picked {
+                        self.ws.add(source(p));
+                    }
+                    self.after_load();
+                }
+                Purpose::Scenario => match picked.into_iter().next() {
+                    Some(Picked::Path(p)) => self.load_scenario(p),
+                    Some(Picked::Text { name, text }) => {
+                        self.load_scenario_text(&text, PathBuf::from(name))
+                    }
+                    None => {}
+                },
+            }
+        }
+
+        fn source(p: Picked) -> crate::workspace::Source {
+            match p {
+                Picked::Path(p) => crate::workspace::Source::Path(p),
+                Picked::Text { name, text } => crate::workspace::Source::Text { name, text },
+            }
+        }
+    }
+
+    /// Open a built-in example with its scenario.
+    pub fn open_example(&mut self, e: &crate::examples::Example) {
+        self.ws.open_sources(e.sources());
+        self.after_load();
+        self.scenario_candidates.clear();
+        self.load_scenario_text(e.scenario.1, PathBuf::from(e.scenario.0));
+        self.status = format!("Opened example \"{}\"", e.title);
     }
 
     /// Replace the scenario by placeholders for everything; all of them still to be checked.
@@ -203,6 +282,7 @@ impl eframe::App for App {
 impl App {
     /// One frame of the whole UI (separate from `eframe::App::ui` so tests can drive it).
     pub fn draw(&mut self, ui: &mut egui::Ui) {
+        self.handle_files(ui.ctx());
         self.poll_job();
         self.updater.poll();
         crate::update::banner(self, ui);
@@ -1667,9 +1747,9 @@ mod tests {
         assert_eq!(app.ws.project.dmn.len(), 3);
         let unrelated = app
             .ws
-            .paths
+            .files
             .iter()
-            .position(|p| p.ends_with("unrelated.bpmn"))
+            .position(|f| f.label().ends_with("unrelated.bpmn"))
             .unwrap();
         app.ws.remove(unrelated);
         assert_eq!(app.ws.project.files.len(), 3);
@@ -1695,5 +1775,33 @@ mod tests {
             frames(&mut app, &ctx, 1);
         }
         assert!(app.results.is_none());
+    }
+
+    #[test]
+    fn examples_open_with_their_scenario() {
+        for e in crate::examples::EXAMPLES {
+            let mut app = App::default();
+            app.open_example(e);
+            assert_eq!(app.ws.load_error, None, "{}", e.title);
+            let errors: Vec<_> = sim_core::validate(&app.ws.project)
+                .into_iter()
+                .filter(|i| i.severity == sim_core::Severity::Error)
+                .collect();
+            assert!(errors.is_empty(), "{}: {errors:?}", e.title);
+            assert!(app.scenario.bind(&app.ws.project).is_ok(), "{}", e.title);
+            assert_eq!(app.scenario_path.as_deref(), Some(Path::new(e.scenario.0)));
+        }
+        // The multi-file example has exactly the files its main model needs.
+        let mut needed: Vec<String> =
+            sim_core::discover_files(&fixtures().join("multi-file/main.bpmn"))
+                .unwrap()
+                .iter()
+                .map(|p| p.file_name().unwrap().to_string_lossy().into_owned())
+                .collect();
+        needed.sort();
+        let e = &crate::examples::EXAMPLES[2];
+        let mut have: Vec<_> = e.files.iter().map(|(n, _)| n.to_string()).collect();
+        have.sort();
+        assert_eq!(have, needed);
     }
 }

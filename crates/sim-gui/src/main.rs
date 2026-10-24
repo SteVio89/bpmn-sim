@@ -8,9 +8,11 @@ mod decision_inputs;
 mod diagram_icons;
 mod diagram_panel;
 mod editors;
+mod examples;
 mod job;
 mod manual_panel;
 mod model_panel;
+mod platform;
 mod results_panel;
 mod scenario_panel;
 #[cfg(test)]

@@ -4,14 +4,46 @@ use eframe::egui::{self, RichText, Ui};
 use sim_core::{NodeKind, Severity, validate};
 
 use crate::app::App;
+use crate::examples::EXAMPLES;
+use crate::platform::{self, Purpose};
+
+// The browser cannot look into the folder of an opened file, so there the user selects the
+// main model together with the files it calls.
+#[cfg(not(target_arch = "wasm32"))]
+const OPEN_FILES: &str = "Open file…";
+#[cfg(not(target_arch = "wasm32"))]
+const OPEN_FILES_HINT: &str = "a BPMN file, with the files it calls from the same folder";
+#[cfg(not(target_arch = "wasm32"))]
+const MULTIPLE: bool = false;
+#[cfg(not(target_arch = "wasm32"))]
+const OPEN_FILTER: &platform::Filter = &platform::BPMN;
+#[cfg(target_arch = "wasm32")]
+const OPEN_FILES: &str = "Open files…";
+#[cfg(target_arch = "wasm32")]
+const OPEN_FILES_HINT: &str = "the BPMN model together with the BPMN and DMN files it calls";
+#[cfg(target_arch = "wasm32")]
+const MULTIPLE: bool = true;
+#[cfg(target_arch = "wasm32")]
+const OPEN_FILTER: &platform::Filter = &platform::BPMN_DMN;
+
+/// The built-in examples, each with a short description.
+pub fn examples_menu(app: &mut App, ui: &mut Ui) {
+    for e in EXAMPLES {
+        if ui.button(e.title).on_hover_text(e.description).clicked() {
+            app.open_example(e);
+            ui.close();
+        }
+    }
+}
 
 pub fn show(app: &mut App, ui: &mut Ui) {
     ui.horizontal(|ui| {
+        #[cfg(not(target_arch = "wasm32"))]
         if ui.button("Open folder…").clicked()
             && let Some(dir) = rfd::FileDialog::new().pick_folder()
         {
             app.ws.open(&dir);
-            after_load(app);
+            app.after_load();
             app.scenario_candidates = find_scenarios(&dir);
             if app.ws.load_error.is_none()
                 && let Some(first) = app.scenario_candidates.first().cloned()
@@ -19,23 +51,19 @@ pub fn show(app: &mut App, ui: &mut Ui) {
                 app.load_scenario(first);
             }
         }
-        if ui.button("Open file…").clicked()
-            && let Some(f) = rfd::FileDialog::new()
-                .add_filter("BPMN", &["bpmn"])
-                .pick_file()
+        if ui
+            .button(OPEN_FILES)
+            .on_hover_text(OPEN_FILES_HINT)
+            .clicked()
         {
-            app.ws.open(&f);
-            app.scenario_candidates.clear();
-            after_load(app);
+            app.files
+                .pick(ui.ctx(), Purpose::OpenModel, OPEN_FILTER, MULTIPLE);
         }
-        if ui.button("Add file…").clicked()
-            && let Some(f) = rfd::FileDialog::new()
-                .add_filter("BPMN", &["bpmn", "dmn"])
-                .pick_file()
-        {
-            app.ws.add(f);
-            after_load(app);
+        if ui.button("Add file…").clicked() {
+            app.files
+                .pick(ui.ctx(), Purpose::AddModel, &platform::BPMN_DMN, true);
         }
+        ui.menu_button("Examples", |ui| examples_menu(app, ui));
     });
     if let Some(e) = &app.ws.load_error {
         ui.colored_label(ui.visuals().error_fg_color, e);
@@ -44,7 +72,7 @@ pub fn show(app: &mut App, ui: &mut Ui) {
     egui::ScrollArea::vertical().show(ui, |ui| {
         ui.heading("Files");
         let mut remove = None;
-        for (i, p) in app.ws.paths.iter().enumerate() {
+        for (i, f) in app.ws.files.iter().enumerate() {
             ui.horizontal(|ui| {
                 if ui
                     .small_button("x")
@@ -53,12 +81,12 @@ pub fn show(app: &mut App, ui: &mut Ui) {
                 {
                     remove = Some(i);
                 }
-                ui.label(p.display().to_string());
+                ui.label(f.label());
             });
         }
         if let Some(i) = remove {
             app.ws.remove(i);
-            after_load(app);
+            app.after_load();
         }
 
         let project = app.ws.project.clone();
@@ -181,26 +209,7 @@ pub fn show(app: &mut App, ui: &mut Ui) {
     });
 }
 
-fn after_load(app: &mut App) {
-    app.selected = None;
-    app.status = match &app.ws.load_error {
-        None => format!("Loaded {} file(s).", app.ws.project.files.len()),
-        Some(_) => "Loading failed, see the Model tab.".into(),
-    };
-    if app.ws.load_error.is_some() {
-        return;
-    }
-    if app.scenario_is_pristine() {
-        app.regenerate_skeleton();
-    } else {
-        // Keep what was set; add placeholders for new elements and report removed ones.
-        let u = app.update_from_model();
-        if !u.is_empty() {
-            app.update_note = Some(u);
-        }
-    }
-}
-
+#[cfg(not(target_arch = "wasm32"))]
 /// The `*.toml` files in `dir` that parse as a scenario, in name order. Other TOML files
 /// (a `Cargo.toml`, say) are skipped.
 fn find_scenarios(dir: &std::path::Path) -> Vec<std::path::PathBuf> {

@@ -11,6 +11,7 @@ use sim_core::{FlowNode, Project, Scenario};
 use crate::app::App;
 use crate::configure::{Status, Target, problem_target, statuses};
 use crate::editors;
+use crate::platform::{self, Purpose};
 use crate::widgets::{default_dist, dist_edit, duration_edit, rate_text, text_edit_deferred};
 
 /// A section of elements: title, the elements, which of their needs it shows.
@@ -241,35 +242,27 @@ fn toolbar(app: &mut App, ui: &mut Ui) {
                 app.load_scenario(c);
             }
         }
-        if ui.button("Load scenario…").clicked()
-            && let Some(f) = rfd::FileDialog::new()
-                .add_filter("TOML", &["toml"])
-                .pick_file()
-        {
-            app.load_scenario(f);
+        if ui.button("Load scenario…").clicked() {
+            app.files
+                .pick(ui.ctx(), Purpose::Scenario, &platform::TOML, false);
         }
         if ui.button("Save scenario…").clicked() {
-            let mut dialog = rfd::FileDialog::new()
-                .add_filter("TOML", &["toml"])
-                .set_file_name("scenario.toml");
-            if let Some(p) = &app.scenario_path {
-                dialog = dialog.set_file_name(
-                    p.file_name()
-                        .map(|n| n.to_string_lossy().into_owned())
-                        .unwrap_or_default(),
-                );
-            }
-            if let Some(f) = dialog.save_file() {
-                app.status = match app
-                    .scenario
-                    .to_toml()
-                    .map_err(|e| e.to_string())
-                    .and_then(|t| std::fs::write(&f, t).map_err(|e| e.to_string()))
-                {
-                    Ok(()) => format!("Saved {}", f.display()),
-                    Err(e) => format!("Could not save: {e}"),
-                };
-                app.scenario_path = Some(f);
+            let name = app
+                .scenario_path
+                .as_ref()
+                .and_then(|p| p.file_name())
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_else(|| "scenario.toml".into());
+            let scenario = &app.scenario;
+            match platform::save(&name, Some(&platform::TOML), || {
+                scenario.to_toml().map_err(|e| e.to_string())
+            }) {
+                Some(Ok(f)) => {
+                    app.status = format!("Saved {}", f.display());
+                    app.scenario_path = Some(f);
+                }
+                Some(Err(e)) => app.status = format!("Could not save: {e}"),
+                None => {}
             }
         }
         if ui

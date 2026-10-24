@@ -378,12 +378,10 @@ fn save(
     status: &mut String,
 ) {
     let _ = ui;
-    if let Some(path) = rfd::FileDialog::new().set_file_name(name).save_file() {
-        *status = match content().and_then(|c| std::fs::write(&path, c).map_err(|e| e.to_string()))
-        {
-            Ok(()) => format!("Saved {}", path.display()),
-            Err(e) => format!("Export failed: {e}"),
-        };
+    match crate::platform::save(name, None, content) {
+        Some(Ok(path)) => *status = format!("Saved {}", path.display()),
+        Some(Err(e)) => *status = format!("Export failed: {e}"),
+        None => {}
     }
 }
 
