@@ -1297,7 +1297,8 @@ mod tests {
     }
 
     #[test]
-    fn replay_auto_camera_picks_the_pool_with_the_most_going_on() {
+    fn replay_auto_focus_follows_the_pool_with_the_most_going_on_and_cams_show_the_rest() {
+        use crate::camera;
         let ctx = egui::Context::default();
         let mut app = with_results("multi-file/main.bpmn", "multi-file/scenario.toml");
         app.tab = Tab::Diagram;
@@ -1309,23 +1310,56 @@ mod tests {
         let case: Vec<_> = r.instances.iter().filter(|i| i.case == 0).collect();
         let start = case.iter().map(|i| i.start).fold(f64::INFINITY, f64::min);
         let end = case.iter().filter_map(|i| i.end).fold(start, f64::max);
+        let at = |step: u32| start + (end - start) * f64::from(step) / 400.0;
         let mut followed = std::collections::BTreeSet::new();
         let mut files = std::collections::BTreeSet::new();
+        let (mut cams_seen, mut handed_over) = (false, 0);
+        let mut before = (app.diagram.camera.main, app.diagram.camera.cam_roots());
         for step in 0..=400 {
-            app.diagram.time = start + (end - start) * f64::from(step) / 400.0;
+            app.diagram.time = at(step);
             frame_with(&mut app, &ctx, vec![]);
-            assert!(app.diagram.camera.auto);
-            assert!(app.diagram.camera.cam_roots().is_empty(), "no action cams");
-            followed.extend(app.diagram.camera.main);
+            let cam = &app.diagram.camera;
+            assert!(cam.auto);
+            let (main, cams) = (cam.main, cam.cam_roots());
+            assert!(
+                main.is_none_or(|m| !cams.contains(&m)),
+                "the focus gets no cam"
+            );
+            cams_seen |= !cams.is_empty();
+            // Focus moved to a pool with a cam: the pool focused so far takes that cam.
+            if let ((Some(old), old_cams), Some(new)) = (&before, main)
+                && *old != new
+                && let Some(i) = old_cams.iter().position(|c| *c == new)
+                && i < cams.len()
+            {
+                assert_eq!(cams[i], *old, "step {step}: {old_cams:?} -> {cams:?}");
+                handed_over += 1;
+            }
+            followed.extend(main);
             files.extend(app.diagram.file.clone());
+            before = (main, cams);
         }
-        // It cut between pools and followed them into the called diagrams.
+        // It cut between pools and followed them into the called diagrams; the others had cams.
         assert!(followed.len() > 1, "{followed:?}");
         assert!(files.len() > 1, "{files:?}");
-        // Picking a pool by hand ends auto mode.
-        let pool = *followed.iter().next().unwrap();
-        app.diagram.camera.promote(pool);
+        assert!(cams_seen, "no action cams in auto focus");
+        assert!(handed_over > 0, "no hand-over seen");
+
+        // Clicking a cam follows that pool and ends auto focus; the focused one takes the cam.
+        app.diagram.camera = camera::Camera::default();
+        app.diagram.camera.set_auto();
+        let mut step = 0;
+        while app.diagram.camera.cam_roots().is_empty() && step < 400 {
+            app.diagram.time = at(step);
+            frame_with(&mut app, &ctx, vec![]);
+            step += 1;
+        }
+        let focus = app.diagram.camera.main_root(&r, 0).unwrap();
+        let clicked = app.diagram.camera.cam_roots()[0];
+        camera::follow(&mut app.diagram, &r, clicked);
         assert!(!app.diagram.camera.auto);
+        assert_eq!(app.diagram.camera.main, Some(clicked));
+        assert_eq!(app.diagram.camera.cam_roots()[0], focus);
     }
 
     #[test]

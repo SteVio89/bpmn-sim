@@ -2,7 +2,7 @@
 //! processes it calls, across diagrams; another instance gets a live close-up ("action cam") on
 //! the right when it gets busy where no view shows it, and keeps it while it waits; the rest get
 //! a one-line chip. In auto mode the main view instead picks the instance with the most going on
-//! by itself, without action cams. Views glide (eased) within a diagram and slide over to another
+//! by itself ("auto focus"), the action cams showing the rest as usual. Views glide (eased) within a diagram and slide over to another
 //! diagram; the main view's moves hold the replay clock so nothing happens unseen meanwhile.
 
 use std::collections::BTreeMap;
@@ -53,7 +53,7 @@ pub struct Camera {
     pub on: bool,
     /// Top-level instance the main view follows; `None`: the case's first one.
     pub main: Option<u64>,
-    /// The main view picks the instance to follow by itself (no action cams).
+    /// The main view picks the instance to follow by itself (auto focus).
     pub auto: bool,
     /// Seconds (on screen) the main view has followed `main` in auto mode.
     held: f32,
@@ -128,7 +128,29 @@ impl Camera {
         self.auto = true;
         self.held = HOLD_SECONDS;
         self.paused = false;
-        self.cams.clear();
+    }
+
+    /// The main view follows `to` instead of `from`, which looked at `view` (file, centre):
+    /// `from` takes over `to`'s action cam, looking where the main view looked, so the cams
+    /// keep their places.
+    fn hand_over(&mut self, from: Option<u64>, to: u64, view: Option<(String, Pos2)>) {
+        let Some(i) = self.cams.iter().position(|c| c.root == to) else {
+            return;
+        };
+        match (from.filter(|f| *f != to), view) {
+            (Some(root), Some((file, center))) => {
+                self.cams[i] = Cam {
+                    root,
+                    file,
+                    center,
+                    glide: None,
+                    cut: None,
+                };
+            }
+            _ => {
+                self.cams.remove(i);
+            }
+        }
     }
 
     /// The main view or an action cam is still moving (needs another frame).
@@ -657,6 +679,21 @@ pub fn track_cut(v: &mut DiagramView, before: Option<(String, Vec2, f32)>, dt: f
     }
 }
 
+/// File and diagram point the main view looks at.
+fn main_view(v: &DiagramView) -> Option<(String, Pos2)> {
+    let center = ((v.area.size() / 2.0 - v.pan) / v.zoom).to_pos2();
+    v.file.clone().map(|f| (f, center))
+}
+
+/// Follow `root` with the main view, picked by hand (ends auto focus); the instance followed
+/// so far takes over its action cam.
+pub fn follow(v: &mut DiagramView, r: &ReplicationResult, root: u64) {
+    let from = v.camera.main_root(r, v.case);
+    let view = main_view(v);
+    v.camera.hand_over(from, root, view);
+    v.camera.promote(root);
+}
+
 /// The main view shows the last-moved token of `l`.
 fn shows(v: &DiagramView, project: &Project, l: &Lineage) -> bool {
     token_point(project, &l.focus.place).is_some_and(|(f, p)| {
@@ -687,6 +724,8 @@ pub fn direct(v: &mut DiagramView, project: &Project, lineages: &[Lineage], dt: 
         }
     };
     if switch {
+        let view = main_view(v);
+        v.camera.hand_over(v.camera.main, best.root, view);
         v.camera.main = Some(best.root);
         v.camera.held = 0.0;
         v.camera.glide = None;
