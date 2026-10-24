@@ -8,7 +8,7 @@ description = "Discrete-event simulation of BPMN 2.0 process and collaboration m
 publish = false
 
 [dependencies]
-rand = "0.10.3"
+rand = { version = "0.10.3", default-features = false, features = ["std"] }
 rand_chacha = "0.10.0"
 rand_distr = "0.6.0"
 roxmltree = "0.21.1"
