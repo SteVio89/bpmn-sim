@@ -1,7 +1,7 @@
 //! Replay camera (following cases): the main view follows one instance of the case and the
-//! processes it calls, across diagrams; the other instances whose tokens it does not show get
-//! a live close-up ("action cam") on the right while they are busy, and a one-line chip while
-//! they only wait.
+//! processes it calls, across diagrams; another instance gets a live close-up ("action cam") on
+//! the right when it gets busy where no view shows it, and keeps it while it waits; the rest get
+//! a one-line chip.
 
 use std::collections::BTreeMap;
 
@@ -11,17 +11,24 @@ use sim_core::{EventDef, NodeKind, Project, QId, ReplicationResult, TaskKind};
 
 use crate::diagram_panel::{DiagramView, point_along};
 
-/// Zoom of an action cam (a close-up of the element and its neighbours).
-pub const CAM_ZOOM: f32 = 0.8;
-/// At most this many action cams; further busy instances become chips.
+/// Zoom of an action cam (an element and its neighbourhood).
+pub const CAM_ZOOM: f32 = 0.6;
+/// At most this many action cams; further instances become chips.
 pub const MAX_CAMS: usize = 4;
-/// Width of the column of action cams and chips.
-pub const COLUMN: f32 = 280.0;
-/// Height of an action cam's picture.
-pub const CAM_HEIGHT: f32 = 150.0;
+/// Share of the diagram area the column of action cams and chips takes.
+const COLUMN_SHARE: f32 = 0.22;
+/// Width limits of that column.
+const COLUMN_MIN: f32 = 300.0;
+const COLUMN_MAX: f32 = 560.0;
+/// Height of an action cam's picture per width, and the least it gets.
+const CAM_ASPECT: f32 = 0.62;
+const CAM_MIN_HEIGHT: f32 = 120.0;
+/// Space an action cam takes besides its picture (frame, title, status), and a chip.
+const CAM_EXTRA: f32 = 64.0;
+const CHIP_HEIGHT: f32 = 26.0;
 /// An instance is busy while a token of it works or travels, or moved this long ago (on screen).
 pub const BUSY_SECONDS: f64 = 3.0;
-/// The followed tokens stay this far inside the main view (fraction of its size per side).
+/// The followed tokens stay this far inside a view (fraction of its size per side).
 const MARGIN: f32 = 0.15;
 
 pub struct Camera {
@@ -31,8 +38,10 @@ pub struct Camera {
     pub main: Option<u64>,
     /// Moved by hand: the main view stays until "follow" is pressed.
     pub paused: bool,
-    /// Instances shown as action cams, in the order they appeared.
-    cams: Vec<u64>,
+    /// The action cams, top to bottom.
+    cams: Vec<Cam>,
+    /// Size of an action cam's picture (as last laid out).
+    cam_size: Vec2,
     /// Diagram point the main view is gliding to.
     glide: Option<Pos2>,
     /// The case this state belongs to.
@@ -46,6 +55,7 @@ impl Default for Camera {
             main: None,
             paused: false,
             cams: Vec::new(),
+            cam_size: Vec2::new(COLUMN_MIN, COLUMN_MIN * CAM_ASPECT),
             glide: None,
             case: None,
         }
@@ -69,7 +79,7 @@ impl Camera {
         self.main = Some(root);
         self.paused = false;
         self.glide = None;
-        self.cams.retain(|c| *c != root);
+        self.cams.retain(|c| c.root != root);
     }
 
     /// The top-level instance the main view follows in `case`.
@@ -79,10 +89,52 @@ impl Camera {
             .or_else(|| roots(r, case).first().copied())
     }
 
-    /// The main view is still gliding (needs another frame).
+    /// The main view or an action cam is still gliding (needs another frame).
     pub fn moving(&self) -> bool {
-        self.glide.is_some()
+        self.glide.is_some() || self.cams.iter().any(|c| c.glide.is_some())
     }
+
+    /// The instances shown as action cams, top to bottom.
+    #[cfg(test)]
+    pub fn cam_roots(&self) -> Vec<u64> {
+        self.cams.iter().map(|c| c.root).collect()
+    }
+
+    /// Lay out the side column in `area` (the main view and the column): the main view's part
+    /// and the column's; remembers the size of an action cam's picture for the next frame.
+    pub fn split(&mut self, area: Rect, side: &Side) -> (Rect, Rect) {
+        let width = (area.width() * COLUMN_SHARE)
+            .clamp(COLUMN_MIN, COLUMN_MAX)
+            .min(area.width() - 200.0)
+            .max(0.0);
+        let split = area.right() - width;
+        let main = Rect::from_min_max(area.min, Pos2::new(split - 6.0, area.bottom()));
+        let column = Rect::from_min_max(Pos2::new(split, area.top()), area.max);
+        // Cams fill the column's height (above the chips), up to their aspect ratio.
+        let picture = column.width() - 16.0;
+        let n = side.cams.len().max(1) as f32;
+        let chips = side.chips.len() as f32 * CHIP_HEIGHT;
+        let fit = (column.height() - chips) / n - CAM_EXTRA;
+        self.cam_size = Vec2::new(
+            picture,
+            fit.clamp(CAM_MIN_HEIGHT, (picture * CAM_ASPECT).max(CAM_MIN_HEIGHT)),
+        );
+        (main, column)
+    }
+
+    /// Size of an action cam's picture.
+    pub fn cam_size(&self) -> Vec2 {
+        self.cam_size
+    }
+}
+
+/// An action cam: the instance it shows and the diagram point it looks at.
+struct Cam {
+    root: u64,
+    /// Empty until it is first placed.
+    file: String,
+    center: Pos2,
+    glide: Option<Pos2>,
 }
 
 /// The top-level instances of `case` (its pools and what messages and signals started).
@@ -144,7 +196,49 @@ pub struct Lineage {
     /// How many further tokens it has.
     pub more: usize,
     pub busy: bool,
-    tokens: Vec<TokenView>,
+    /// Its tokens, each with whether it is busy.
+    tokens: Vec<(TokenView, bool)>,
+}
+
+impl Lineage {
+    /// Diagram and token to show, given the diagram a view shows now: the one the last-moved
+    /// token is in, unless a token is busy in the current one (parallel work in several files
+    /// does not make the view jump back and forth).
+    fn view(&self, current: Option<&str>) -> (&str, &TokenView) {
+        let focus_file = file_of(&self.focus.place);
+        if let Some(cur) = current
+            && cur != focus_file
+            && let Some((t, _)) = self
+                .tokens
+                .iter()
+                .filter(|(t, _)| file_of(&t.place) == cur)
+                .filter(|(_, busy)| *busy)
+                .max_by(|(a, _), (b, _)| a.since.total_cmp(&b.since))
+        {
+            return (file_of(&t.place), t);
+        }
+        (focus_file, &self.focus)
+    }
+
+    /// Diagram points of its tokens in `file`.
+    fn points(&self, project: &Project, file: &str) -> Vec<Pos2> {
+        self.tokens
+            .iter()
+            .filter_map(|(t, _)| token_point(project, &t.place))
+            .filter(|(f, _)| f == file)
+            .map(|(_, p)| p)
+            .collect()
+    }
+}
+
+/// The file a token is in.
+fn file_of(place: &TokenPlace) -> &str {
+    match place {
+        TokenPlace::OnFlow { flow, .. } => &flow.file,
+        TokenPlace::Waiting { node } | TokenPlace::Working { node } | TokenPlace::At { node } => {
+            &node.file
+        }
+    }
 }
 
 /// A token waiting at a call activity or subprocess stands for the tokens inside it.
@@ -181,19 +275,23 @@ pub fn lineages(
                     .then(a.instance.cmp(&b.instance))
                     .then(a.token.cmp(&b.token))
             })?;
-            let busy = shown.iter().any(|t| {
-                matches!(
-                    t.place,
-                    TokenPlace::OnFlow { .. } | TokenPlace::Working { .. }
-                ) || t.since >= now - busy_for
-            });
+            let tokens: Vec<(TokenView, bool)> = shown
+                .iter()
+                .map(|t| {
+                    let busy = matches!(
+                        t.place,
+                        TokenPlace::OnFlow { .. } | TokenPlace::Working { .. }
+                    ) || t.since >= now - busy_for;
+                    ((*t).clone(), busy)
+                })
+                .collect();
             Some(Lineage {
                 root,
                 name: name_of(project, r, root),
                 focus: focus.clone(),
                 more: shown.len() - 1,
-                busy,
-                tokens: shown.into_iter().cloned().collect(),
+                busy: tokens.iter().any(|(_, b)| *b),
+                tokens,
             })
         })
         .collect()
@@ -273,6 +371,43 @@ fn callers(r: &ReplicationResult, mut inst: u64) -> Vec<String> {
     out
 }
 
+/// Where a view of `size` at `zoom` first looks at `pts` (diagram points of an instance's
+/// tokens, `p` the one shown): at all of them if they fit, else at `p`.
+fn frame(size: Vec2, zoom: f32, pts: &[Pos2], p: Pos2) -> Pos2 {
+    let inner = size / zoom * (1.0 - 2.0 * MARGIN);
+    let bbox = Rect::from_points(pts);
+    if bbox.width() <= inner.x && bbox.height() <= inner.y {
+        bbox.center()
+    } else {
+        p
+    }
+}
+
+/// Where a view of `size` at `zoom` looking at `center` has to glide so the tokens stay inside
+/// it (`pts` and `p` as in [`frame`]); `None` while they are.
+pub fn glide_target(center: Pos2, size: Vec2, zoom: f32, pts: &[Pos2], p: Pos2) -> Option<Pos2> {
+    let inner = Rect::from_center_size(center, size / zoom * (1.0 - 2.0 * MARGIN));
+    let bbox = Rect::from_points(pts);
+    if bbox.width() <= inner.width() && bbox.height() <= inner.height() {
+        (!inner.contains_rect(bbox)).then(|| bbox.center())
+    } else {
+        (!inner.contains(p)).then_some(p)
+    }
+}
+
+/// Move `center` a step of `dt` seconds towards `glide`; the glide ends on arrival.
+fn glide_step(center: &mut Pos2, glide: &mut Option<Pos2>, zoom: f32, dt: f32) {
+    let Some(g) = *glide else {
+        return;
+    };
+    let k = 1.0 - (-dt * 6.0).exp();
+    *center += (g - *center) * k;
+    if (g - *center).length() * zoom < 0.5 {
+        *center = g;
+        *glide = None;
+    }
+}
+
 /// Move the main view along with the followed instance: into the file its last-moved token is
 /// in, and, within a file, only when its tokens get close to the edge (gliding there).
 pub fn follow_main(
@@ -289,65 +424,52 @@ pub fn follow_main(
     if v.camera.paused || !v.area.is_positive() {
         return;
     }
-    let Some((file, p)) = token_point(project, &l.focus.place) else {
+    let (file, focus) = l.view(v.file.as_deref());
+    let Some((_, p)) = token_point(project, &focus.place) else {
         return;
     };
     if project
         .files
-        .get(&file)
+        .get(file)
         .is_none_or(|f| f.diagram.shapes.is_empty())
     {
         return;
     }
     let size = v.area.size();
-    let pan_to = |c: Pos2, zoom: f32| size / 2.0 - c.to_vec2() * zoom;
-    if v.file.as_ref() != Some(&file) {
-        let mut history = callers(r, l.focus.instance);
-        while history.last() == Some(&file) {
+    let pts = l.points(project, file);
+    if v.file.as_deref() != Some(file) {
+        let mut history = callers(r, focus.instance);
+        while history.last().map(String::as_str) == Some(file) {
             history.pop();
         }
         v.history = history;
-        v.file = Some(file);
+        v.file = Some(file.to_string());
         v.fit = false;
-        v.pan = pan_to(p, v.zoom);
+        v.pan = size / 2.0 - frame(size, v.zoom, &pts, p).to_vec2() * v.zoom;
         v.camera.glide = None;
         return;
     }
-    let screen = |w: Pos2| (v.pan + w.to_vec2() * v.zoom).to_pos2();
-    let inner = Rect::from_min_size(Pos2::ZERO, size).shrink2(size * MARGIN);
-    let pts: Vec<Pos2> = l
-        .tokens
-        .iter()
-        .filter_map(|t| token_point(project, &t.place))
-        .filter(|(f, _)| *f == file)
-        .map(|(_, p)| p)
-        .collect();
-    let bbox = Rect::from_points(&pts);
-    let on_screen = Rect::from_min_max(screen(bbox.min), screen(bbox.max));
-    // All its tokens if they fit, else the one that moved last.
-    let target = if on_screen.width() <= inner.width() && on_screen.height() <= inner.height() {
-        (!inner.contains_rect(on_screen)).then(|| bbox.center())
-    } else {
-        (!inner.contains(screen(p))).then_some(p)
-    };
-    if target.is_some() {
-        v.camera.glide = target;
+    let mut center = ((size / 2.0 - v.pan) / v.zoom).to_pos2();
+    if let Some(t) = glide_target(center, size, v.zoom, &pts, p) {
+        v.camera.glide = Some(t);
     }
-    if let Some(g) = v.camera.glide {
-        let want = pan_to(g, v.zoom);
-        let k = 1.0 - (-dt * 6.0).exp();
-        v.pan += (want - v.pan) * k;
-        if (want - v.pan).length() < 0.5 {
-            v.pan = want;
-            v.camera.glide = None;
-        }
+    if v.camera.glide.is_some() {
+        glide_step(&mut center, &mut v.camera.glide, v.zoom, dt);
+        v.pan = size / 2.0 - center.to_vec2() * v.zoom;
     }
 }
 
-/// The other instances whose last-moved token the main view does not show: busy ones as
-/// action cams (in the order they appeared, at most `MAX_CAMS`), the rest as chips.
+/// An action cam ready to draw: the instance, the token it shows and where it looks.
+pub struct Shot {
+    pub lineage: Lineage,
+    pub focus: TokenView,
+    pub file: String,
+    pub center: Pos2,
+}
+
+/// The other instances: those with an action cam, and the rest as chips.
 pub struct Side {
-    pub cams: Vec<Lineage>,
+    pub cams: Vec<Shot>,
     pub chips: Vec<Lineage>,
 }
 
@@ -357,11 +479,15 @@ impl Side {
     }
 }
 
+/// Update the action cams: an instance that gets busy where no view shows it gets one (taking
+/// the slot of the one that has waited longest when all are taken and one waits), and keeps it
+/// while it waits, until it ends or the main view follows it. Each cam glides like the main view.
 pub fn side(
     v: &mut DiagramView,
     project: &Project,
     r: &ReplicationResult,
     lineages: Vec<Lineage>,
+    dt: f32,
 ) -> Side {
     let main = v.camera.main_root(r, v.case);
     let visible = |l: &Lineage| {
@@ -372,24 +498,143 @@ pub fn side(
     };
     let others: Vec<Lineage> = lineages
         .into_iter()
-        .filter(|l| Some(l.root) != main && !visible(l))
+        .filter(|l| Some(l.root) != main)
         .collect();
-    let busy: Vec<u64> = others.iter().filter(|l| l.busy).map(|l| l.root).collect();
+    let seen: Vec<u64> = others
+        .iter()
+        .filter(|l| visible(l))
+        .map(|l| l.root)
+        .collect();
+    let fresh: Vec<u64> = others
+        .iter()
+        .filter(|l| l.busy && !seen.contains(&l.root))
+        .filter(|l| !v.camera.cams.iter().any(|c| c.root == l.root))
+        .map(|l| l.root)
+        .collect();
+    let of = |root: u64| others.iter().find(|l| l.root == root);
+    let size = v.camera.cam_size;
     let cams = &mut v.camera.cams;
-    cams.retain(|c| busy.contains(c));
-    for b in busy {
-        if !cams.contains(&b) {
-            cams.push(b);
+    cams.retain(|c| of(c.root).is_some());
+    for root in fresh {
+        let cam = Cam {
+            root,
+            file: String::new(),
+            center: Pos2::ZERO,
+            glide: None,
+        };
+        if cams.len() < MAX_CAMS {
+            cams.push(cam);
+        } else if let Some(slot) = cams
+            .iter()
+            .enumerate()
+            .filter_map(|(i, c)| of(c.root).filter(|l| !l.busy).map(|l| (i, l.focus.since)))
+            .min_by(|a, b| a.1.total_cmp(&b.1))
+            .map(|(i, _)| i)
+        {
+            cams[slot] = cam;
         }
     }
-    let shown: Vec<u64> = cams.iter().take(MAX_CAMS).copied().collect();
-    let (mut cams, chips): (Vec<Lineage>, Vec<Lineage>) =
-        others.into_iter().partition(|l| shown.contains(&l.root));
-    cams.sort_by_key(|l| shown.iter().position(|c| *c == l.root));
-    Side { cams, chips }
+    let mut placed = Vec::new();
+    for cam in cams.iter_mut() {
+        let Some(l) = of(cam.root) else { continue };
+        let current = (!cam.file.is_empty()).then_some(cam.file.as_str());
+        let (file, focus) = l.view(current);
+        let Some((_, p)) = token_point(project, &focus.place) else {
+            continue;
+        };
+        let pts = l.points(project, file);
+        if cam.file != file {
+            cam.file = file.to_string();
+            cam.center = frame(size, CAM_ZOOM, &pts, p);
+            cam.glide = None;
+        } else {
+            if let Some(t) = glide_target(cam.center, size, CAM_ZOOM, &pts, p) {
+                cam.glide = Some(t);
+            }
+            glide_step(&mut cam.center, &mut cam.glide, CAM_ZOOM, dt);
+        }
+        placed.push((cam.root, focus.clone(), cam.file.clone(), cam.center));
+    }
+    let mut others = others;
+    let cams = placed
+        .into_iter()
+        .filter_map(|(root, focus, file, center)| {
+            let i = others.iter().position(|l| l.root == root)?;
+            Some(Shot {
+                lineage: others.remove(i),
+                focus,
+                file,
+                center,
+            })
+        })
+        .collect();
+    others.retain(|l| !seen.contains(&l.root));
+    Side {
+        cams,
+        chips: others,
+    }
 }
 
-/// Where an action cam showing a token at diagram point `p` puts its view.
-pub fn cam_pan(size: Vec2, p: Pos2) -> Vec2 {
-    size / 2.0 - p.to_vec2() * CAM_ZOOM
+/// Where an action cam of `size` looking at diagram point `center` puts its view.
+pub fn cam_pan(size: Vec2, center: Pos2) -> Vec2 {
+    size / 2.0 - center.to_vec2() * CAM_ZOOM
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn views_glide_only_when_tokens_near_the_edge() {
+        let size = Vec2::new(300.0, 180.0);
+        let c = Pos2::new(500.0, 300.0);
+        // 500 x 300 diagram units at 0.6, 350 x 210 of them inside the margin.
+        let near = [Pos2::new(600.0, 350.0), Pos2::new(400.0, 260.0)];
+        assert_eq!(glide_target(c, size, 0.6, &near, near[0]), None);
+        // Close to the edge: to the middle of all tokens if they fit.
+        let edge = [Pos2::new(700.0, 300.0), Pos2::new(600.0, 300.0)];
+        assert_eq!(
+            glide_target(c, size, 0.6, &edge, edge[0]),
+            Some(Pos2::new(650.0, 300.0))
+        );
+        // Too far apart: to the token shown, and only once it is close to the edge.
+        let apart = [Pos2::new(100.0, 300.0), Pos2::new(900.0, 300.0)];
+        assert_eq!(
+            glide_target(c, size, 0.6, &apart, Pos2::new(520.0, 300.0)),
+            None
+        );
+        assert_eq!(glide_target(c, size, 0.6, &apart, apart[1]), Some(apart[1]));
+        // The glide eases in and ends on arrival.
+        let (mut at, mut g) = (c, Some(Pos2::new(650.0, 300.0)));
+        glide_step(&mut at, &mut g, 0.6, 0.1);
+        assert!(at.x > 500.0 && at.x < 650.0 && g.is_some(), "{at:?}");
+        for _ in 0..100 {
+            glide_step(&mut at, &mut g, 0.6, 0.1);
+        }
+        assert_eq!((at, g), (Pos2::new(650.0, 300.0), None));
+    }
+
+    #[test]
+    fn the_column_grows_with_the_window_and_cams_fill_it() {
+        let mut cam = Camera::default();
+        let side = Side {
+            cams: Vec::new(),
+            chips: Vec::new(),
+        };
+        let (main, column) = cam.split(
+            Rect::from_min_size(Pos2::ZERO, Vec2::new(2000.0, 900.0)),
+            &side,
+        );
+        assert_eq!(column.width(), 440.0);
+        assert_eq!(main.right(), 2000.0 - 440.0 - 6.0);
+        // One cam: as tall as its aspect ratio allows.
+        assert_eq!(cam.cam_size(), Vec2::new(424.0, 424.0 * CAM_ASPECT));
+        // A small window keeps the column usable and the main view at least 200 wide.
+        let (main, column) = cam.split(
+            Rect::from_min_size(Pos2::ZERO, Vec2::new(450.0, 600.0)),
+            &side,
+        );
+        assert_eq!(column.width(), 250.0);
+        assert!(main.width() >= 190.0);
+    }
 }

@@ -963,7 +963,12 @@ mod tests {
                     .iter()
                     .find(|x| x.case == 0 && x.activity.file == "subprocess-a.bpmn")
                     .unwrap();
-                app.diagram.time = (inside.start + inside.end) / 2.0;
+                // Played up to there, so cams open as the other pools get busy.
+                let to = (inside.start + inside.end) / 2.0;
+                for step in 0..=60 {
+                    app.diagram.time = to * f64::from(step) / 60.0;
+                    r.frame(&ctx, r.input(), |ui| app.draw(ui));
+                }
             } else {
                 app.diagram.metric = Some(sim_core::diagram::HeatMetric::Waiting);
             }
@@ -1171,12 +1176,12 @@ mod tests {
         let busy_for = v.speed_of(&r) * camera::BUSY_SECONDS;
         let lineages = camera::lineages(&project, &r, 0, &tokens, t, busy_for);
         assert!(lineages.iter().any(|l| l.root == ops));
-        let side = camera::side(v, &project, &r, lineages);
+        let side = camera::side(v, &project, &r, lineages, 0.0);
         let shown: Vec<u64> = side
             .cams
             .iter()
-            .chain(&side.chips)
-            .map(|l| l.root)
+            .map(|c| c.lineage.root)
+            .chain(side.chips.iter().map(|l| l.root))
             .collect();
         assert!(shown.contains(&customer), "{shown:?}");
         assert!(!shown.contains(&ops), "the main view shows it");
@@ -1199,6 +1204,50 @@ mod tests {
         for _ in 0..120 {
             frame_with(&mut app, &ctx, vec![]);
         }
+    }
+
+    #[test]
+    fn replay_action_cams_stay_while_their_instance_waits() {
+        use crate::camera;
+        let ctx = egui::Context::default();
+        let mut app = with_results("multi-file/main.bpmn", "multi-file/scenario.toml");
+        app.tab = Tab::Diagram;
+        app.diagram.mode = Mode::Replay;
+        app.diagram.follow = true;
+        frame_with(&mut app, &ctx, vec![]);
+        let r = app.results.as_ref().unwrap().data[0].clone();
+        let case: Vec<_> = r.instances.iter().filter(|i| i.case == 0).collect();
+        let start = case.iter().map(|i| i.start).fold(f64::INFINITY, f64::min);
+        let end = case.iter().filter_map(|i| i.end).fold(start, f64::max);
+        let main = app.diagram.camera.main_root(&r, 0).unwrap();
+        let (followed, travel) = (app.diagram.followed(), app.diagram.travel(&r));
+        let alive = |t: f64| -> Vec<u64> {
+            sim_core::diagram::token_positions(&r, &followed, t, travel)
+                .iter()
+                .map(|tok| camera::root_of(&r, tok.instance))
+                .collect()
+        };
+        let mut before: Vec<u64> = Vec::new();
+        let mut opened = 0;
+        for step in 0..=200 {
+            let t = start + (end - start) * f64::from(step) / 200.0;
+            app.diagram.time = t;
+            frame_with(&mut app, &ctx, vec![]);
+            let now = app.diagram.camera.cam_roots();
+            assert!(!now.contains(&main), "the main view's instance gets no cam");
+            // A cam stays (in its slot) until its instance has no tokens any more.
+            let living = alive(t);
+            let kept: Vec<u64> = before
+                .iter()
+                .copied()
+                .filter(|c| living.contains(c))
+                .collect();
+            let stayed: Vec<u64> = now.iter().copied().filter(|c| kept.contains(c)).collect();
+            assert_eq!(stayed, kept, "at {t}: {before:?} -> {now:?}");
+            opened += now.iter().filter(|c| !before.contains(c)).count();
+            before = now;
+        }
+        assert!(opened > 0, "no action cam opened");
     }
 
     #[test]

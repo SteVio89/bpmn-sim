@@ -22,7 +22,7 @@ use sim_core::{
 };
 
 use crate::app::App;
-use crate::camera::{self, COLUMN, Camera};
+use crate::camera::{self, Camera};
 use crate::configure::{ConfigOverlay, PopoverAction, Status, Target};
 use crate::diagram_icons::{self, Icon};
 use crate::manual_panel::{ManualState, Marks, accent};
@@ -519,10 +519,10 @@ pub fn show(app: &mut App, ui: &mut Ui) {
         let lineages = camera::lineages(&project, r, v.case, &tokens, v.time, busy_for);
         let dt = ui.input(|i| i.stable_dt).min(0.1);
         camera::follow_main(v, &project, r, &lineages, dt);
+        side = Some(camera::side(v, &project, r, lineages, dt)).filter(|s| !s.is_empty());
         if v.camera.moving() {
             ui.ctx().request_repaint();
         }
-        side = Some(camera::side(v, &project, r, lineages)).filter(|s| !s.is_empty());
     }
     // Configure mode: what needs input, the next one, and the quick check.
     let checked = (v.mode == Mode::Configure).then(|| app.scenario.check(&project));
@@ -622,9 +622,8 @@ pub fn show(app: &mut App, ui: &mut Ui) {
     let out = match (&side, result) {
         (Some(s), Some(r)) => {
             let full = ui.available_rect_before_wrap();
-            let split = (full.right() - COLUMN).max(full.left() + 200.0);
-            let main_rect = Rect::from_min_max(full.min, Pos2::new(split - 6.0, full.bottom()));
-            let side_rect = Rect::from_min_max(Pos2::new(split, full.top()), full.max);
+            let (main_rect, side_rect) = v.camera.split(full, s);
+            let cam_size = v.camera.cam_size();
             let out = ui
                 .scope_builder(egui::UiBuilder::new().max_rect(main_rect), |ui| {
                     draw(ui, v, &project, file, &heat_values, &overlay, &marks)
@@ -633,7 +632,9 @@ pub fn show(app: &mut App, ui: &mut Ui) {
             let promoted = ui
                 .scope_builder(egui::UiBuilder::new().max_rect(side_rect), |ui| {
                     egui::ScrollArea::vertical()
-                        .show(ui, |ui| side_column(ui, &project, r, s, &overlay, v.metric))
+                        .show(ui, |ui| {
+                            side_column(ui, &project, r, s, &overlay, v.metric, cam_size)
+                        })
                         .inner
                 })
                 .inner;
@@ -1758,8 +1759,8 @@ pub fn point_along(pts: &[Pos2], fraction: f64) -> Pos2 {
     pts.last().copied().unwrap_or_default()
 }
 
-/// Action cams (a close-up of each busy instance the main view does not show) and chips (the
-/// instances that only wait). Returns the instance clicked to follow it with the main view.
+/// Action cams (a close-up of the instances that got busy where no view showed them) and chips
+/// (the others). Returns the instance clicked to follow it with the main view.
 fn side_column(
     ui: &mut Ui,
     project: &Project,
@@ -1767,9 +1768,11 @@ fn side_column(
     side: &camera::Side,
     overlay: &Overlay,
     metric: Option<HeatMetric>,
+    cam_size: Vec2,
 ) -> Option<u64> {
     let mut promoted = None;
-    for l in &side.cams {
+    for shot in &side.cams {
+        let l = &shot.lineage;
         ui.group(|ui| {
             let title = match l.more {
                 0 => l.name.clone(),
@@ -1778,23 +1781,21 @@ fn side_column(
             let head = ui
                 .add(egui::Label::new(RichText::new(title).strong()).sense(Sense::click()))
                 .on_hover_text("follow this one in the main view");
-            ui.label(RichText::new(camera::status(project, &l.focus)).small());
-            let Some((name, p)) = camera::token_point(project, &l.focus.place) else {
+            ui.label(RichText::new(camera::status(project, &shot.focus)).small());
+            let name = &shot.file;
+            let Some(f) = project.files.get(name) else {
                 return;
             };
-            let Some(f) = project.files.get(&name) else {
-                return;
-            };
-            let size = Vec2::new(ui.available_width(), camera::CAM_HEIGHT);
+            let size = Vec2::new(ui.available_width(), cam_size.y);
             let mut cam = DiagramView {
                 file: Some(name.clone()),
                 zoom: camera::CAM_ZOOM,
-                pan: camera::cam_pan(size, p),
+                pan: camera::cam_pan(size, shot.center),
                 fit: false,
                 mode: Mode::Replay,
                 ..DiagramView::default()
             };
-            let heat_values = metric.map_or_else(BTreeMap::new, |m| heat(project, &name, r, m));
+            let heat_values = metric.map_or_else(BTreeMap::new, |m| heat(project, name, r, m));
             let out = ui
                 .allocate_ui(size, |ui| {
                     draw(
