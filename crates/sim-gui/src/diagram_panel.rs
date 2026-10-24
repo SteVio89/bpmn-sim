@@ -255,7 +255,13 @@ impl DiagramView {
                 .trace
                 .iter()
                 .filter(|e| cases.contains(&e.case))
-                .flat_map(|e| [e.time, e.time + travel]);
+                .flat_map(|e| {
+                    // A token leaving a join is held there until the merged ones are drawn
+                    // arriving, so it may still travel one more `travel` after they are gone.
+                    let held = matches!(e.kind, sim_core::TraceKind::Gone)
+                        .then_some(e.time + 2.0 * travel);
+                    [e.time, e.time + travel].into_iter().chain(held)
+                });
             let tasks = r
                 .records
                 .iter()

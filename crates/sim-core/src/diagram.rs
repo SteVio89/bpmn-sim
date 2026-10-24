@@ -135,16 +135,23 @@ pub struct TokenView {
 
 /// Positions of the tokens of `cases` at time `t`, from the token trace. Moving from one element
 /// to the next takes no simulated time; for display a token is shown travelling along the flow
-/// during `travel` seconds after it arrived.
+/// during `travel` seconds after it arrived. A token leaving a join is held there until every
+/// token it merged has been drawn arriving, so it never runs ahead of its own inputs.
 pub fn token_positions(
     r: &ReplicationResult,
     cases: &std::collections::BTreeSet<u64>,
     t: f64,
     travel: f64,
 ) -> Vec<TokenView> {
-    use crate::stats::TraceKind;
+    use crate::stats::{TraceEvent, TraceKind};
+    struct Seen<'a> {
+        arrive: &'a TraceEvent,
+        /// The arrival before `arrive`.
+        prev: Option<&'a TraceEvent>,
+        gone: Option<f64>,
+    }
     // Last arrival and whether the token is gone, per (instance, token).
-    let mut last: BTreeMap<(u64, u64), (&crate::stats::TraceEvent, Option<f64>)> = BTreeMap::new();
+    let mut last: BTreeMap<(u64, u64), Seen> = BTreeMap::new();
     for e in r.trace.iter().take_while(|e| e.time <= t) {
         if !cases.contains(&e.case) {
             continue;
@@ -152,26 +159,66 @@ pub fn token_positions(
         let key = (e.instance, e.token);
         match &e.kind {
             TraceKind::Arrive { .. } => {
-                last.insert(key, (e, None));
+                let prev = last.get(&key).map(|s| s.arrive);
+                last.insert(
+                    key,
+                    Seen {
+                        arrive: e,
+                        prev,
+                        gone: None,
+                    },
+                );
             }
             TraceKind::Gone => {
                 if let Some(entry) = last.get_mut(&key) {
-                    entry.1 = Some(e.time);
+                    entry.gone = Some(e.time);
                 }
             }
         }
     }
+    fn node_of(e: &TraceEvent) -> Option<&QId> {
+        match &e.kind {
+            TraceKind::Arrive { node, .. } => Some(node),
+            TraceKind::Gone => None,
+        }
+    }
+    // When the token is shown leaving the element it arrived from: at a join that merged other
+    // tokens just then, not before the last of them (and itself) was drawn reaching it.
+    let departs = |(instance, token): (u64, u64), s: &Seen| {
+        let Some(prev) = s.prev else {
+            return s.arrive.time;
+        };
+        let merged = last
+            .iter()
+            .filter(|((i, k), o)| {
+                *i == instance
+                    && *k != token
+                    && o.gone == Some(s.arrive.time)
+                    && node_of(o.arrive) == node_of(prev)
+            })
+            .map(|(_, o)| o.arrive.time + travel)
+            .fold(None, |m: Option<f64>, x| Some(m.map_or(x, |m| m.max(x))));
+        merged.map_or(s.arrive.time, |m| {
+            m.max(prev.time + travel).max(s.arrive.time)
+        })
+    };
     let mut out = Vec::new();
-    for ((instance, token), (e, gone)) in last {
+    for (&(instance, token), s) in &last {
+        let leaves = departs((instance, token), s);
+        // Still held at the join: shown as it was after its previous arrival.
+        let (e, since, gone) = match s.prev {
+            Some(prev) if t < leaves => (prev, prev.time, None),
+            _ => (s.arrive, leaves, s.gone),
+        };
         let TraceKind::Arrive { node, via } = &e.kind else {
             continue;
         };
-        let travelling = via.as_ref().filter(|_| t - e.time < travel);
+        let travelling = via.as_ref().filter(|_| t - since < travel);
         let place = match travelling {
             Some(flow) => TokenPlace::OnFlow {
                 flow: flow.clone(),
                 fraction: if travel > 0.0 {
-                    (t - e.time) / travel
+                    (t - since) / travel
                 } else {
                     1.0
                 },
@@ -196,7 +243,7 @@ pub fn token_positions(
             instance,
             token,
             place,
-            since: e.time,
+            since,
         });
     }
     out

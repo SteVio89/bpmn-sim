@@ -107,9 +107,10 @@ fn positions_follow_the_trace() {
     assert_eq!(at(5.0, 1.0), ["working Task_A", "working Task_B"]);
     // A waits at the join until B arrives.
     assert_eq!(at(15.0, 1.0), ["at Join", "working Task_B"]);
-    // B is drawn running into the join while the merged token already leaves for the end;
-    // after that only nothing is left.
-    assert_eq!(at(20.5, 1.0), ["F4:0.50", "F5:0.50"]);
+    // B is drawn running into the join; the merged token waits there until B is drawn
+    // arriving, then leaves for the end; after that nothing is left.
+    assert_eq!(at(20.5, 1.0), ["F4:0.50", "at Join"]);
+    assert_eq!(at(21.5, 1.0), ["F5:0.50"]);
     assert!(at(22.0, 1.0).is_empty());
     assert!(at(-1.0, 1.0).is_empty());
     // Untraced cases have no positions.
