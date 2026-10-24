@@ -327,6 +327,8 @@ impl Scenario {
                         GatewaySpec {
                             label: n.name.clone(),
                             probabilities: flows.iter().map(|f| (f.id.clone(), p)).collect(),
+                            if_completed: None,
+                            then: None,
                         },
                     );
                 }

@@ -1,0 +1,65 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Two pools started together. A makes something and signals it; B looks whether it is there
+     yet (Gateway_Ready asks the case's history) and either goes on or waits for the signal. -->
+<bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL" id="Defs_History" targetNamespace="test">
+  <bpmn:collaboration id="Collab">
+    <bpmn:participant id="Pool_A" name="A" processRef="Process_A" />
+    <bpmn:participant id="Pool_B" name="B" processRef="Process_B" />
+  </bpmn:collaboration>
+  <bpmn:signal id="Signal_Made" name="made" />
+  <bpmn:process id="Process_A">
+    <bpmn:startEvent id="Start_A">
+      <bpmn:outgoing>Flow_a1</bpmn:outgoing>
+      <bpmn:timerEventDefinition />
+    </bpmn:startEvent>
+    <bpmn:task id="Task_Make" name="Make">
+      <bpmn:incoming>Flow_a1</bpmn:incoming>
+      <bpmn:outgoing>Flow_a2</bpmn:outgoing>
+    </bpmn:task>
+    <bpmn:endEvent id="End_Made" name="Made">
+      <bpmn:incoming>Flow_a2</bpmn:incoming>
+      <bpmn:signalEventDefinition signalRef="Signal_Made" />
+    </bpmn:endEvent>
+    <bpmn:sequenceFlow id="Flow_a1" sourceRef="Start_A" targetRef="Task_Make" />
+    <bpmn:sequenceFlow id="Flow_a2" sourceRef="Task_Make" targetRef="End_Made" />
+  </bpmn:process>
+  <bpmn:process id="Process_B">
+    <bpmn:startEvent id="Start_B">
+      <bpmn:outgoing>Flow_b1</bpmn:outgoing>
+      <bpmn:timerEventDefinition />
+    </bpmn:startEvent>
+    <bpmn:task id="Task_Look" name="Look">
+      <bpmn:incoming>Flow_b1</bpmn:incoming>
+      <bpmn:outgoing>Flow_b2</bpmn:outgoing>
+    </bpmn:task>
+    <bpmn:exclusiveGateway id="Gateway_Ready" name="Ready?" default="Flow_yes">
+      <bpmn:incoming>Flow_b2</bpmn:incoming>
+      <bpmn:outgoing>Flow_yes</bpmn:outgoing>
+      <bpmn:outgoing>Flow_no</bpmn:outgoing>
+    </bpmn:exclusiveGateway>
+    <bpmn:intermediateCatchEvent id="Catch_Made" name="Made">
+      <bpmn:incoming>Flow_no</bpmn:incoming>
+      <bpmn:outgoing>Flow_b3</bpmn:outgoing>
+      <bpmn:signalEventDefinition signalRef="Signal_Made" />
+    </bpmn:intermediateCatchEvent>
+    <bpmn:exclusiveGateway id="Gateway_Merge">
+      <bpmn:incoming>Flow_yes</bpmn:incoming>
+      <bpmn:incoming>Flow_b3</bpmn:incoming>
+      <bpmn:outgoing>Flow_b4</bpmn:outgoing>
+    </bpmn:exclusiveGateway>
+    <bpmn:task id="Task_Use" name="Use">
+      <bpmn:incoming>Flow_b4</bpmn:incoming>
+      <bpmn:outgoing>Flow_b5</bpmn:outgoing>
+    </bpmn:task>
+    <bpmn:endEvent id="End_B">
+      <bpmn:incoming>Flow_b5</bpmn:incoming>
+    </bpmn:endEvent>
+    <bpmn:sequenceFlow id="Flow_b1" sourceRef="Start_B" targetRef="Task_Look" />
+    <bpmn:sequenceFlow id="Flow_b2" sourceRef="Task_Look" targetRef="Gateway_Ready" />
+    <bpmn:sequenceFlow id="Flow_yes" name="yes" sourceRef="Gateway_Ready" targetRef="Gateway_Merge" />
+    <bpmn:sequenceFlow id="Flow_no" name="no" sourceRef="Gateway_Ready" targetRef="Catch_Made" />
+    <bpmn:sequenceFlow id="Flow_b3" sourceRef="Catch_Made" targetRef="Gateway_Merge" />
+    <bpmn:sequenceFlow id="Flow_b4" sourceRef="Gateway_Merge" targetRef="Task_Use" />
+    <bpmn:sequenceFlow id="Flow_b5" sourceRef="Task_Use" targetRef="End_B" />
+  </bpmn:process>
+</bpmn:definitions>

@@ -389,7 +389,14 @@ pub struct ActivitySpec {
 pub struct GatewaySpec {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub label: Option<String>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub probabilities: BTreeMap<String, f64>,
+    /// Instead of probabilities (XOR split with two flows): take `then` once this element has
+    /// completed in the case, the other flow until then.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub if_completed: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub then: Option<String>,
 }
 
 impl Scenario {
@@ -446,6 +453,8 @@ pub struct BoundModel<'p> {
     pub activities: BTreeMap<QId, ActivityCfg>,
     /// XOR split -> (outgoing flow, probability), in model order.
     pub gateways: BTreeMap<QId, Vec<(QId, f64)>>,
+    /// XOR splits decided by whether an element has completed in the case.
+    pub history: BTreeMap<QId, HistoryCfg>,
     /// Inclusive (OR) split -> independent flow probabilities and the default flow.
     pub inclusive: BTreeMap<QId, InclusiveCfg>,
     /// Splits whose flows' conditions decide (no `[gateways]` entry, every flow has a condition).
@@ -466,6 +475,15 @@ pub struct BoundModel<'p> {
     /// Processes that take part in the run (triggered, or reached by messages/signals).
     pub active: Vec<QId>,
     pub warnings: Vec<String>,
+}
+
+/// An XOR split that asks whether `element` has completed in the case: `then` if it has,
+/// `otherwise` until then.
+#[derive(Debug, Clone)]
+pub struct HistoryCfg {
+    pub element: QId,
+    pub then: QId,
+    pub otherwise: QId,
 }
 
 #[derive(Debug, Clone)]
@@ -1483,6 +1501,7 @@ impl Scenario {
         // Split probabilities: XOR splits need one per flow summing to 1; inclusive (OR) splits
         // take each flow independently with its probability, except the default flow.
         let mut gateways = BTreeMap::new();
+        let mut history = BTreeMap::new();
         let mut inclusive = BTreeMap::new();
         let mut conditions = BTreeMap::new();
         let mut gw_specs: BTreeMap<QId, &GatewaySpec> = BTreeMap::new();
@@ -1547,7 +1566,7 @@ impl Scenario {
                 warnings.at(
                     &n.id,
                     format!(
-                        "{}: the [gateways] probabilities are used instead of the flow conditions",
+                        "{}: the [gateways] entry is used instead of the flow conditions",
                         n.id
                     ),
                 );
@@ -1561,6 +1580,15 @@ impl Scenario {
                 ));
                 continue;
             };
+            if spec.if_completed.is_some() || spec.then.is_some() {
+                match history_cfg(project, n, spec) {
+                    Ok(cfg) => {
+                        history.insert(n.id.clone(), cfg);
+                    }
+                    Err(e) => errors.at(&n.id, format!("{} ({}): {e}", n.id, n.label())),
+                }
+                continue;
+            }
             let default = n.default_flow.clone().filter(|_| is_or);
             let mut by_flow: BTreeMap<QId, f64> = BTreeMap::new();
             for (k, p) in &spec.probabilities {
@@ -1625,6 +1653,17 @@ impl Scenario {
                 continue;
             };
             let rule = match gw_specs.get(&n.id) {
+                Some(spec) if spec.if_completed.is_some() || spec.then.is_some() => {
+                    errors.at(
+                        &n.id,
+                        format!(
+                            "{} ({}): if_completed only works for an XOR split with two outgoing flows",
+                            n.id,
+                            n.label()
+                        ),
+                    );
+                    continue;
+                }
                 Some(spec) => {
                     let mut by_flow: BTreeMap<QId, f64> = BTreeMap::new();
                     for (k, p) in &spec.probabilities {
@@ -1726,6 +1765,7 @@ impl Scenario {
             pools,
             activities,
             gateways,
+            history,
             inclusive,
             conditions,
             activity_splits,
@@ -1769,6 +1809,39 @@ pub fn receives_messages(n: &FlowNode) -> bool {
             .any(|d| matches!(d, EventDef::Message(_))),
         _ => false,
     }
+}
+
+/// An XOR split decided by whether `if_completed` has completed in the case (`[gateways]`
+/// entry with `if_completed` and `then`).
+fn history_cfg(project: &Project, n: &FlowNode, spec: &GatewaySpec) -> Result<HistoryCfg, String> {
+    if n.kind != NodeKind::ExclusiveGateway || n.outgoing.len() != 2 {
+        return Err("if_completed only works for an XOR split with two outgoing flows".into());
+    }
+    if !spec.probabilities.is_empty() {
+        return Err("give either probabilities or if_completed, not both".into());
+    }
+    let (Some(element), Some(then)) = (&spec.if_completed, &spec.then) else {
+        return Err("if_completed and then go together: the element to ask about and the flow to take once it has completed".into());
+    };
+    let element = resolve(project, element, "if_completed: element")?;
+    let then = match then.split_once('#') {
+        Some((f, i)) => QId::new(f, i),
+        None => QId::new(&n.id.file, then),
+    };
+    let Some(otherwise) = n.outgoing.iter().find(|f| **f != then).cloned() else {
+        return Err("the two outgoing flows are the same".into());
+    };
+    if !n.outgoing.contains(&then) {
+        return Err(format!(
+            "then: '{}' is not an outgoing flow of this gateway",
+            then.id
+        ));
+    }
+    Ok(HistoryCfg {
+        element,
+        then,
+        otherwise,
+    })
 }
 
 fn resolve_participant(project: &Project, key: &str) -> Result<QId, String> {

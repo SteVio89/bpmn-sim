@@ -53,6 +53,8 @@ struct Case {
     open_instances: usize,
     cost: f64,
     completion: Option<f64>,
+    /// Elements that history gateways ask about and that have completed in this case.
+    completed: BTreeSet<QId>,
 }
 
 struct Token {
@@ -215,6 +217,8 @@ pub struct Engine<'a> {
     signal_starts: BTreeMap<String, Vec<QId>>,
     /// Inclusive join -> every element from which a token can still reach it.
     or_reach: BTreeMap<QId, BTreeSet<QId>>,
+    /// Elements whose completion a history gateway asks about.
+    watched: BTreeSet<QId>,
 }
 
 /// Run all replications; replication `i` uses seed `seed + i`.
@@ -335,6 +339,7 @@ impl<'a> Engine<'a> {
             link_catch,
             signal_starts,
             or_reach,
+            watched: m.history.values().map(|h| h.element.clone()).collect(),
         }
     }
 
@@ -383,6 +388,7 @@ impl<'a> Engine<'a> {
             open_instances: 0,
             cost: 0.0,
             completion: None,
+            completed: BTreeSet::new(),
         });
         self.started += 1;
 
@@ -546,6 +552,7 @@ impl<'a> Engine<'a> {
             }
             match &node.kind {
                 NodeKind::EndEvent => {
+                    self.mark_completed(inst, &node_id);
                     self.throw(inst, node);
                     if !self.alive(inst, tok) {
                         continue;
@@ -604,6 +611,7 @@ impl<'a> Engine<'a> {
                             None => self.consume(inst, tok, &mut work),
                         }
                     } else {
+                        self.mark_completed(inst, &node_id);
                         self.throw(inst, node);
                         if let Some(EventDef::Escalation(code)) = first_def
                             && self.alive(inst, tok)
@@ -832,6 +840,16 @@ impl<'a> Engine<'a> {
             self.send_along(inst, tok, node, flows, work);
             return;
         }
+        if let Some(h) = self.m.history.get(&node.id) {
+            let case = self.instances[inst].case;
+            let flow = if self.cases[case].completed.contains(&h.element) {
+                h.then.clone()
+            } else {
+                h.otherwise.clone()
+            };
+            self.send_along(inst, tok, node, vec![flow], work);
+            return;
+        }
         if let Some(cfg) = self.m.conditions.get(&node.id) {
             let vars = &self.instances[inst].variables;
             let mut chosen: Vec<QId> = cfg
@@ -912,6 +930,7 @@ impl<'a> Engine<'a> {
         flows: Vec<QId>,
         work: &mut Vec<Work>,
     ) {
+        self.mark_completed(inst, &node.id);
         if flows.is_empty() {
             // Implicit end (validation warns about it).
             self.consume(inst, tok, work);
@@ -1864,6 +1883,10 @@ impl<'a> Engine<'a> {
         let Some(node) = m.project.node(&node_id) else {
             return;
         };
+        // Before its messages go out, so a receiver that asks already sees it done.
+        if !self.is_iteration(inst, tok) {
+            self.mark_completed(inst, &node_id);
+        }
         if node.kind == NodeKind::Task(TaskKind::Send) {
             self.throw(inst, node);
         }
@@ -2187,6 +2210,14 @@ impl<'a> Engine<'a> {
             receivers,
             started,
         });
+    }
+
+    /// Remember that `node` completed in the instance's case, if a history gateway asks.
+    fn mark_completed(&mut self, inst: usize, node: &QId) {
+        if self.watched.contains(node) {
+            let case = self.instances[inst].case;
+            self.cases[case].completed.insert(node.clone());
+        }
     }
 
     fn check_completion(&mut self, inst: usize) {
