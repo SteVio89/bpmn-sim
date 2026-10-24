@@ -16,7 +16,7 @@ flate2 = "1.1.10"
 rfd = "0.17.2"
 serde_json = "1.0.154"
 sha2 = "0.11.1"
-sim-core = { version = "0.2.0", path = "../sim-core" }
+sim-core = { version = "0.3.0", path = "../sim-core" }
 tar = "0.4.46"
 toml = "1.1.8"
 ureq = "3.5.0"
