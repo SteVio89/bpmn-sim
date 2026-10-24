@@ -156,7 +156,7 @@ fn unresolved_call_activities_are_reported_not_fatal() {
     assert!(
         validate(&p)
             .iter()
-            .any(|i| i.severity == Severity::Error && i.message.contains("Process_Nope"))
+            .any(|i| i.severity == Severity::Warning && i.message.contains("Process_Nope"))
     );
 }
 

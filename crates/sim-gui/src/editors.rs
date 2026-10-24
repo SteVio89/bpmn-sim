@@ -600,9 +600,7 @@ pub fn pool_editor(ui: &mut Ui, project: &Project, s: &mut Scenario, name: &str)
     let calendars: Vec<String> = s.calendars.keys().cloned().collect();
     let users: Vec<&str> = project
         .nodes()
-        .filter(|n| {
-            matches!(n.kind, NodeKind::Task(_)) && needs(project, n).contains(&Need::Duration)
-        })
+        .filter(|n| needs(project, n).contains(&Need::Duration))
         .filter(|n| {
             let over = key_of(&s.activities, project, &n.id)
                 .and_then(|k| s.activities.get(&k))

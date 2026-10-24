@@ -51,6 +51,8 @@ pub fn needs(project: &Project, n: &FlowNode) -> Vec<Need> {
     match &n.kind {
         NodeKind::Task(TaskKind::Receive) => {}
         NodeKind::Task(_) => out.push(Need::Duration),
+        // A call activity whose process is not loaded runs as a task.
+        NodeKind::CallActivity if !calls_loaded_process(project, n) => out.push(Need::Duration),
         NodeKind::ExclusiveGateway | NodeKind::InclusiveGateway if n.outgoing.len() > 1 => {
             // A split whose every (non-default) flow has a condition is decided by them.
             let conditioned = n
@@ -132,6 +134,13 @@ pub fn needs(project: &Project, n: &FlowNode) -> Vec<Need> {
         }
     }
     out
+}
+
+/// Whether `n` is a call activity whose called process is loaded.
+pub fn calls_loaded_process(project: &Project, n: &FlowNode) -> bool {
+    n.called_element
+        .as_ref()
+        .is_some_and(|c| project.processes.contains_key(c))
 }
 
 /// The resource pool a task uses unless the scenario overrides it: its lane, else its pool.
@@ -392,7 +401,7 @@ impl Scenario {
                 }
             }
         }
-        if matches!(n.kind, NodeKind::Task(k) if k != TaskKind::Receive) {
+        if needs(project, n).contains(&Need::Duration) {
             let spec =
                 key_of(&self.activities, project, &n.id).and_then(|k| self.activities.get(&k));
             let pool = spec

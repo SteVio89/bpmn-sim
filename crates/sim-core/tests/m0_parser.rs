@@ -140,15 +140,18 @@ fn duplicate_process_id_names_both_files() {
 }
 
 #[test]
-fn unresolved_call_activity_is_an_error_without_the_child_file() {
+fn unresolved_call_activity_is_a_warning_without_the_child_file() {
+    // The scenario decides: a duration runs the call activity as a task, otherwise binding fails.
     let mut p = Project::new();
     p.add_path(&fixture("multi-file/main.bpmn")).unwrap();
     let issues = validate(&p);
-    assert_eq!(
-        issues
-            .iter()
-            .filter(|i| i.severity == Severity::Error)
-            .count(),
-        2
+    let unresolved = issues
+        .iter()
+        .filter(|i| i.message.contains("is not defined in any loaded file"));
+    assert_eq!(unresolved.clone().count(), 2);
+    assert!(
+        unresolved
+            .into_iter()
+            .all(|i| i.severity == Severity::Warning)
     );
 }

@@ -590,6 +590,10 @@ impl<'a> Engine<'a> {
                 }
                 NodeKind::Task(_) => self.request_task(inst, tok, node),
                 NodeKind::SubProcess => self.enter_scope(inst, tok, node, &mut work),
+                // A call activity whose process is not loaded runs as a task.
+                NodeKind::CallActivity if m.activities.contains_key(&node_id) => {
+                    self.request_task(inst, tok, node)
+                }
                 NodeKind::CallActivity => self.call(inst, tok, node),
                 NodeKind::IntermediateCatchEvent => match first_def {
                     Some(EventDef::Signal(name)) => {

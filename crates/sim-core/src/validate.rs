@@ -129,9 +129,11 @@ pub fn validate(project: &Project) -> Vec<Issue> {
                     "call activity has no called process id".into(),
                 ),
                 Some(p) if !project.processes.contains_key(p) => push(
-                    Severity::Error,
+                    Severity::Warning,
                     n,
-                    format!("called process '{p}' is not defined in any loaded file"),
+                    format!(
+                        "called process '{p}' is not defined in any loaded file; the simulation runs the call activity as a task if the scenario gives it a duration"
+                    ),
                 ),
                 Some(_) => {}
             }

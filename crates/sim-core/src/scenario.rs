@@ -11,6 +11,7 @@ use thiserror::Error;
 use crate::calendar::{Calendar, CalendarSpec, SimClock};
 use crate::dist::{Dist, DistSpec, parse_duration};
 use crate::model::*;
+use crate::needs::calls_loaded_process;
 use crate::project::Project;
 
 #[derive(Debug, Error)]
@@ -964,6 +965,13 @@ impl Scenario {
             }
         }
 
+        // Elements with an [activities] entry (checked below, with the tasks).
+        let configured_keys: Vec<QId> = self
+            .activities
+            .keys()
+            .filter_map(|k| resolve(project, k, "activity").ok())
+            .collect();
+
         // Link events, subprocess starts, catch-event delays and boundary events.
         for n in &nodes {
             if n.kind == NodeKind::IntermediateThrowEvent {
@@ -994,10 +1002,12 @@ impl Scenario {
                     .as_ref()
                     .and_then(|c| project.processes.get(c))
                 {
+                    // Runs as a task with its [activities] entry (checked with the tasks).
+                    None if configured_keys.contains(&n.id) => {}
                     None => errors.at(
                         &n.id,
                         format!(
-                            "{} ({}): called process {} is not defined in any loaded file",
+                            "{} ({}): called process {} is not defined in any loaded file; load the file that defines it, or give the call activity an [activities] entry with a duration to run it as a task",
                             n.id,
                             n.label(),
                             n.called_element.as_deref().unwrap_or("(none)")
@@ -1193,7 +1203,12 @@ impl Scenario {
         for (key, spec) in &self.activities {
             match resolve(project, key, "activity") {
                 Ok(q) => {
-                    if !matches!(project.node(&q).map(|n| &n.kind), Some(NodeKind::Task(_))) {
+                    let Some(n) = project.node(&q) else { continue };
+                    if n.kind == NodeKind::CallActivity && calls_loaded_process(project, n) {
+                        warnings.at(&q, format!(
+                            "[activities.{key}]: '{q}' calls a loaded process, which runs instead; the entry is ignored"
+                        ));
+                    } else if !matches!(n.kind, NodeKind::Task(_) | NodeKind::CallActivity) {
                         errors.at(&q, format!("[activities.{key}]: '{q}' is not a task"));
                     } else if configured.insert(q.clone(), spec).is_some() {
                         errors.at(&q, format!("[activities.{key}]: '{q}' is configured twice"));
@@ -1204,10 +1219,14 @@ impl Scenario {
         }
 
         let mut activities = BTreeMap::new();
-        for n in nodes
-            .iter()
-            .filter(|n| matches!(n.kind, NodeKind::Task(k) if k != TaskKind::Receive))
-        {
+        for n in nodes.iter().filter(|n| match n.kind {
+            NodeKind::Task(k) => k != TaskKind::Receive,
+            // A call activity whose process is not loaded runs as a task (or is an error).
+            NodeKind::CallActivity => {
+                !calls_loaded_process(project, n) && configured.contains_key(&n.id)
+            }
+            _ => false,
+        }) {
             let Some(spec) = configured.get(&n.id) else {
                 errors.at(
                     &n.id,
