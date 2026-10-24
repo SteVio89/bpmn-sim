@@ -59,9 +59,9 @@ cargo run --release -p sim-gui
    uses are loaded from the same folder automatically) or a whole folder. Validation problems
    are listed there. The scenario starts with placeholders for everything the model needs.
 2. **Diagram, Configure:** click a task, gateway, start event, timer, lane or pool to set its
-   duration, branching, arrivals or resources in an editor next to it. Placeholders still to
-   check are outlined, "Next" leads through them, and a quick check in the background shows
-   the load per resource pool and the cycle time after every change.
+   duration, branching, arrivals or resources and working hours in an editor next to it.
+   Placeholders still to check are outlined, "Next" leads through them, and a quick check in
+   the background shows the load per resource pool and the cycle time after every change.
 3. **Scenario:** the same parameters as tables, plus working hours, decision inputs and
    messages. "Update from model" adds what a changed model needs and keeps your values.
    Scenarios are saved as TOML files.

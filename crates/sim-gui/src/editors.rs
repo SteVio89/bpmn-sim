@@ -1,7 +1,10 @@
 //! Editors for what one element takes from the scenario, shared by the configuration popover
 //! in the diagram and the scenario tab.
 
+use std::collections::BTreeMap;
+
 use eframe::egui::{self, ComboBox, DragValue, Id, RichText, Sense, Ui};
+use sim_core::calendar::{Calendar, CalendarSpec, SimClock};
 use sim_core::needs::{
     DecisionOutput, Need, default_pool, is_arrival_start, key_of, match_flows, needs, outputs_for,
     suggest_output,
@@ -830,9 +833,80 @@ fn start_delay_editor(
     }
 }
 
-/// A resource pool: number of resources, cost and calendar; lists the tasks using it.
+/// The working hours a new calendar starts with: Mon–Fri 09:00–17:00.
+pub fn office_hours() -> CalendarSpec {
+    CalendarSpec {
+        days: ["mon", "tue", "wed", "thu", "fri"]
+            .map(String::from)
+            .to_vec(),
+        hours: "09:00-17:00".into(),
+    }
+}
+
+/// The working days and hours of calendar `name`, and what is wrong with them.
+pub fn calendar_fields(ui: &mut Ui, name: &str, c: &mut CalendarSpec) {
+    ui.horizontal_wrapped(|ui| {
+        for day in ["mon", "tue", "wed", "thu", "fri", "sat", "sun"] {
+            let mut on = c.days.iter().any(|d| d.eq_ignore_ascii_case(day));
+            if ui.checkbox(&mut on, day).changed() {
+                c.days.retain(|d| !d.eq_ignore_ascii_case(day));
+                if on {
+                    c.days.push(day.to_string());
+                }
+            }
+        }
+    });
+    ui.horizontal(|ui| {
+        ui.label("hours");
+        ui.text_edit_singleline(&mut c.hours)
+            .on_hover_text("e.g. 09:00-12:00,13:00-17:00");
+    });
+    // The weekday of the start does not change whether the calendar is valid.
+    let clock = SimClock::parse("2024-01-01").expect("valid date");
+    if let Err(e) = Calendar::new(name, c, clock) {
+        ui.colored_label(ui.visuals().error_fg_color, e);
+    }
+}
+
+/// Picks the working hours of a pool: "always", one of `calendars`, or a new one
+/// (Mon–Fri 09:00–17:00) added to `calendars` on the spot.
+pub fn calendar_select(
+    ui: &mut Ui,
+    pool: &str,
+    calendar: &mut Option<String>,
+    calendars: &mut BTreeMap<String, CalendarSpec>,
+) {
+    let mut new = false;
+    ComboBox::from_id_salt(("cal", pool))
+        .selected_text(calendar.clone().unwrap_or_else(|| "always".into()))
+        .show_ui(ui, |ui| {
+            ui.selectable_value(calendar, None, "always");
+            for c in calendars.keys() {
+                ui.selectable_value(calendar, Some(c.clone()), c);
+            }
+            new = ui
+                .selectable_label(false, "new…")
+                .on_hover_text("new working hours, Mon–Fri 09:00–17:00")
+                .clicked();
+        });
+    if new {
+        *calendar = Some(add_calendar(calendars));
+    }
+}
+
+/// Adds office hours under a free name ("office", "office 2", ...) and returns the name.
+pub fn add_calendar(calendars: &mut BTreeMap<String, CalendarSpec>) -> String {
+    let name = std::iter::once("office".to_string())
+        .chain((2..).map(|i| format!("office {i}")))
+        .find(|n| !calendars.contains_key(n))
+        .expect("unbounded");
+    calendars.insert(name.clone(), office_hours());
+    name
+}
+
+/// A resource pool: number of resources, cost and working hours (editable in place);
+/// lists the tasks using it.
 pub fn pool_editor(ui: &mut Ui, project: &Project, s: &mut Scenario, name: &str) {
-    let calendars: Vec<String> = s.calendars.keys().cloned().collect();
     let users: Vec<&str> = project
         .nodes()
         .filter(|n| needs(project, n).contains(&Need::Duration))
@@ -844,10 +918,15 @@ pub fn pool_editor(ui: &mut Ui, project: &Project, s: &mut Scenario, name: &str)
         })
         .map(|n| n.label())
         .collect();
-    let Some(r) = s.resources.get_mut(name) else {
+    let Scenario {
+        resources,
+        calendars,
+        ..
+    } = s;
+    let Some(r) = resources.get_mut(name) else {
         ui.label(RichText::new("Not a resource pool of the scenario.").weak());
         if ui.button("Add as resource pool").clicked() {
-            s.resources.insert(
+            resources.insert(
                 name.to_string(),
                 ResourceSpec {
                     count: 1,
@@ -872,16 +951,38 @@ pub fn pool_editor(ui: &mut Ui, project: &Project, s: &mut Scenario, name: &str)
             );
             ui.end_row();
             ui.label("Working hours");
-            ComboBox::from_id_salt(("cal", name))
-                .selected_text(r.calendar.clone().unwrap_or_else(|| "always".into()))
-                .show_ui(ui, |ui| {
-                    ui.selectable_value(&mut r.calendar, None, "always");
-                    for c in &calendars {
-                        ui.selectable_value(&mut r.calendar, Some(c.clone()), c);
-                    }
-                });
+            calendar_select(ui, name, &mut r.calendar, calendars);
             ui.end_row();
         });
+    if let Some(c) = r.calendar.clone() {
+        let shared: Vec<&str> = resources
+            .iter()
+            .filter(|(p, o)| p.as_str() != name && o.calendar.as_ref() == Some(&c))
+            .map(|(p, _)| p.as_str())
+            .collect();
+        match calendars.get_mut(&c) {
+            Some(spec) => {
+                ui.group(|ui| {
+                    calendar_fields(ui, &c, spec);
+                    if !shared.is_empty() {
+                        ui.label(
+                            RichText::new(format!("also the hours of {}", shared.join(", ")))
+                                .small()
+                                .weak(),
+                        );
+                    }
+                });
+            }
+            None => {
+                ui.horizontal(|ui| {
+                    ui.colored_label(ui.visuals().error_fg_color, format!("'{c}' is not defined"));
+                    if ui.small_button("define").clicked() {
+                        calendars.insert(c.clone(), office_hours());
+                    }
+                });
+            }
+        }
+    }
     if users.is_empty() {
         ui.label(RichText::new("No task uses this pool.").small().weak());
     } else {

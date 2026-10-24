@@ -1,7 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use eframe::egui::{self, ComboBox, DragValue, Id, RichText, Ui};
-use sim_core::calendar::CalendarSpec;
 use sim_core::dist::{Seconds, format_duration, parse_duration};
 use sim_core::needs::{Need, default_pool, is_arrival_start, key_of, needs};
 use sim_core::scenario::{
@@ -490,7 +489,6 @@ fn resources(
     status: &BTreeMap<Target, Status>,
     jump: &mut Option<Target>,
 ) {
-    let calendars: Vec<String> = s.calendars.keys().cloned().collect();
     let names: Vec<String> = s.resources.keys().cloned().collect();
     let mut remove = None;
     egui::Grid::new("resources").striped(true).show(ui, |ui| {
@@ -503,21 +501,19 @@ fn resources(
             let t = Target::Pool(name.clone());
             name_cell(ui, &name, &t, status, jump);
             tracked(s, unreviewed, std::slice::from_ref(&t), |s| {
-                let r = s.resources.get_mut(&name).expect("listed");
+                let Scenario {
+                    resources,
+                    calendars,
+                    ..
+                } = s;
+                let r = resources.get_mut(&name).expect("listed");
                 ui.add(DragValue::new(&mut r.count).range(1..=10_000));
                 ui.add(
                     DragValue::new(&mut r.cost_per_hour)
                         .speed(0.5)
                         .range(0.0..=f64::MAX),
                 );
-                ComboBox::from_id_salt(("cal", &name))
-                    .selected_text(r.calendar.clone().unwrap_or_else(|| "always".into()))
-                    .show_ui(ui, |ui| {
-                        ui.selectable_value(&mut r.calendar, None, "always");
-                        for c in &calendars {
-                            ui.selectable_value(&mut r.calendar, Some(c.clone()), c);
-                        }
-                    });
+                editors::calendar_select(ui, &name, &mut r.calendar, calendars);
             });
             if ui.small_button("remove").clicked() {
                 remove = Some(name.clone());
@@ -584,22 +580,7 @@ fn calendars(ui: &mut Ui, s: &mut Scenario) {
                     remove = Some(name.clone());
                 }
             });
-            ui.horizontal(|ui| {
-                for day in ["mon", "tue", "wed", "thu", "fri", "sat", "sun"] {
-                    let mut on = c.days.iter().any(|d| d.eq_ignore_ascii_case(day));
-                    if ui.checkbox(&mut on, day).changed() {
-                        c.days.retain(|d| !d.eq_ignore_ascii_case(day));
-                        if on {
-                            c.days.push(day.to_string());
-                        }
-                    }
-                }
-            });
-            ui.horizontal(|ui| {
-                ui.label("hours");
-                ui.text_edit_singleline(&mut c.hours)
-                    .on_hover_text("e.g. 09:00-12:00,13:00-17:00");
-            });
+            editors::calendar_fields(ui, name, c);
         });
     }
     if let Some(n) = remove {
@@ -616,12 +597,7 @@ fn calendars(ui: &mut Ui, s: &mut Scenario) {
         if ui.button("Add working hours").clicked() && !name.trim().is_empty() {
             s.calendars
                 .entry(name.trim().to_string())
-                .or_insert(CalendarSpec {
-                    days: ["mon", "tue", "wed", "thu", "fri"]
-                        .map(String::from)
-                        .to_vec(),
-                    hours: "09:00-17:00".into(),
-                });
+                .or_insert_with(editors::office_hours);
             name.clear();
         }
     });

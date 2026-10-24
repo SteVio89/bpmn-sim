@@ -1045,6 +1045,36 @@ mod tests {
     }
 
     #[test]
+    fn pool_editor_defines_and_edits_working_hours() {
+        let ctx = egui::Context::default();
+        let mut app = App::default();
+        app.ws.open(&fixtures().join("v13-model.bpmn"));
+        app.regenerate_skeleton();
+        app.tab = Tab::Diagram;
+        app.diagram.mode = Mode::Configure;
+        let cals = &mut app.scenario.calendars;
+        assert_eq!(crate::editors::add_calendar(cals), "office");
+        assert_eq!(crate::editors::add_calendar(cals), "office 2");
+        assert_eq!(cals["office"], crate::editors::office_hours());
+        cals.get_mut("office 2").unwrap().hours = "17:00-09:00".into();
+        // Shared, invalid and undefined working hours all draw in the pool's editor.
+        for (clerks, experts) in [
+            ("office", "office"),
+            ("office 2", "office"),
+            ("night", "office"),
+        ] {
+            app.scenario.resources.get_mut("Clerks").unwrap().calendar = Some(clerks.into());
+            app.scenario.resources.get_mut("Experts").unwrap().calendar = Some(experts.into());
+            app.focus(Target::Pool("Clerks".into()));
+            frame_with(&mut app, &ctx, vec![]);
+            frame_with(&mut app, &ctx, vec![]);
+            assert_eq!(app.diagram.target, Some(Target::Pool("Clerks".into())));
+        }
+        app.tab = Tab::Scenario;
+        frame_with(&mut app, &ctx, vec![]);
+    }
+
+    #[test]
     fn configure_mode_opens_editors_by_clicking() {
         let ctx = egui::Context::default();
         let mut app = App::default();
