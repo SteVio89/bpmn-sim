@@ -1,6 +1,6 @@
 //! Small editing widgets.
 
-use egui::{ComboBox, DragValue, Id, Ui};
+use egui::{ComboBox, DragValue, Id, Response, Ui};
 use sim_core::dist::{DistSpec, Seconds};
 
 const UNITS: [(&str, f64); 5] = [
@@ -18,6 +18,25 @@ fn natural_unit(secs: f64) -> usize {
         .unwrap_or(0)
 }
 
+/// A number field that only writes the value back once typing is done (Enter or focus lost),
+/// so a half-typed "1" on the way to "15" is never seen as a max below the min.
+pub fn drag_f64(
+    ui: &mut Ui,
+    v: &mut f64,
+    style: impl FnOnce(DragValue<'_>) -> DragValue<'_>,
+) -> Response {
+    let key = ui.next_auto_id();
+    let mut local = ui.data(|d| d.get_temp::<f64>(key)).unwrap_or(*v);
+    let r = ui.add(style(DragValue::new(&mut local)));
+    if r.has_focus() && !r.dragged() && !r.lost_focus() {
+        ui.data_mut(|d| d.insert_temp(key, local));
+    } else {
+        ui.data_mut(|d| d.remove_temp::<f64>(key));
+        *v = local;
+    }
+    r
+}
+
 /// Amount plus unit picker. The chosen unit is remembered per widget id.
 pub fn duration_edit(ui: &mut Ui, id: Id, value: &mut Seconds) {
     let unit_id = id.with("unit");
@@ -26,10 +45,9 @@ pub fn duration_edit(ui: &mut Ui, id: Id, value: &mut Seconds) {
         .unwrap_or_else(|| natural_unit(value.0));
     let factor = UNITS[unit].1;
     let mut amount = value.0 / factor;
-    if ui
-        .add(DragValue::new(&mut amount).speed(0.1).range(0.0..=f64::MAX))
-        .changed()
-    {
+    let before_amount = amount;
+    drag_f64(ui, &mut amount, |d| d.speed(0.1).range(0.0..=f64::MAX));
+    if amount != before_amount {
         value.0 = amount * factor;
     }
     let before = unit;

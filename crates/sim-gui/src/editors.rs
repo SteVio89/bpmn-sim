@@ -17,7 +17,7 @@ use sim_core::{EventDef, FlowNode, NodeKind, Project, QId, Scenario};
 
 use crate::configure::{find_node, node_kind_name};
 use crate::diagram_panel::case_color;
-use crate::widgets::{default_dist, dist_edit, dist_preview, rate_text};
+use crate::widgets::{default_dist, dist_edit, dist_preview, drag_f64, rate_text};
 
 /// How an outgoing flow reads: its name, else "to <target>".
 pub fn flow_label(project: &Project, f: &QId) -> String {
@@ -689,9 +689,9 @@ fn count_editor(ui: &mut Ui, id: &QId, m: &mut MultiInstanceSpec) {
                 ui.add(DragValue::new(n).range(0..=10_000));
             }
             CountSpec::Dist(NumberSpec::Uniform { min, max }) => {
-                ui.add(DragValue::new(min).range(0.0..=10_000.0));
+                drag_f64(ui, min, |d| d.range(0.0..=10_000.0));
                 ui.label("and");
-                ui.add(DragValue::new(max).range(0.0..=10_000.0));
+                drag_f64(ui, max, |d| d.range(0.0..=10_000.0));
             }
             CountSpec::Dist(n) => number_fields(ui, n),
         }
@@ -1108,7 +1108,7 @@ pub fn black_box_editor(ui: &mut Ui, s: &mut Scenario, id: &QId) {
 pub fn number_fields(ui: &mut Ui, n: &mut NumberSpec) {
     let num = |ui: &mut Ui, label: &str, v: &mut f64| {
         ui.label(label);
-        ui.add(DragValue::new(v).speed(0.5));
+        drag_f64(ui, v, |d| d.speed(0.5));
     };
     match n {
         NumberSpec::Fixed { value } => num(ui, "value", value),
