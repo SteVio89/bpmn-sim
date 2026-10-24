@@ -1251,6 +1251,38 @@ mod tests {
     }
 
     #[test]
+    fn replay_auto_camera_picks_the_pool_with_the_most_going_on() {
+        let ctx = egui::Context::default();
+        let mut app = with_results("multi-file/main.bpmn", "multi-file/scenario.toml");
+        app.tab = Tab::Diagram;
+        app.diagram.mode = Mode::Replay;
+        app.diagram.follow = true;
+        frame_with(&mut app, &ctx, vec![]);
+        app.diagram.camera.set_auto();
+        let r = app.results.as_ref().unwrap().data[0].clone();
+        let case: Vec<_> = r.instances.iter().filter(|i| i.case == 0).collect();
+        let start = case.iter().map(|i| i.start).fold(f64::INFINITY, f64::min);
+        let end = case.iter().filter_map(|i| i.end).fold(start, f64::max);
+        let mut followed = std::collections::BTreeSet::new();
+        let mut files = std::collections::BTreeSet::new();
+        for step in 0..=400 {
+            app.diagram.time = start + (end - start) * f64::from(step) / 400.0;
+            frame_with(&mut app, &ctx, vec![]);
+            assert!(app.diagram.camera.auto);
+            assert!(app.diagram.camera.cam_roots().is_empty(), "no action cams");
+            followed.extend(app.diagram.camera.main);
+            files.extend(app.diagram.file.clone());
+        }
+        // It cut between pools and followed them into the called diagrams.
+        assert!(followed.len() > 1, "{followed:?}");
+        assert!(files.len() > 1, "{files:?}");
+        // Picking a pool by hand ends auto mode.
+        let pool = *followed.iter().next().unwrap();
+        app.diagram.camera.promote(pool);
+        assert!(!app.diagram.camera.auto);
+    }
+
+    #[test]
     fn pool_editor_defines_and_edits_working_hours() {
         let ctx = egui::Context::default();
         let mut app = App::default();

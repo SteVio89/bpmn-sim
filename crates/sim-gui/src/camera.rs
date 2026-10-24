@@ -1,7 +1,8 @@
 //! Replay camera (following cases): the main view follows one instance of the case and the
 //! processes it calls, across diagrams; another instance gets a live close-up ("action cam") on
 //! the right when it gets busy where no view shows it, and keeps it while it waits; the rest get
-//! a one-line chip.
+//! a one-line chip. In auto mode the main view instead picks the instance with the most going on
+//! by itself, without action cams.
 
 use std::collections::BTreeMap;
 
@@ -28,6 +29,10 @@ const CAM_EXTRA: f32 = 64.0;
 const CHIP_HEIGHT: f32 = 26.0;
 /// An instance is busy while a token of it works or travels, or moved this long ago (on screen).
 pub const BUSY_SECONDS: f64 = 3.0;
+/// Auto mode stays with an instance at least this long (on screen) while something happens there.
+pub const HOLD_SECONDS: f32 = 3.0;
+/// Auto mode switches only to an instance this much more interesting than the current one.
+const SWITCH_MARGIN: f32 = 0.5;
 /// The followed tokens stay this far inside a view (fraction of its size per side).
 const MARGIN: f32 = 0.15;
 
@@ -36,6 +41,10 @@ pub struct Camera {
     pub on: bool,
     /// Top-level instance the main view follows; `None`: the case's first one.
     pub main: Option<u64>,
+    /// The main view picks the instance to follow by itself (no action cams).
+    pub auto: bool,
+    /// Seconds (on screen) the main view has followed `main` in auto mode.
+    held: f32,
     /// Moved by hand: the main view stays until "follow" is pressed.
     pub paused: bool,
     /// The action cams, top to bottom.
@@ -53,6 +62,8 @@ impl Default for Camera {
         Self {
             on: true,
             main: None,
+            auto: false,
+            held: HOLD_SECONDS,
             paused: false,
             cams: Vec::new(),
             cam_size: Vec2::new(COLUMN_MIN, COLUMN_MIN * CAM_ASPECT),
@@ -68,6 +79,7 @@ impl Camera {
         if self.case.is_some_and(|c| c != case) {
             *self = Self {
                 on: self.on,
+                auto: self.auto,
                 ..Self::default()
             };
         }
@@ -76,6 +88,7 @@ impl Camera {
 
     /// Follow `root` with the main view.
     pub fn promote(&mut self, root: u64) {
+        self.auto = false;
         self.main = Some(root);
         self.paused = false;
         self.glide = None;
@@ -87,6 +100,14 @@ impl Camera {
         self.main
             .filter(|m| r.instances.get(*m as usize).is_some_and(|i| i.case == case))
             .or_else(|| roots(r, case).first().copied())
+    }
+
+    /// Let the main view pick the instance to follow.
+    pub fn set_auto(&mut self) {
+        self.auto = true;
+        self.held = HOLD_SECONDS;
+        self.paused = false;
+        self.cams.clear();
     }
 
     /// The main view or an action cam is still gliding (needs another frame).
@@ -196,7 +217,7 @@ pub struct Lineage {
     /// How many further tokens it has.
     pub more: usize,
     pub busy: bool,
-    /// Its tokens, each with whether it is busy.
+    /// Its tokens, each with whether it arrived just now.
     tokens: Vec<(TokenView, bool)>,
 }
 
@@ -212,12 +233,44 @@ impl Lineage {
                 .tokens
                 .iter()
                 .filter(|(t, _)| file_of(&t.place) == cur)
-                .filter(|(_, busy)| *busy)
+                .filter(|(t, recent)| is_busy(t, *recent))
                 .max_by(|(a, _), (b, _)| a.since.total_cmp(&b.since))
         {
             return (file_of(&t.place), t);
         }
         (focus_file, &self.focus)
+    }
+
+    /// How much is going on: travelling tokens most, then tokens that just arrived (more at
+    /// events and gateways), tokens being worked on, and least tokens queued for staff.
+    fn interest(&self, project: &Project) -> f32 {
+        self.tokens
+            .iter()
+            .map(|(t, recent)| match &t.place {
+                TokenPlace::OnFlow { .. } => 3.0,
+                TokenPlace::Waiting { node }
+                | TokenPlace::Working { node }
+                | TokenPlace::At { node }
+                    if *recent =>
+                {
+                    let event = project.node(node).is_some_and(|n| {
+                        n.kind.is_gateway()
+                            || matches!(
+                                n.kind,
+                                NodeKind::StartEvent
+                                    | NodeKind::EndEvent
+                                    | NodeKind::IntermediateCatchEvent
+                                    | NodeKind::IntermediateThrowEvent
+                                    | NodeKind::BoundaryEvent
+                            )
+                    });
+                    if event { 3.0 } else { 2.0 }
+                }
+                TokenPlace::Working { .. } => 1.0,
+                TokenPlace::Waiting { .. } => 0.3,
+                TokenPlace::At { .. } => 0.0,
+            })
+            .fold(0.0, f32::max)
     }
 
     /// Diagram points of its tokens in `file`.
@@ -229,6 +282,15 @@ impl Lineage {
             .map(|(_, p)| p)
             .collect()
     }
+}
+
+/// A token is busy while it travels or is worked on, or just after it arrived.
+fn is_busy(t: &TokenView, recent: bool) -> bool {
+    recent
+        || matches!(
+            t.place,
+            TokenPlace::OnFlow { .. } | TokenPlace::Working { .. }
+        )
 }
 
 /// The file a token is in.
@@ -277,20 +339,14 @@ pub fn lineages(
             })?;
             let tokens: Vec<(TokenView, bool)> = shown
                 .iter()
-                .map(|t| {
-                    let busy = matches!(
-                        t.place,
-                        TokenPlace::OnFlow { .. } | TokenPlace::Working { .. }
-                    ) || t.since >= now - busy_for;
-                    ((*t).clone(), busy)
-                })
+                .map(|t| ((*t).clone(), t.since >= now - busy_for))
                 .collect();
             Some(Lineage {
                 root,
                 name: name_of(project, r, root),
                 focus: focus.clone(),
                 more: shown.len() - 1,
-                busy: tokens.iter().any(|(_, b)| *b),
+                busy: tokens.iter().any(|(t, recent)| is_busy(t, *recent)),
                 tokens,
             })
         })
@@ -459,6 +515,42 @@ pub fn follow_main(
     }
 }
 
+/// The main view shows the last-moved token of `l`.
+fn shows(v: &DiagramView, project: &Project, l: &Lineage) -> bool {
+    token_point(project, &l.focus.place).is_some_and(|(f, p)| {
+        v.file.as_ref() == Some(&f) && v.area.contains(v.area.min + v.pan + p.to_vec2() * v.zoom)
+    })
+}
+
+/// Auto mode: pick the instance the main view follows. It stays with the current one for
+/// `HOLD_SECONDS` while something happens there, and then switches only to one with clearly
+/// more going on (one the view already shows counts a little more, it needs no cut).
+pub fn direct(v: &mut DiagramView, project: &Project, lineages: &[Lineage], dt: f32) {
+    if v.camera.paused {
+        return;
+    }
+    v.camera.held += dt;
+    let score = |l: &Lineage| l.interest(project) + if shows(v, project, l) { 0.5 } else { 0.0 };
+    let Some(best) = lineages.iter().max_by(|a, b| score(a).total_cmp(&score(b))) else {
+        return;
+    };
+    let current = lineages.iter().find(|l| Some(l.root) == v.camera.main);
+    let switch = match current {
+        None => true,
+        Some(c) if c.root == best.root => false,
+        Some(c) => {
+            let now = score(c);
+            let free = v.camera.held >= HOLD_SECONDS || c.interest(project) == 0.0;
+            free && score(best) > now + SWITCH_MARGIN
+        }
+    };
+    if switch {
+        v.camera.main = Some(best.root);
+        v.camera.held = 0.0;
+        v.camera.glide = None;
+    }
+}
+
 /// An action cam ready to draw: the instance, the token it shows and where it looks.
 pub struct Shot {
     pub lineage: Lineage,
@@ -490,12 +582,7 @@ pub fn side(
     dt: f32,
 ) -> Side {
     let main = v.camera.main_root(r, v.case);
-    let visible = |l: &Lineage| {
-        token_point(project, &l.focus.place).is_some_and(|(f, p)| {
-            v.file.as_ref() == Some(&f)
-                && v.area.contains(v.area.min + v.pan + p.to_vec2() * v.zoom)
-        })
-    };
+    let visible = |l: &Lineage| shows(v, project, l);
     let others: Vec<Lineage> = lineages
         .into_iter()
         .filter(|l| Some(l.root) != main)
@@ -612,6 +699,79 @@ mod tests {
             glide_step(&mut at, &mut g, 0.6, 0.1);
         }
         assert_eq!((at, g), (Pos2::new(650.0, 300.0), None));
+    }
+
+    fn lineage(root: u64, place: TokenPlace, recent: bool) -> Lineage {
+        let t = TokenView {
+            case: 0,
+            instance: root,
+            token: 0,
+            place,
+            since: 0.0,
+        };
+        Lineage {
+            root,
+            name: String::new(),
+            focus: t.clone(),
+            more: 0,
+            busy: is_busy(&t, recent),
+            tokens: vec![(t, recent)],
+        }
+    }
+
+    #[test]
+    fn auto_mode_holds_a_shot_and_then_cuts_to_more_action() {
+        let project = Project::default();
+        let q = |id: &str| QId {
+            file: "m.bpmn".into(),
+            id: id.into(),
+        };
+        let mut v = DiagramView::default();
+        v.camera.set_auto();
+        let working = lineage(1, TokenPlace::Working { node: q("Task") }, false);
+        let moving = lineage(
+            2,
+            TokenPlace::OnFlow {
+                flow: q("Flow"),
+                fraction: 0.5,
+            },
+            false,
+        );
+        let ls = [working, moving];
+        // Nothing followed yet: the most interesting one at once.
+        direct(&mut v, &project, &ls, 0.1);
+        assert_eq!(v.camera.main, Some(2));
+        // Following the worked-on one: it stays for the hold time, then cuts to the moving one.
+        v.camera.main = Some(1);
+        v.camera.held = 0.0;
+        for _ in 0..29 {
+            direct(&mut v, &project, &ls, 0.1);
+            assert_eq!(v.camera.main, Some(1));
+        }
+        direct(&mut v, &project, &ls, 0.2);
+        assert_eq!(v.camera.main, Some(2));
+        assert_eq!(v.camera.held, 0.0);
+        // Nothing happens at the followed one any more: no need to hold.
+        let idle = lineage(1, TokenPlace::At { node: q("Catch") }, false);
+        let ls = [
+            idle,
+            lineage(2, TokenPlace::Working { node: q("Task") }, false),
+        ];
+        v.camera.main = Some(1);
+        direct(&mut v, &project, &ls, 0.1);
+        assert_eq!(v.camera.main, Some(2));
+        // About as much going on: no cut back and forth.
+        let ls = [
+            lineage(1, TokenPlace::Working { node: q("A") }, true),
+            lineage(2, TokenPlace::Working { node: q("B") }, true),
+        ];
+        v.camera.held = 10.0;
+        direct(&mut v, &project, &ls, 0.1);
+        assert_eq!(v.camera.main, Some(2));
+        // Moved by hand: auto mode waits for "follow" too.
+        v.camera.paused = true;
+        direct(&mut v, &project, &ls, 0.1);
+        assert_eq!(v.camera.main, Some(2));
     }
 
     #[test]

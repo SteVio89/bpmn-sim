@@ -518,8 +518,13 @@ pub fn show(app: &mut App, ui: &mut Ui) {
         let busy_for = v.speed_of(r) * camera::BUSY_SECONDS;
         let lineages = camera::lineages(&project, r, v.case, &tokens, v.time, busy_for);
         let dt = ui.input(|i| i.stable_dt).min(0.1);
+        if v.camera.auto {
+            camera::direct(v, &project, &lineages, dt);
+        }
         camera::follow_main(v, &project, r, &lineages, dt);
-        side = Some(camera::side(v, &project, r, lineages, dt)).filter(|s| !s.is_empty());
+        if !v.camera.auto {
+            side = Some(camera::side(v, &project, r, lineages, dt)).filter(|s| !s.is_empty());
+        }
         if v.camera.moving() {
             ui.ctx().request_repaint();
         }
@@ -1919,17 +1924,28 @@ fn replay_controls(ui: &mut Ui, v: &mut DiagramView, project: &Project, r: &Repl
             }
             v.camera.reset_for(v.case);
             let main = v.camera.main_root(r, v.case);
-            let mut picked = main;
+            let name = main.map(|m| camera::name_of(project, r, m)).unwrap_or_default();
+            let auto = v.camera.auto;
             egui::ComboBox::from_id_salt("camera-main")
-                .selected_text(main.map(|m| camera::name_of(project, r, m)).unwrap_or_default())
+                .selected_text(if auto { format!("auto · {name}") } else { name })
                 .show_ui(ui, |ui| {
+                    if ui
+                        .selectable_label(auto, "auto")
+                        .on_hover_text(
+                            "follow whichever pool has the most going on (no action cams; some things happen out of sight)",
+                        )
+                        .clicked()
+                    {
+                        v.camera.set_auto();
+                    }
                     for root in camera::roots(r, v.case) {
-                        ui.selectable_value(&mut picked, Some(root), camera::name_of(project, r, root));
+                        let on = !auto && main == Some(root);
+                        let name = camera::name_of(project, r, root);
+                        if ui.selectable_label(on, name).clicked() {
+                            v.camera.promote(root);
+                        }
                     }
                 });
-            if let Some(p) = picked.filter(|p| Some(*p) != main) {
-                v.camera.promote(p);
-            }
             if v.camera.paused
                 && ui
                     .button("follow")
