@@ -421,6 +421,26 @@ pub fn preview_decision(
     })
 }
 
+/// How often number input `spec` falls below `thresholds[0]`, between neighbouring
+/// thresholds, and at or above the last (ascending thresholds, `samples` draws with a fixed
+/// seed); `None` if the distribution is invalid.
+pub fn threshold_shares(spec: &NumberSpec, thresholds: &[f64], samples: usize) -> Option<Vec<f64>> {
+    use rand::SeedableRng;
+    let sampler = InputSpec::Number(spec.clone()).sampler().ok()?;
+    let mut rng = rand_chacha::ChaCha8Rng::seed_from_u64(1);
+    let mut bins = vec![0usize; thresholds.len() + 1];
+    for _ in 0..samples {
+        if let Value::Num(x) = sampler.sample(&mut rng) {
+            bins[thresholds.iter().take_while(|t| x >= **t).count()] += 1;
+        }
+    }
+    Some(
+        bins.into_iter()
+            .map(|c| c as f64 / samples as f64)
+            .collect(),
+    )
+}
+
 /// A value for people: strings without quotes, null as "nothing".
 fn value_text(v: &Value) -> String {
     match v {

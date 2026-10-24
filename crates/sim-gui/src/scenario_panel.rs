@@ -178,15 +178,12 @@ pub fn show(app: &mut App, ui: &mut Ui) {
                         .small()
                         .weak(),
                     );
-                    egui::Grid::new("decision-inputs").num_columns(2).striped(true).show(ui, |ui| {
-                        for (d, i) in inputs {
-                            ui.label(&i).on_hover_text(format!("defined under decision {d}"));
-                            if let Some(spec) = s.decisions.get_mut(&d).and_then(|x| x.inputs.get_mut(&i)) {
-                                editors::input_edit(ui, (d.as_str(), i.as_str()), spec);
-                            }
-                            ui.end_row();
+                    for (d, i) in inputs {
+                        if let Some(spec) = s.decisions.get_mut(&d).and_then(|x| x.inputs.get_mut(&i)) {
+                            ui.add_space(4.0);
+                            crate::decision_inputs::input_edit(ui, &project, &d, &i, spec);
                         }
-                    });
+                    }
                 });
         }
 

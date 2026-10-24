@@ -318,6 +318,16 @@ mod tests {
             }
         };
         draw(&mut app);
+        // The business rule tasks draw their inputs and what the decision gives.
+        for _ in 0..2 {
+            let mut out = ctx.run_ui(egui::RawInput::default(), |ui| {
+                for id in ["Task_Triage", "Task_Checks"] {
+                    let n = project.node(&QId::new("ticket.bpmn", id)).unwrap();
+                    crate::editors::node_editor(ui, &project, &mut app.scenario, n, true);
+                }
+            });
+            out.textures_delta.clear();
+        }
         // A split that has gone back to shares draws its share editor.
         let queue = app
             .scenario
@@ -691,6 +701,23 @@ mod tests {
                 }));
             }
             r.save(&ctx, out.unwrap(), &dir.join("editor-decision-output.png"));
+            // Inputs of a decision with what it gives.
+            let ctx = egui::Context::default();
+            ctx.set_theme(egui::ThemePreference::Light);
+            let mut r = crate::snapshot::Renderer::new(560, 900);
+            let mut out = None;
+            for _ in 0..3 {
+                out = Some(r.frame(&ctx, r.input(), |ui| {
+                    egui::Frame::popup(ui.style()).show(ui, |ui| {
+                        for id in ["Task_Triage", "Task_Checks"] {
+                            let n = project.node(&QId::new("ticket.bpmn", id)).unwrap();
+                            crate::editors::node_editor(ui, &project, &mut app.scenario, n, true);
+                            ui.separator();
+                        }
+                    });
+                }));
+            }
+            r.save(&ctx, out.unwrap(), &dir.join("editor-decision-inputs.png"));
         }
         {
             // Which characters the default fonts can draw.

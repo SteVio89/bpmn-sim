@@ -7,8 +7,8 @@ use sim_core::needs::{
     suggest_output,
 };
 use sim_core::scenario::{
-    ArrivalSpec, BoundarySpec, ChanceSpec, ChoiceSpec, CountSpec, EventSpec, GatewaySpec,
-    InputSpec, LoopSpec, MultiInstanceSpec, NumberSpec, OutputValue, OutputValues, ResourceSpec,
+    ArrivalSpec, BoundarySpec, CountSpec, EventSpec, GatewaySpec, LoopSpec, MultiInstanceSpec,
+    NumberSpec, OutputValue, OutputValues, ResourceSpec,
 };
 use sim_core::{EventDef, FlowNode, NodeKind, Project, QId, Scenario};
 
@@ -137,21 +137,7 @@ pub fn need_editor(
             repeat_editor(ui, s.loops.get_mut(&k).expect("key exists"));
         }
         Need::DecisionInputs { decision, inputs } => {
-            ui.label(RichText::new(format!("Inputs of decision {decision}")).strong());
-            egui::Grid::new(("inputs", &n.id))
-                .num_columns(2)
-                .show(ui, |ui| {
-                    for i in inputs {
-                        ui.label(&i);
-                        match s.decision_input_mut(&i) {
-                            Some((_, spec)) => input_edit(ui, (decision.as_str(), &i), spec),
-                            None => {
-                                ui.label(RichText::new("not set").weak());
-                            }
-                        }
-                        ui.end_row();
-                    }
-                });
+            crate::decision_inputs::decision_editor(ui, project, s, &decision, &inputs);
         }
     }
 }
@@ -934,7 +920,7 @@ pub fn black_box_editor(ui: &mut Ui, s: &mut Scenario, id: &QId) {
     }
 }
 
-fn number_fields(ui: &mut Ui, n: &mut NumberSpec) {
+pub fn number_fields(ui: &mut Ui, n: &mut NumberSpec) {
     let num = |ui: &mut Ui, label: &str, v: &mut f64| {
         ui.label(label);
         ui.add(DragValue::new(v).speed(0.5));
@@ -956,103 +942,4 @@ fn number_fields(ui: &mut Ui, n: &mut NumberSpec) {
             num(ui, "max", max);
         }
     }
-}
-
-/// Edit a decision input: number distribution, categorical choice or boolean.
-pub fn input_edit(ui: &mut Ui, id: (&str, &str), spec: &mut InputSpec) {
-    ui.horizontal(|ui| {
-        let kind = match spec {
-            InputSpec::Number(_) => 0,
-            InputSpec::Choice(_) => 1,
-            InputSpec::Chance(_) => 2,
-        };
-        let mut chosen = kind;
-        ComboBox::from_id_salt(("input-kind", id))
-            .width(80.0)
-            .selected_text(["number", "choice", "true/false"][kind])
-            .show_ui(ui, |ui| {
-                for (i, k) in ["number", "choice", "true/false"].iter().enumerate() {
-                    ui.selectable_value(&mut chosen, i, *k);
-                }
-            });
-        if chosen != kind {
-            *spec = match chosen {
-                0 => InputSpec::Number(NumberSpec::Uniform {
-                    min: 0.0,
-                    max: 100.0,
-                }),
-                1 => InputSpec::Choice(ChoiceSpec {
-                    choice: [("a".to_string(), 0.5), ("b".to_string(), 0.5)].into(),
-                }),
-                _ => InputSpec::Chance(ChanceSpec { p_true: 0.5 }),
-            };
-        }
-        match spec {
-            InputSpec::Number(n) => {
-                let kinds = [
-                    "fixed",
-                    "uniform",
-                    "normal",
-                    "exponential",
-                    "triangular",
-                    "lognormal",
-                ];
-                let k = match n {
-                    NumberSpec::Fixed { .. } => 0,
-                    NumberSpec::Uniform { .. } => 1,
-                    NumberSpec::Normal { .. } => 2,
-                    NumberSpec::Exponential { .. } => 3,
-                    NumberSpec::Triangular { .. } => 4,
-                    NumberSpec::Lognormal { .. } => 5,
-                };
-                let mut c = k;
-                ComboBox::from_id_salt(("input-dist", id))
-                    .width(90.0)
-                    .selected_text(kinds[k])
-                    .show_ui(ui, |ui| {
-                        for (i, name) in kinds.iter().enumerate() {
-                            ui.selectable_value(&mut c, i, *name);
-                        }
-                    });
-                if c != k {
-                    *n = match c {
-                        0 => NumberSpec::Fixed { value: 50.0 },
-                        1 => NumberSpec::Uniform {
-                            min: 0.0,
-                            max: 100.0,
-                        },
-                        2 => NumberSpec::Normal {
-                            mean: 50.0,
-                            stdev: 10.0,
-                        },
-                        3 => NumberSpec::Exponential { mean: 50.0 },
-                        4 => NumberSpec::Triangular {
-                            min: 0.0,
-                            mode: 50.0,
-                            max: 100.0,
-                        },
-                        _ => NumberSpec::Lognormal {
-                            mean: 50.0,
-                            stdev: 10.0,
-                        },
-                    };
-                }
-                number_fields(ui, n);
-            }
-            InputSpec::Choice(c) => {
-                ui.vertical(|ui| {
-                    for (value, p) in c.choice.iter_mut() {
-                        ui.add(egui::Slider::new(p, 0.0..=1.0).text(value.as_str()));
-                    }
-                    let sum: f64 = c.choice.values().sum();
-                    if (sum - 1.0).abs() > 1e-9 && ui.button("Normalise").clicked() && sum > 0.0 {
-                        c.choice.values_mut().for_each(|p| *p /= sum);
-                    }
-                });
-            }
-            InputSpec::Chance(c) => {
-                ui.add(egui::Slider::new(&mut c.p_true, 0.0..=1.0).text("P(true)"));
-            }
-        }
-    });
 }

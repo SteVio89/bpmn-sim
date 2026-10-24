@@ -3,6 +3,7 @@
 
 mod app;
 mod configure;
+mod decision_inputs;
 mod diagram_icons;
 mod diagram_panel;
 mod editors;
