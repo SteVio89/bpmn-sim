@@ -1,7 +1,11 @@
 # BPMN Simulator
 
-A desktop application and command-line tool for simulating BPMN 2.0 process models, written
-in Rust.
+An application for simulating BPMN 2.0 process models, in the browser, on the desktop and
+on the command line. Free and open source.
+
+**[Open it in the browser](https://stevio89.github.io/bpmn-sim/)**: nothing to install,
+your files stay on your computer. Or [download the desktop app](https://github.com/SteVio89/bpmn-sim/releases/latest)
+for Windows, macOS or Linux.
 
 It reads BPMN files as they come out of common modellers (bpmn.io, Camunda Modeler, also
 Camunda 8 models) and does three things with them:
@@ -29,7 +33,25 @@ BPMN 2.0.2 and which elements it does not run.
 and hand-calculated cases (see `docs/validation.md`), but the tool has so far been used on a
 limited number of real models. Bug reports with a (shareable) BPMN file are welcome.
 
-## Building
+## Getting it
+
+- **Browser:** <https://stevio89.github.io/bpmn-sim/> runs entirely in the browser (a recent
+  Chrome, Edge, Firefox or Safari). Models and scenarios you open are not uploaded anywhere;
+  you get results and scenarios back as downloads. The built-in examples show what it does.
+  Open the main model together with the files it calls (select them all at once), or drop
+  them onto the page.
+- **Desktop:** download the archive for your system from the
+  [latest release](https://github.com/SteVio89/bpmn-sim/releases/latest) and unpack it. The
+  apps are not signed, so the system warns the first time:
+  - Windows: "Windows protected your PC" → *More info* → *Run anyway*.
+  - macOS: open `BPMN Sim.app`; when macOS refuses, go to *System Settings → Privacy &
+    Security* and click *Open Anyway* (or run `xattr -dr com.apple.quarantine "BPMN Sim.app"`).
+  - Linux: run `sim-gui` from the unpacked folder.
+
+  The desktop app checks for new releases and can update itself. It can also open a whole
+  folder and finds the called files and DMN tables next to a model by itself.
+
+## Building from source
 
 You need Rust 1.95 or newer ([rustup.rs](https://rustup.rs)).
 
@@ -48,6 +70,9 @@ On Linux the desktop app needs the usual desktop libraries at runtime (X11 or Wa
 `libxkbcommon`); they are present on any normal desktop installation.
 
 Run the tests with `cargo test`.
+
+The browser version is built with [trunk](https://trunkrs.dev): `just web` serves it on
+<http://127.0.0.1:8080> and rebuilds on changes, `just web-build` builds it into `target/web`.
 
 ## Running the desktop app
 
@@ -72,10 +97,11 @@ cargo run --release -p sim-gui
 6. **Diagram:** the model with a heat map (waiting time, utilisation, ...), an animated
    token replay of the simulated cases, and the manual token game.
 
-To try it, open `tests/fixtures/v13-model.bpmn` and load `tests/fixtures/v13-model.toml`
-as the scenario, or open `tests/fixtures/multi-file/main.bpmn` for a model with several pools
-and called subprocesses, or `tests/fixtures/event-subprocess.bpmn` with
-`tests/fixtures/event-subprocess.toml` for event subprocesses.
+To try it, pick one of the examples on the start screen. They are the same as opening
+`tests/fixtures/v13-model.bpmn` with `tests/fixtures/v13-model.toml` as the scenario,
+`tests/fixtures/event-subprocess.bpmn` with `tests/fixtures/event-subprocess.toml` for event
+subprocesses, or `tests/fixtures/multi-file/main.bpmn` for a model with several pools and
+called subprocesses.
 
 ## Running the command-line tool
 
