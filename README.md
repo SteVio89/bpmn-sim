@@ -29,7 +29,7 @@ decision tables behind business rule tasks (gateways can follow their outputs), 
 that ask what other pools of the same case have already done. `docs/semantics.md` lists where it deviates from
 BPMN 2.0.2 and which elements it does not run.
 
-**Status:** early, version 0.1. The simulation results are checked against queueing theory
+**Status:** early, version v0.4.0 The simulation results are checked against queueing theory
 and hand-calculated cases (see `docs/validation.md`), but the tool has so far been used on a
 limited number of real models. Bug reports with a (shareable) BPMN file are welcome.
 
@@ -56,7 +56,7 @@ limited number of real models. Bug reports with a (shareable) BPMN file are welc
 You need Rust 1.95 or newer ([rustup.rs](https://rustup.rs)).
 
 ```sh
-git clone <this repository>
+git clone git@github.com:SteVio89/bpmn-sim.git
 cd bpmn-sim
 cargo build --release
 ```
@@ -191,7 +191,6 @@ duration = { dist = "uniform", min = "5d", max = "20d" }
 - `docs/semantics.md`: how every BPMN element and scenario option behaves in the simulation
   and in the manual token game.
 - `docs/validation.md`: how the numbers are checked.
-- `bpmn-simulator-SPEC.md`: the original specification.
 
 ## Pre-built binaries
 
