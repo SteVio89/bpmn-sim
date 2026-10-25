@@ -35,6 +35,7 @@
               bacon
               cargo-nextest
               just
+              trunk
               # devhelper:packages
             ];
           };

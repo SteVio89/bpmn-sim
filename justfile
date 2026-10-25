@@ -17,6 +17,14 @@ run *args:
 cli *args:
     cargo run -p sim-cli -- {{args}}
 
+# Serve the browser version on http://127.0.0.1:8080, rebuilt on every change.
+web:
+    cd crates/sim-gui && trunk serve
+
+# Build the browser version into target/web.
+web-build *args:
+    cd crates/sim-gui && trunk build --release {{args}}
+
 test:
     cargo test --workspace
 
@@ -29,6 +37,7 @@ fmt:
 lint:
     cargo fmt --all --check
     cargo clippy --workspace --all-targets -- -D warnings
+    cargo clippy -p sim-gui --target wasm32-unknown-unknown -- -D warnings
 
 clean:
     cargo clean

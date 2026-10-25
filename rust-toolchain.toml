@@ -1,3 +1,5 @@
 [toolchain]
 channel = "stable"
 components = ["rust-src", "rust-analyzer", "clippy", "rustfmt"]
+# The browser version (`just web`).
+targets = ["wasm32-unknown-unknown"]

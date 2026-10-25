@@ -19,6 +19,8 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: cargo fmt --all --check
       - run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      - name: clippy for the browser version
+        run: cargo clippy -p sim-gui --target wasm32-unknown-unknown --locked -- -D warnings
 
   test:
     name: test (${{ matrix.os }})

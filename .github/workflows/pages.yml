@@ -1,0 +1,53 @@
+name: Browser version
+
+# Builds the browser version and publishes it on GitHub Pages
+# (https://stevio89.github.io/bpmn-sim/) for every release tag, or when started by hand.
+# Needs Settings > Pages > Source: "GitHub Actions".
+on:
+  push:
+    tags: ["v[0-9]+.[0-9]+.[0-9]+"]
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+  TRUNK_VERSION: v0.22.0
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      # Installs the toolchain named in rust-toolchain.toml, with the wasm target.
+      - run: rustup toolchain install
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: wasm
+      - name: Install trunk
+        run: |
+          curl -sSfL "https://github.com/trunk-rs/trunk/releases/download/$TRUNK_VERSION/trunk-x86_64-unknown-linux-gnu.tar.gz" \
+            | tar xz -C /usr/local/bin trunk
+      - name: Build
+        working-directory: crates/sim-gui
+        run: trunk build --release --locked --public-url /bpmn-sim/
+      - uses: actions/upload-pages-artifact@v4
+        with:
+          path: target/web
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
