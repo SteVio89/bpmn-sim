@@ -8,19 +8,29 @@ description = "Desktop app for the BPMN process simulator: scenarios, runs, resu
 publish = false
 
 [dependencies]
-anyhow = "1.0.104"
 eframe = { version = "0.37.0", features = ["persistence"] }
 egui = "0.37.0"
 egui_plot = "0.38.0"
-flate2 = "1.1.10"
 rfd = "0.17.2"
 serde_json = "1.0.154"
-sha2 = "0.11.1"
 sim-core = { version = "0.3.0", path = "../sim-core" }
-tar = "0.4.46"
 toml = "1.1.8"
+web-time = "1.1.0"
+
+# The self-updater; the browser version is always current.
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+anyhow = "1.0.104"
+flate2 = "1.1.10"
+sha2 = "0.11.1"
+tar = "0.4.46"
 ureq = "3.5.0"
 zip = { version = "9.1.0", default-features = false, features = ["deflate"] }
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+js-sys = "0.3.106"
+wasm-bindgen = "0.2.129"
+wasm-bindgen-futures = "0.4.79"
+web-sys = { version = "0.3.106", features = ["Blob", "Document", "Element", "HtmlAnchorElement", "HtmlCanvasElement", "Url", "Window"] }
 
 [dev-dependencies]
 png = "0.18.1"

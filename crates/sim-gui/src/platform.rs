@@ -20,12 +20,10 @@ pub enum Purpose {
 /// there).
 #[derive(Clone, Debug)]
 pub enum Picked {
+    #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
     Path(PathBuf),
     #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
-    Text {
-        name: String,
-        text: String,
-    },
+    Text { name: String, text: String },
 }
 
 impl Picked {
@@ -45,6 +43,7 @@ pub struct Filter {
     pub extensions: &'static [&'static str],
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 pub const BPMN: Filter = Filter {
     name: "BPMN",
     extensions: &["bpmn"],

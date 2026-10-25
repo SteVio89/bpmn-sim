@@ -255,11 +255,17 @@ pub fn run_replications_with(
     let total = m.sim.replications;
     (0..total)
         .map(|i| {
-            let r = Engine::new(m, m.sim.seed.wrapping_add(u64::from(i))).run();
+            let r = run_replication(m, i);
             progress(i + 1, total);
             r
         })
         .collect()
+}
+
+/// Replication `i` (from 0) of a run, with the seed `run_replications` gives it, for callers
+/// that run the replications one at a time.
+pub fn run_replication(m: &BoundModel, i: u32) -> ReplicationResult {
+    Engine::new(m, m.sim.seed.wrapping_add(u64::from(i))).run()
 }
 
 impl<'a> Engine<'a> {

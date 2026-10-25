@@ -3221,6 +3221,7 @@ dependencies = [
  "egui",
  "egui_plot",
  "flate2",
+ "js-sys",
  "png",
  "rfd",
  "serde_json",
@@ -3229,6 +3230,10 @@ dependencies = [
  "tar",
  "toml",
  "ureq",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
+ "web-sys",
+ "web-time",
  "zip",
 ]
 

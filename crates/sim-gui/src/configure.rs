@@ -4,7 +4,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 use std::sync::mpsc::{Receiver, channel};
-use std::time::{Duration, Instant};
+use web_time::{Duration, Instant};
 
 use eframe::egui::{self, Rect, RichText, Ui};
 use sim_core::needs::{Need, is_arrival_start, key_of, needs};
@@ -523,10 +523,15 @@ impl PilotRunner {
         self.changed = None;
         let (tx, rx) = channel();
         let (project, s, ctx) = (project.clone(), s.clone(), ctx.clone());
-        std::thread::spawn(move || {
+        let run = move || {
             let _ = tx.send(pilot(&project, &s));
             ctx.request_repaint();
-        });
+        };
+        // No threads in the browser: the pilot is small enough to run within the frame.
+        #[cfg(not(target_arch = "wasm32"))]
+        std::thread::spawn(run);
+        #[cfg(target_arch = "wasm32")]
+        run();
         self.rx = Some(rx);
     }
 

@@ -57,6 +57,7 @@ pub struct App {
     pub pilot: PilotRunner,
     /// What the last "Update from model" (or load) changed, shown in the scenario tab.
     pub update_note: Option<sim_core::needs::Update>,
+    #[cfg(not(target_arch = "wasm32"))]
     pub updater: crate::update::Updater,
     pub files: crate::platform::Files,
 }
@@ -68,7 +69,7 @@ impl Default for App {
             scenario: Scenario::default(),
             scenario_path: None,
             scenario_candidates: Vec::new(),
-            status: "Open a BPMN file or folder to begin.".into(),
+            status: "Open a model or an example to begin.".into(),
             tab: Tab::Model,
             selected: None,
             job: None,
@@ -80,6 +81,7 @@ impl Default for App {
             unreviewed: BTreeSet::new(),
             pilot: PilotRunner::default(),
             update_note: None,
+            #[cfg(not(target_arch = "wasm32"))]
             updater: Default::default(),
             files: Default::default(),
         }
@@ -284,8 +286,11 @@ impl App {
     pub fn draw(&mut self, ui: &mut egui::Ui) {
         self.handle_files(ui.ctx());
         self.poll_job();
-        self.updater.poll();
-        crate::update::banner(self, ui);
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            self.updater.poll();
+            crate::update::banner(self, ui);
+        }
         self.pilot.tick(ui.ctx(), &self.ws.project, &self.scenario);
         egui::Panel::top("tabs").show(ui, |ui| {
             ui.horizontal(|ui| {
@@ -323,6 +328,12 @@ impl App {
                     ui.label("Theme:");
                     if pref != before {
                         ui.ctx().set_theme(pref);
+                    }
+                    #[cfg(target_arch = "wasm32")]
+                    {
+                        ui.separator();
+                        ui.hyperlink_to("Desktop app", crate::RELEASES_URL)
+                            .on_hover_text("download BPMN Sim for Windows, macOS or Linux");
                     }
                 });
             });

@@ -21,7 +21,7 @@ pub mod stats;
 pub mod validate;
 
 pub use aggregate::{AggregateResult, Estimate, aggregate};
-pub use engine::{Engine, run_replications, run_replications_with};
+pub use engine::{Engine, run_replication, run_replications, run_replications_with};
 pub use error::ParseError;
 pub use model::*;
 pub use project::{Project, discover_files};

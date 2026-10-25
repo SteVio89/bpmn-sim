@@ -17,8 +17,15 @@ const OPEN_FILES_HINT: &str = "a BPMN file, with the files it calls from the sam
 const MULTIPLE: bool = false;
 #[cfg(not(target_arch = "wasm32"))]
 const OPEN_FILTER: &platform::Filter = &platform::BPMN;
+#[cfg(not(target_arch = "wasm32"))]
+const OPEN_HINT: &str = "Open a BPMN file or a folder of models above, or drop files onto \
+                         this window. Models from bpmn.io and Camunda Modeler work as they are.";
 #[cfg(target_arch = "wasm32")]
 const OPEN_FILES: &str = "Open files…";
+#[cfg(target_arch = "wasm32")]
+const OPEN_HINT: &str = "Open your BPMN files above (with the files they call and their DMN \
+                         tables), or drop them onto this page. Models from bpmn.io and Camunda \
+                         Modeler work as they are. Files stay in your browser.";
 #[cfg(target_arch = "wasm32")]
 const OPEN_FILES_HINT: &str = "the BPMN model together with the BPMN and DMN files it calls";
 #[cfg(target_arch = "wasm32")]
@@ -34,6 +41,33 @@ pub fn examples_menu(app: &mut App, ui: &mut Ui) {
             ui.close();
         }
     }
+}
+
+/// Shown while no model is open: what the app does and the examples to start with.
+fn welcome(app: &mut App, ui: &mut Ui) {
+    ui.add_space(24.0);
+    ui.vertical_centered(|ui| {
+        ui.set_max_width(560.0);
+        ui.heading("BPMN Sim");
+        ui.add_space(8.0);
+        ui.label(
+            "Simulate BPMN 2.0 process models: cycle times, waiting times, resource \
+             utilisation and costs. Find where cases get stuck, and play a case through the \
+             diagram by hand.",
+        );
+        ui.add_space(8.0);
+        ui.label(OPEN_HINT);
+        ui.add_space(16.0);
+        ui.strong("Or start with an example:");
+        ui.add_space(4.0);
+        for e in EXAMPLES {
+            ui.add_space(4.0);
+            if ui.button(e.title).clicked() {
+                app.open_example(e);
+            }
+            ui.weak(e.description);
+        }
+    });
 }
 
 pub fn show(app: &mut App, ui: &mut Ui) {
@@ -67,6 +101,10 @@ pub fn show(app: &mut App, ui: &mut Ui) {
     });
     if let Some(e) = &app.ws.load_error {
         ui.colored_label(ui.visuals().error_fg_color, e);
+    }
+    if app.ws.files.is_empty() {
+        welcome(app, ui);
+        return;
     }
 
     egui::ScrollArea::vertical().show(ui, |ui| {

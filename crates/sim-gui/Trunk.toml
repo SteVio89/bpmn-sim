@@ -1,0 +1,4 @@
+# Browser build: `trunk serve` (or `just web`) in this folder.
+[build]
+target = "index.html"
+dist = "../../target/web"
