@@ -3191,7 +3191,7 @@ dependencies = [
 
 [[package]]
 name = "sim-cli"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "serde_json",
@@ -3200,7 +3200,7 @@ dependencies = [
 
 [[package]]
 name = "sim-core"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "rand",
  "rand_chacha",
@@ -3214,7 +3214,7 @@ dependencies = [
 
 [[package]]
 name = "sim-gui"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "eframe",

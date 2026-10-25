@@ -10,4 +10,4 @@ publish = false
 [dependencies]
 anyhow = "1.0.104"
 serde_json = "1.0.154"
-sim-core = { version = "0.3.0", path = "../sim-core" }
+sim-core = { version = "0.4.0", path = "../sim-core" }
