@@ -38,7 +38,7 @@ jobs:
       - name: Build
         working-directory: crates/sim-gui
         run: trunk build --release --locked --public-url /bpmn-sim/
-      - uses: actions/upload-pages-artifact@v4
+      - uses: actions/upload-pages-artifact@v5
         with:
           path: target/web
 
@@ -50,4 +50,4 @@ jobs:
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
       - id: deployment
-        uses: actions/deploy-pages@v4
+        uses: actions/deploy-pages@v5
