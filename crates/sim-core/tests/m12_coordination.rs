@@ -81,6 +81,8 @@ fn completed_already_takes_the_then_flow() {
 #[test]
 fn a_random_choice_after_the_signal_gets_stuck_where_the_history_does_not() {
     // With shares the gateway can say "not yet" after the signal has gone: B waits forever.
+    // (Signals stay in the case here: with the global default since M18 (R-10.5.1-01) the next
+    // case's signal would wake the waiting B.)
     let r = run(
         "history-gateway.bpmn",
         &history(
@@ -88,7 +90,8 @@ fn a_random_choice_after_the_signal_gets_stuck_where_the_history_does_not() {
             30,
             60,
             "probabilities = { Flow_yes = 0.5, Flow_no = 0.5 }",
-        ),
+        )
+        .replace("cases = 20", "cases = 20\nsignal_scope = \"case\""),
     );
     assert!(!r.stuck.is_empty());
     let r = run("history-gateway.bpmn", &history(20, 30, 60, IF_MADE));

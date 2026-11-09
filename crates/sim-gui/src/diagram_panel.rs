@@ -594,6 +594,8 @@ pub fn show(app: &mut App, ui: &mut Ui) {
         v.manual = Some(ManualState::new(project.clone()));
     }
     if let Some(m) = v.manual.as_mut() {
+        // The game follows the scenario's inclusive join rule and [calls] choices.
+        m.game.use_scenario(&app.scenario);
         m.controls(ui);
     }
     follow_manual_focus(v, &project);

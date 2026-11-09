@@ -11,7 +11,7 @@ How the numbers of the simulator are checked (spec §8). `cargo test --workspace
 | V5 | `m1_engine::v5_and_split_join_takes_the_longer_branch` | cycle time 20 min, not 30 |
 | V6 | `m1_engine::v6_and_join_never_mixes_instances` | 500 overlapping cases: each completes exactly when its own slower branch does |
 | V7 | `m3_collab::v7_*` | message: receiver continues only after it; early message buffered, or lost with buffering off |
-| V8 | `m3_collab::v8_*` | signal thrown before the catch is active: receiver stuck, reported with location |
+| V8 | `m3_collab::v8_*` | signal thrown before the catch is active: receiver stuck, reported with location (signals scoped to the case) |
 | V9 | `m4a_events::v9_*` | interrupting timer: task cancelled, resource released, boundary path taken |
 | V10 | `m4b_multifile::v10_*` | call activity into a second file: same case, parent waits, costs summed |
 | V10b | `m4b_multifile::v10b_*`, `discovery_*` | folder with reused ids, DMN files, qualified ids, shared pools by lane name |
@@ -21,6 +21,7 @@ How the numbers of the simulator are checked (spec §8). `cargo test --workspace
 | V13 | by hand, see below | comparison with QBP / BIMP |
 | M6 | `m6_dmn::*`, `dmn.rs` and `feel.rs` unit tests | decision table routes claims with the expected frequencies (auto 0.4, manual 0.1, reject 0.5 within 5σ), all hit policies, FEEL subset, no match / default flow / probability override |
 | M6 | `m6_diagram::*`, GUI `diagram_*` tests | BPMNDI parsing, heat values equal the statistics, replay counts equal the overlapping log records and never exceed resource capacity; headless GUI: fit, drag pans, wheel zooms, replay advances |
+| M18 | `m18_spec_defaults::*` | BPMN 2.0.2 defaults: inclusive join (spec rule and old rule), global signals, repeating `timeCycle` timers, processes without start events, one of several none starts, runtime exceptions and uncaught errors as failed cases; engine and token game agree |
 | M6 | `m6_gateways::*` | inclusive split frequencies (5σ), OR join waits exactly for the chosen / still reachable branches, per instance; event-based gateway: first event wins, the others are cancelled |
 | BPMN | `m17_conformance::*` | every file in `tests/fixtures/conformance` (BPMN 2.0.2 serializations: default namespace, other prefixes, QName references, root event definitions, any element order, vendor extensions, BPMNDI) parses, validates without issues and runs its skeleton scenario to completion; inline edge cases (BOM, character references, foreign elements, other root elements, unsupported elements, duplicate or missing ids, wrong namespaces) |
 

@@ -55,6 +55,31 @@ pub enum EventDef {
     Unsupported(String),
 }
 
+/// Which of `timeDate`, `timeDuration` and `timeCycle` a timer event definition has
+/// (BPMN 2.0.2 §10.5.5). The scenario gives the time itself.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TimerKind {
+    Date,
+    Duration,
+    /// `repeat`: the count of an ISO-8601 repeating interval `R<n>/...`; `None` without one
+    /// (`R/...`, a plain duration or a cron expression): unbounded.
+    Cycle {
+        repeat: Option<u32>,
+    },
+}
+
+impl TimerKind {
+    /// Read a `timeCycle` value: `R5/PT1H` repeats 5 times, everything else is unbounded.
+    pub fn cycle(text: &str) -> Self {
+        let t = text.trim();
+        let repeat = t
+            .strip_prefix('R')
+            .and_then(|rest| rest.split_once('/'))
+            .and_then(|(n, _)| n.parse::<u32>().ok());
+        TimerKind::Cycle { repeat }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum NodeKind {
     Task(TaskKind),
@@ -125,6 +150,8 @@ pub struct FlowNode {
     pub triggered_by_event: bool,
     /// Receive tasks and event-based gateways: `instantiate`.
     pub instantiate: bool,
+    /// Timer events: which kind of time the timer definition gives, if any.
+    pub timer: Option<TimerKind>,
     pub incoming: Vec<QId>,
     pub outgoing: Vec<QId>,
 }

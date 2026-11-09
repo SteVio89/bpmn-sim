@@ -132,7 +132,9 @@ fn simulate(args: &[String]) -> Result<bool> {
         };
         std::fs::write(&path, content).with_context(|| format!("writing {path}"))?;
     }
-    Ok(results.iter().all(|r| r.stuck.is_empty()))
+    Ok(results
+        .iter()
+        .all(|r| r.stuck.is_empty() && r.failed.is_empty()))
 }
 
 fn print_result(r: &ReplicationResult, unit: f64, unit_name: &str) {
@@ -210,6 +212,33 @@ fn print_result(r: &ReplicationResult, unit: f64, unit_name: &str) {
         println!(
             "stopped at the horizon; {} token(s) still unfinished (not a deadlock)",
             r.unfinished.len()
+        );
+    }
+    if !r.failed.is_empty() {
+        println!(
+            "FAILED: {} case(s) failed through an incident:",
+            r.failed.len()
+        );
+        for f in &r.failed {
+            let name = f
+                .name
+                .as_deref()
+                .map(|n| format!(" ({n})"))
+                .unwrap_or_default();
+            println!(
+                "  case {} in {}: failed: {} at {}{name}, {} token(s) halted",
+                f.case,
+                f.process,
+                f.reason,
+                f.element,
+                f.tokens.len()
+            );
+        }
+    }
+    for e in &r.uncaught_escalations {
+        println!(
+            "  note: case {}: escalation '{}' at {} is not caught (no effect)",
+            e.case, e.code, e.element
         );
     }
     if !r.stuck.is_empty() {

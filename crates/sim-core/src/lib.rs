@@ -25,6 +25,6 @@ pub use engine::{Engine, run_replication, run_replications, run_replications_wit
 pub use error::ParseError;
 pub use model::*;
 pub use project::{Project, discover_files};
-pub use scenario::{BoundModel, Scenario, ScenarioError};
+pub use scenario::{BoundModel, InclusiveJoin, Scenario, ScenarioError, SignalScope};
 pub use stats::*;
 pub use validate::{Issue, Severity, validate};

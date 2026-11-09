@@ -472,6 +472,64 @@ mod tests {
     }
 
     #[test]
+    fn m18_editors_for_startless_pools_call_starts_and_cycles_draw() {
+        // A pool without start events (D-1), a call into a process with two none start
+        // events (D-2) and a non-interrupting timeCycle boundary (R-10.5.5-03).
+        let xml = r#"<bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL" id="D">
+          <bpmn:collaboration id="C">
+            <bpmn:participant id="Pa_desk" name="Desk" processRef="P"/>
+          </bpmn:collaboration>
+          <bpmn:process id="P">
+            <bpmn:task id="Work"/><bpmn:callActivity id="Call" calledElement="Q"/>
+            <bpmn:boundaryEvent id="Tick" attachedToRef="Work" cancelActivity="false">
+              <bpmn:timerEventDefinition><bpmn:timeCycle>R3/PT10M</bpmn:timeCycle></bpmn:timerEventDefinition>
+            </bpmn:boundaryEvent>
+            <bpmn:endEvent id="E1"/><bpmn:endEvent id="E2"/>
+            <bpmn:sequenceFlow id="F1" sourceRef="Work" targetRef="Call"/>
+            <bpmn:sequenceFlow id="F2" sourceRef="Call" targetRef="E1"/>
+            <bpmn:sequenceFlow id="F3" sourceRef="Tick" targetRef="E2"/>
+          </bpmn:process>
+          <bpmn:process id="Q">
+            <bpmn:startEvent id="S1"/><bpmn:startEvent id="S2"/><bpmn:endEvent id="QE"/>
+            <bpmn:sequenceFlow id="Q1" sourceRef="S1" targetRef="QE"/>
+            <bpmn:sequenceFlow id="Q2" sourceRef="S2" targetRef="QE"/>
+          </bpmn:process>
+        </bpmn:definitions>"#;
+        let dir = std::env::temp_dir().join(format!("bpmn-sim-m18-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("m18.bpmn");
+        std::fs::write(&path, xml).unwrap();
+        let ctx = egui::Context::default();
+        let mut app = App::default();
+        app.ws.open(&path);
+        assert!(app.ws.load_error.is_none(), "{:?}", app.ws.load_error);
+        app.regenerate_skeleton();
+        assert_eq!(app.scenario.arrivals[0].triggers, ["m18.bpmn#P"]);
+        assert_eq!(app.scenario.calls["m18.bpmn#Call"].start, "S1");
+        let project = app.ws.project.clone();
+        assert!(
+            app.scenario.bind(&project).is_ok(),
+            "{:?}",
+            app.scenario.bind(&project).err()
+        );
+        for _ in 0..2 {
+            let mut out = ctx.run_ui(egui::RawInput::default(), |ui| {
+                for id in ["Call", "Tick"] {
+                    let n = project.node(&QId::new("m18.bpmn", id)).unwrap();
+                    crate::editors::node_editor(ui, &project, &mut app.scenario, n, true);
+                }
+                crate::editors::pool_editor(ui, &project, &mut app.scenario, "Desk");
+            });
+            out.textures_delta.clear();
+        }
+        for tab in [Tab::Scenario, Tab::Diagram] {
+            app.tab = tab;
+            frames(&mut app, &ctx, 2);
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn boundary_and_timer_sections_draw_and_run() {
         for fixture in [
             "v9-boundary-timer.bpmn",

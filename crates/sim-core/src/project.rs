@@ -139,6 +139,19 @@ impl Project {
         })
     }
 
+    /// Display label of an element, or of a process (its pool's name, else its own name, else
+    /// its id).
+    pub fn label_of(&self, id: &QId) -> String {
+        match self.node(id) {
+            Some(n) => n.label().to_string(),
+            None => self
+                .participant_name(id)
+                .map(str::to_string)
+                .or_else(|| self.process(&id.id).and_then(|p| p.name.clone()))
+                .unwrap_or_else(|| id.id.clone()),
+        }
+    }
+
     /// Name of the participant (pool) whose process contains `process`, if the file has a collaboration.
     pub fn participant_name(&self, process: &QId) -> Option<&str> {
         self.files
@@ -178,6 +191,34 @@ impl Project {
             })
             .map(|n| n.id.clone())
             .collect()
+    }
+
+    /// The None start events of the top level of `process` (`scope` = `None`) or of the embedded
+    /// subprocess `scope`.
+    pub fn none_starts(&self, process: &QId, scope: Option<&QId>) -> Vec<QId> {
+        self.nodes()
+            .filter(|n| {
+                n.process == *process
+                    && n.parent.as_ref() == scope
+                    && n.kind == NodeKind::StartEvent
+                    && n.event_defs.iter().all(|d| matches!(d, EventDef::None))
+            })
+            .map(|n| n.id.clone())
+            .collect()
+    }
+
+    /// The start events a call activity has to choose from (D-2, R-10.5.2-04): the None start
+    /// events of the called process when it has several, else nothing to choose.
+    pub fn call_start_choices(&self, call: &FlowNode) -> Vec<QId> {
+        let Some(process) = call
+            .called_element
+            .as_ref()
+            .and_then(|c| self.processes.get(c))
+        else {
+            return Vec::new();
+        };
+        let starts = self.none_starts(process, None);
+        if starts.len() > 1 { starts } else { Vec::new() }
     }
 
     /// The start events of the event subprocesses directly inside `container` (an embedded

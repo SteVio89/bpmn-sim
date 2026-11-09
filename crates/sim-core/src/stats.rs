@@ -91,6 +91,8 @@ pub struct CaseRecord {
     pub cost: f64,
     /// Among the first `warm_up_cases` completed cases; left out of the statistics.
     pub warm_up: bool,
+    /// The case failed through an incident (see `ReplicationResult::failed`).
+    pub failed: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -192,6 +194,53 @@ pub struct StuckToken {
     pub state: String,
 }
 
+/// Why a case failed: an incident (BPMN 2.0.2 D-3, D-4). The instance where it happened, the
+/// processes it called and the instances that called it halt with their tokens kept.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case", tag = "kind")]
+pub enum FailureReason {
+    /// No outgoing condition is true and there is no default flow (`rule`: the rule ID).
+    RuntimeException { rule: String },
+    /// An error that no boundary event or event subprocess catches (R-10.5.1-03).
+    UncaughtError { code: String },
+}
+
+impl std::fmt::Display for FailureReason {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            FailureReason::RuntimeException { rule } => write!(f, "runtime exception ({rule})"),
+            FailureReason::UncaughtError { code } => {
+                write!(f, "uncaught error '{code}' (R-10.5.1-03)")
+            }
+        }
+    }
+}
+
+/// A case that failed (an incident). It never counts as completed; its tokens are listed here,
+/// not as stuck tokens.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct CaseFailure {
+    pub case: u64,
+    pub time: f64,
+    /// Process and element where the (first) incident of the case happened.
+    pub process: QId,
+    pub element: QId,
+    pub name: Option<String>,
+    pub reason: FailureReason,
+    /// Every token of the case left when the run ended.
+    pub tokens: Vec<StuckToken>,
+}
+
+/// An escalation that nothing caught: it has no effect (D-4), but is reported.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct UncaughtEscalation {
+    pub time: f64,
+    pub case: u64,
+    pub process: QId,
+    pub element: QId,
+    pub code: String,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum MessageOutcome {
@@ -254,9 +303,15 @@ pub struct ReplicationResult {
     pub resources: BTreeMap<String, ResourceStats>,
     /// Tokens consumed per end event.
     pub end_events: BTreeMap<QId, u64>,
+    /// Tokens left when nothing more could happen (deadlocks), outside failed cases.
     pub stuck: Vec<StuckToken>,
-    /// Tokens still alive when the horizon cut the run off (instead of `stuck`).
+    /// Tokens still alive when the horizon cut the run off (instead of `stuck`), outside
+    /// failed cases.
     pub unfinished: Vec<StuckToken>,
+    /// Cases that failed through an incident (runtime exception, uncaught error).
+    pub failed: Vec<CaseFailure>,
+    /// Escalations nothing caught.
+    pub uncaught_escalations: Vec<UncaughtEscalation>,
     pub horizon_reached: bool,
     /// Unix timestamp (UTC) of simulation time 0.
     pub start_epoch: i64,

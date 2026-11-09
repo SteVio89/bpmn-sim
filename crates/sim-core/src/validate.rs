@@ -46,6 +46,12 @@ pub fn validate(project: &Project) -> Vec<Issue> {
     };
 
     let implicit = implicit_starts(project);
+    // Process levels (process, enclosing subprocess) that have a start event.
+    let with_starts: BTreeSet<(&QId, Option<&QId>)> = project
+        .nodes()
+        .filter(|n| n.kind == NodeKind::StartEvent && !project.is_event_sub_start(n))
+        .map(|n| (&n.process, n.parent.as_ref()))
+        .collect();
     let reachable = reachable_nodes(project, &implicit);
     // Scopes without a start event may also leave out end events (BPMN §10.5.2, §10.5.3).
     let startless: BTreeSet<(&QId, Option<&QId>)> = implicit
@@ -79,7 +85,18 @@ pub fn validate(project: &Project) -> Vec<Issue> {
         } else if !n.triggered_by_event {
             // (Event subprocesses have no sequence flows; their structure is checked on binding.)
             if !n.kind.is_event() && n.incoming.is_empty() && !implicit.contains(&n.id) {
-                push(Severity::Warning, n, "has no incoming sequence flow".into());
+                if with_starts.contains(&(&n.process, n.parent.as_ref()))
+                    && !matches!(n.kind, NodeKind::Unsupported(_))
+                {
+                    // D-1 (B): next to start events such a node is malformed and never runs.
+                    push(
+                        Severity::Error,
+                        n,
+                        "has no incoming sequence flow although its process level has start events, so it never runs (BPMN 2.0.2 R-10.3-04, R-13.2-01)".into(),
+                    );
+                } else {
+                    push(Severity::Warning, n, "has no incoming sequence flow".into());
+                }
             }
             if n.kind != NodeKind::EndEvent
                 && !is_link_throw
@@ -119,6 +136,17 @@ pub fn validate(project: &Project) -> Vec<Issue> {
                     );
                 }
             }
+        }
+
+        if n.kind == NodeKind::SubProcess
+            && !n.triggered_by_event
+            && project.none_starts(&n.process, Some(&n.id)).len() > 1
+        {
+            push(
+                Severity::Error,
+                n,
+                "embedded subprocess has several none start events; it must have exactly one (BPMN 2.0.2 §13.3.4, R-13.3.4-01)".into(),
+            );
         }
 
         if n.kind == NodeKind::CallActivity {
@@ -181,6 +209,21 @@ pub fn validate(project: &Project) -> Vec<Issue> {
                     n,
                     format!("unsupported event definition '{kind}'"),
                 );
+            }
+        }
+    }
+
+    // D-1 (A): a process without start events starts every activity and gateway without
+    // incoming flow; §13.2 does not allow this for a global process.
+    for file in project.files.values() {
+        for proc in file.processes.values() {
+            if crate::scenario::is_startless_process(project, &proc.id) {
+                issues.push(Issue {
+                    severity: Severity::Warning,
+                    element: proc.id.clone(),
+                    name: proc.name.clone(),
+                    message: "process has no start event: each instance starts every activity and gateway without incoming sequence flow (BPMN 2.0.2 §10.5.2); §13.2 (R-13.2-01) does not allow this for a global process".into(),
+                });
             }
         }
     }
@@ -365,20 +408,15 @@ fn link_catch<'a>(project: &'a Project, process: &QId, name: &str) -> Option<&'a
     })
 }
 
-/// Activities and gateways that start their subprocess or called process because it has no
-/// start event (`Project::start_nodes`).
+/// Activities and gateways that start their process or subprocess because it has no start
+/// event (`Project::start_nodes`).
 fn implicit_starts(project: &Project) -> BTreeSet<QId> {
-    let scopes = project
-        .nodes()
-        .filter_map(|n| n.called_element.as_ref())
-        .filter_map(|c| project.processes.get(c))
-        .map(|p| (p, None))
-        .chain(
-            project
-                .nodes()
-                .filter(|n| n.kind == NodeKind::SubProcess)
-                .map(|n| (&n.process, Some(&n.id))),
-        );
+    let scopes = project.processes.values().map(|p| (p, None)).chain(
+        project
+            .nodes()
+            .filter(|n| n.kind == NodeKind::SubProcess)
+            .map(|n| (&n.process, Some(&n.id))),
+    );
     scopes
         .flat_map(|(p, scope)| project.start_nodes(p, scope))
         .filter(|id| {

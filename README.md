@@ -15,7 +15,9 @@ Camunda 8 models) and does three things with them:
   times, waiting times, resource utilisation and costs, with confidence intervals across
   replications, and exports the results and a simulated event log (CSV, XES).
 - **Model checking.** Reports where cases get stuck: tokens waiting forever at joins or
-  events, messages nobody receives, signals sent before anyone listens.
+  events, messages nobody receives, signals sent before anyone listens. Cases that fail as
+  BPMN 2.0.2 says (a runtime exception at a gateway, an uncaught error) are reported
+  separately, with the rule they break.
 - **Manual token game.** Plays one case through the diagram by hand. You start it, decide at
   every gateway, complete tasks and fire events, and watch the token move, including into
   called subprocesses in other files. Useful for finding gaps in a model and for explaining
@@ -116,7 +118,7 @@ cargo run --release -p sim-cli -- run tests/fixtures/v13-model.bpmn \
 ```
 
 `sim-cli run` prints the results per replication (and with confidence intervals if there are
-several) and exits with status 1 if tokens got stuck.
+several) and exits with status 1 if tokens got stuck or cases failed.
 
 ## Scenario files
 

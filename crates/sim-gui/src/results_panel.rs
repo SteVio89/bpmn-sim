@@ -105,6 +105,9 @@ pub fn show(app: &mut App, ui: &mut Ui) {
                 );
                 row("mean case cost", format!("{:.2}", r.case_cost.mean));
                 row("stuck tokens", r.stuck.len().to_string());
+                if !r.failed.is_empty() {
+                    row("failed cases", r.failed.len().to_string());
+                }
                 if r.horizon_reached {
                     row(
                         "stopped at horizon",
@@ -244,8 +247,41 @@ pub fn show(app: &mut App, ui: &mut Ui) {
                     r.unfinished.len()
                 ));
             }
+            if !r.failed.is_empty() {
+                ui.colored_label(
+                    ui.visuals().error_fg_color,
+                    format!(
+                        "{} case(s) failed through an incident; their instances halted with their tokens:",
+                        r.failed.len()
+                    ),
+                );
+                egui::Grid::new("failed").striped(true).show(ui, |ui| {
+                    for f in &r.failed {
+                        ui.label(format!("case {}", f.case));
+                        ui.label(format!("t={}", t(f.time)));
+                        ui.label(format!("{} {}", f.element, f.name.as_deref().unwrap_or("")));
+                        ui.label(format!("failed: {}", f.reason));
+                        ui.end_row();
+                    }
+                });
+            }
+            if !r.uncaught_escalations.is_empty() {
+                ui.colored_label(
+                    ui.visuals().warn_fg_color,
+                    "Escalations nothing caught (they have no effect):",
+                );
+                for e in &r.uncaught_escalations {
+                    ui.label(format!(
+                        "t={} case {}: '{}' at {}",
+                        t(e.time),
+                        e.case,
+                        e.code,
+                        e.element
+                    ));
+                }
+            }
             if r.stuck.is_empty() {
-                ui.label("No stuck instances: every token reached an end event.");
+                ui.label("No stuck instances (deadlocks): every token of the other cases reached an end event.");
             } else {
                 ui.colored_label(
                     ui.visuals().error_fg_color,

@@ -240,6 +240,16 @@ pub fn overlay(
                     }
                 }
                 Need::DecisionInputs { .. } => {}
+                Need::CallStart { choices } => {
+                    if let Some(c) = key_of(&s.calls, project, &n.id).map(|k| &s.calls[&k]) {
+                        let name = choices
+                            .iter()
+                            .find(|q| q.id == c.start || q.to_string() == c.start)
+                            .and_then(|q| project.node(q))
+                            .map_or(c.start.as_str(), |n| n.label());
+                        parts.push(format!("starts at {}", short(name, 24)));
+                    }
+                }
             }
         }
         if is_arrival_start(n) {
@@ -277,6 +287,28 @@ pub fn overlay(
             overloaded = l.load > 1.0;
         }
         o.pool_badges.insert(name.clone(), (text, overloaded));
+    }
+    // Pools whose process has no start event show their arrivals (D-1).
+    for part in project.files.values().flat_map(|f| f.participants.values()) {
+        let (Some(name), Some(process)) = (&part.name, &part.process) else {
+            continue;
+        };
+        if !sim_core::scenario::is_startless_process(project, process) {
+            continue;
+        }
+        let arrivals: Vec<String> = s
+            .arrivals_of(project, process)
+            .into_iter()
+            .map(|i| format!("cases every {}", dist_short(&s.arrivals[i].inter_arrival)))
+            .collect();
+        if arrivals.is_empty() {
+            continue;
+        }
+        let badge = o.pool_badges.entry(name.clone()).or_default();
+        if !badge.0.is_empty() {
+            badge.0.push_str(" · ");
+        }
+        badge.0.push_str(&arrivals.join(" · "));
     }
     if let Some(p) = pilot {
         let max = p.flows.values().copied().max().unwrap_or(0).max(1) as f32;
@@ -594,6 +626,12 @@ pub fn pilot_summary(ui: &mut Ui, runner: &mut PilotRunner) {
                     ui.colored_label(
                         ui.visuals().warn_fg_color,
                         format!("{} token(s) got stuck", p.stuck),
+                    );
+                }
+                if p.failed > 0 {
+                    ui.colored_label(
+                        ui.visuals().error_fg_color,
+                        format!("{} case(s) failed (incident)", p.failed),
                     );
                 }
             }

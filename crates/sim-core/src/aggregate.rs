@@ -108,6 +108,9 @@ pub struct AggregateResult {
     pub end_events: BTreeMap<QId, Estimate>,
     pub messages_lost: Estimate,
     pub stuck_tokens: Estimate,
+    /// Cases that failed through an incident (runtime exception, uncaught error).
+    pub failed_cases: Estimate,
+    pub uncaught_escalations: Estimate,
 }
 
 pub fn aggregate(rs: &[ReplicationResult]) -> AggregateResult {
@@ -208,6 +211,8 @@ pub fn aggregate(rs: &[ReplicationResult]) -> AggregateResult {
         end_events,
         messages_lost: est(&|r| r.messages_lost as f64),
         stuck_tokens: est(&|r| r.stuck.len() as f64),
+        failed_cases: est(&|r| r.failed.len() as f64),
+        uncaught_escalations: est(&|r| r.uncaught_escalations.len() as f64),
     }
 }
 

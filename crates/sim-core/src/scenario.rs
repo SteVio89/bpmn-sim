@@ -58,6 +58,19 @@ pub struct Scenario {
     /// Activity with a standard loop -> how often it repeats.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub loops: BTreeMap<String, LoopSpec>,
+    /// Call activity -> the None start event of the called process it starts with, when that
+    /// process has several (D-2, R-10.5.2-04).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub calls: BTreeMap<String, CallSpec>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CallSpec {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
+    /// Id of a None start event of the called process (`id` or `file#id`).
+    pub start: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -240,6 +253,10 @@ pub struct ConditionCfg {
 pub struct EventSpec {
     pub label: Option<String>,
     pub delay: DistSpec,
+    /// Non-interrupting `timeCycle` timer start of an event subprocess: how often it fires
+    /// (overrides the model's `R<n>/`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub repeat: Option<u32>,
 }
 
 /// Timer boundary: `delay` (+ optional `probability`, default 1). Error/escalation boundary:
@@ -250,6 +267,10 @@ pub struct BoundarySpec {
     pub label: Option<String>,
     pub probability: Option<f64>,
     pub delay: Option<DistSpec>,
+    /// Non-interrupting `timeCycle` timer: how often it fires while its activity runs
+    /// (overrides the model's `R<n>/`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub repeat: Option<u32>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -279,10 +300,25 @@ impl Default for MessagesSection {
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum SignalScope {
-    /// Signals reach only instances of the same case (default, spec §5.4).
-    #[default]
+    /// Signals reach only instances of the same case (the default before M18).
     Case,
+    /// Signals are broadcast across all cases (BPMN 2.0.2 §10.5.1, R-10.5.1-01; the default).
+    #[default]
     Global,
+}
+
+/// When an inclusive (OR) join with several incoming flows fires.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum InclusiveJoin {
+    /// BPMN 2.0.2 §13.4.3 (R-13.4.3-01, the default): it fires when at least one incoming flow
+    /// has a token and every token that can still reach an empty incoming flow (without passing
+    /// the join) can also reach a filled one.
+    #[default]
+    Spec,
+    /// The behaviour before M18 (as in Camunda): it waits while any token of the instance can
+    /// still reach the join at all.
+    WaitForUpstream,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -316,6 +352,9 @@ pub struct SimulationSection {
     pub time_unit: TimeUnit,
     #[serde(default, skip_serializing_if = "is_default_scope")]
     pub signal_scope: SignalScope,
+    /// When inclusive joins fire (default: the BPMN 2.0.2 rule).
+    #[serde(default, skip_serializing_if = "is_default_join")]
+    pub inclusive_join: InclusiveJoin,
     /// Record every token step of the first N cases (for the animated token replay).
     #[serde(default = "default_trace_cases")]
     pub trace_cases: u64,
@@ -325,8 +364,12 @@ fn default_trace_cases() -> u64 {
     100
 }
 
+fn is_default_join(j: &InclusiveJoin) -> bool {
+    *j == InclusiveJoin::Spec
+}
+
 fn is_default_scope(s: &SignalScope) -> bool {
-    *s == SignalScope::Case
+    *s == SignalScope::Global
 }
 
 fn default_seed() -> u64 {
@@ -349,7 +392,8 @@ impl Default for SimulationSection {
             start: None,
             warm_up_cases: 0,
             time_unit: default_time_unit(),
-            signal_scope: SignalScope::Case,
+            signal_scope: SignalScope::Global,
+            inclusive_join: InclusiveJoin::Spec,
             trace_cases: default_trace_cases(),
         }
     }
@@ -529,7 +573,8 @@ pub struct SimParams {
 pub struct Arrival {
     pub label: Option<String>,
     pub inter_arrival: Dist,
-    /// Start events, grouped per process in the order of first appearance.
+    /// Start events (or, for a process without start events, its activities and gateways
+    /// without incoming flow), grouped per process in the order of first appearance.
     pub triggers: Vec<QId>,
     /// Cases start at the next opening of these working hours.
     pub calendar: Option<Calendar>,
@@ -574,11 +619,19 @@ pub struct BoundModel<'p> {
     pub decisions: BTreeMap<QId, BoundDecision>,
     pub buffer_unconsumed: bool,
     pub signal_scope: SignalScope,
+    pub inclusive_join: InclusiveJoin,
+    /// Call activity -> the start event of the called process it starts (only for processes
+    /// with several None start events).
+    pub call_starts: BTreeMap<QId, QId>,
     /// Black-box participant -> reply delay.
     pub black_box_reply: BTreeMap<QId, Dist>,
     /// Delay of externally triggered catch events (timer events, optionally message/signal).
     pub events: BTreeMap<QId, Dist>,
     pub boundaries: BTreeMap<QId, BoundaryCfg>,
+    /// Non-interrupting `timeCycle` timers (boundary events, event subprocess starts) -> how
+    /// often they fire at most (`u32::MAX`: as long as their activity or scope runs; only with
+    /// a horizon). Other timers fire once.
+    pub timer_cycles: BTreeMap<QId, u32>,
     /// Processes that take part in the run (triggered, or reached by messages/signals).
     pub active: Vec<QId>,
     pub warnings: Vec<String>,
@@ -676,6 +729,28 @@ impl CountSpec {
 pub struct BoundaryCfg {
     pub probability: f64,
     pub delay: Option<Dist>,
+}
+
+/// A scenario key that names a process (`P` or `file#P`), if it does.
+pub fn resolve_process(project: &Project, key: &str) -> Option<QId> {
+    match key.split_once('#') {
+        Some((file, id)) => project
+            .processes
+            .get(id)
+            .filter(|q| q.file == file)
+            .cloned(),
+        None => project.processes.get(key).cloned(),
+    }
+}
+
+/// Whether arrivals can start `process` itself: it has flow nodes but no start event at its
+/// top level, so each case starts every activity and gateway without incoming flow (D-1).
+pub fn is_startless_process(project: &Project, process: &QId) -> bool {
+    let mut top = project
+        .nodes()
+        .filter(|n| n.process == *process && n.parent.is_none())
+        .peekable();
+    top.peek().is_some() && !top.any(|n| n.kind == NodeKind::StartEvent)
 }
 
 /// Resolve a scenario key to an element: bare ids must be unique across files (spec §4).
@@ -875,6 +950,28 @@ impl Scenario {
                 .ok();
             let mut triggers = Vec::new();
             for t in &a.triggers {
+                // A process without start events (D-1): every node without incoming flow starts.
+                if let Some(pq) = resolve_process(project, t) {
+                    let has_start = project.nodes().any(|n| {
+                        n.process == pq && n.parent.is_none() && n.kind == NodeKind::StartEvent
+                    });
+                    let starts = project.start_nodes(&pq, None);
+                    if has_start {
+                        errors.push(format!(
+                            "{label}: trigger '{t}' is a process with start events; name one of its none or timer start events instead"
+                        ));
+                    } else if starts.is_empty() {
+                        errors.push(format!(
+                            "{label}: process '{t}' has no start event and no activity or gateway without incoming sequence flow, so nothing would start"
+                        ));
+                    } else {
+                        if !processes.contains(&pq) {
+                            processes.push(pq);
+                        }
+                        triggers.extend(starts);
+                    }
+                    continue;
+                }
                 match resolve(project, t, "trigger") {
                     Ok(q) => {
                         let Some(n) = project.node(&q) else { continue };
@@ -1179,6 +1276,14 @@ impl Scenario {
                     errors.at(&n.id, format!("{} ({}): {why}", n.id, n.label()));
                 }
             } else if n.kind == NodeKind::SubProcess
+                && project.none_starts(&n.process, Some(&n.id)).len() > 1
+            {
+                errors.at(&n.id, format!(
+                    "{} ({}): embedded subprocess has several none start events; it must have exactly one (BPMN 2.0.2 §13.3.4, R-13.3.4-01)",
+                    n.id,
+                    n.label()
+                ));
+            } else if n.kind == NodeKind::SubProcess
                 && project.start_nodes(&n.process, Some(&n.id)).is_empty()
             {
                 errors.at(&n.id, format!(
@@ -1186,6 +1291,59 @@ impl Scenario {
                     n.id,
                     n.label()
                 ));
+            }
+        }
+
+        // Call activities into a process with several None start events name the one they use.
+        let mut call_starts = BTreeMap::new();
+        let mut call_specs: BTreeMap<QId, (&String, &CallSpec)> = BTreeMap::new();
+        for (key, spec) in &self.calls {
+            match resolve(project, key, "call activity") {
+                Ok(q) if project.node(&q).map(|n| &n.kind) == Some(&NodeKind::CallActivity) => {
+                    call_specs.insert(q, (key, spec));
+                }
+                Ok(q) => errors.at(&q, format!("[calls.{key}]: '{q}' is not a call activity")),
+                Err(e) => errors.push(format!("[calls]: {e}")),
+            }
+        }
+        for n in nodes.iter().filter(|n| n.kind == NodeKind::CallActivity) {
+            let choices = project.call_start_choices(n);
+            let list = || {
+                choices
+                    .iter()
+                    .map(|c| format!("'{}'", c.id))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            };
+            match (call_specs.get(&n.id), choices.is_empty()) {
+                (None, true) => {}
+                (None, false) => errors.at(&n.id, format!(
+                    "{} ({}): the called process '{}' has several none start events ({}); only one fires (BPMN 2.0.2 R-10.5.2-04), so name it with [calls.\"{}\"] start = \"<start event>\"",
+                    n.id,
+                    n.label(),
+                    n.called_element.as_deref().unwrap_or_default(),
+                    list(),
+                    n.id.id
+                )),
+                (Some((key, _)), true) => warnings.at(&n.id, format!(
+                    "[calls.{key}]: the process '{}' calls has at most one none start event, the entry is ignored",
+                    n.called_element.as_deref().unwrap_or_default()
+                )),
+                (Some((key, spec)), false) => {
+                    let wanted = spec.start.rsplit('#').next().unwrap_or_default();
+                    match choices.iter().find(|c| {
+                        c.id == wanted && (!spec.start.contains('#') || c.to_string() == spec.start)
+                    }) {
+                        Some(c) => {
+                            call_starts.insert(n.id.clone(), c.clone());
+                        }
+                        None => errors.at(&n.id, format!(
+                            "[calls.{key}]: start '{}' is not a none start event of the called process; choose one of {}",
+                            spec.start,
+                            list()
+                        )),
+                    }
+                }
             }
         }
 
@@ -1427,6 +1585,48 @@ impl Scenario {
                 None => None,
             };
             boundaries.insert(n.id.clone(), BoundaryCfg { probability, delay });
+        }
+
+        // Non-interrupting timeCycle timers fire repeatedly (R-10.5.5-03); the scenario delay
+        // is the interval, the count comes from the scenario or the model's `R<n>/`.
+        let mut timer_cycles = BTreeMap::new();
+        for n in &nodes {
+            let is_timer = matches!(n.event_defs.first(), Some(EventDef::Timer));
+            let repeats = is_timer
+                && !n.cancel_activity
+                && matches!(n.timer, Some(TimerKind::Cycle { .. }))
+                && (n.kind == NodeKind::BoundaryEvent || project.is_event_sub_start(n));
+            let given = boundary_specs
+                .get(&n.id)
+                .and_then(|s| s.repeat)
+                .or_else(|| event_specs.get(&n.id).and_then(|s| s.repeat));
+            let name = format!("{} ({})", n.id, n.label());
+            if !repeats {
+                if given.is_some() {
+                    warnings.at(&n.id, format!(
+                        "{name}: only a non-interrupting timer with a timeCycle repeats; repeat is ignored"
+                    ));
+                }
+                continue;
+            }
+            let model = match n.timer {
+                Some(TimerKind::Cycle { repeat }) => repeat,
+                _ => None,
+            };
+            match given.or(model) {
+                Some(0) => errors.at(&n.id, format!("{name}: repeat must be at least 1")),
+                Some(k) => {
+                    timer_cycles.insert(n.id.clone(), k);
+                }
+                None if horizon.is_some() => {
+                    timer_cycles.insert(n.id.clone(), u32::MAX);
+                }
+                None => errors.at(&n.id, format!(
+                    "{name}: its timeCycle has no repeat count, so it would fire as long as its {} runs and the run might never end; give the cycle a count (R<n>/...), a repeat = <n> in its [{}] entry, or a simulation.horizon",
+                    if n.kind == NodeKind::BoundaryEvent { "activity" } else { "scope" },
+                    if n.kind == NodeKind::BoundaryEvent { "boundary" } else { "events" },
+                )),
+            }
         }
 
         let mut configured: BTreeMap<QId, &ActivitySpec> = BTreeMap::new();
@@ -2047,9 +2247,12 @@ impl Scenario {
             decisions,
             buffer_unconsumed: messages.buffer_unconsumed,
             signal_scope: sim.signal_scope,
+            inclusive_join: sim.inclusive_join,
+            call_starts,
             black_box_reply,
             events,
             boundaries,
+            timer_cycles,
             active: processes,
             warnings: warning_texts,
         });
@@ -2450,6 +2653,33 @@ impl Scenario {
         };
         s.update_from_model(project);
         s
+    }
+
+    /// The `repeat` counts the scenario gives timers (`[boundary]`, `[events]`).
+    pub fn timer_repeats(&self, project: &Project) -> BTreeMap<QId, u32> {
+        let boundary = self.boundary.iter().map(|(k, s)| (k, s.repeat));
+        let events = self.events.iter().map(|(k, s)| (k, s.repeat));
+        boundary
+            .chain(events)
+            .filter_map(|(k, r)| Some((resolve(project, k, "timer").ok()?, r?)))
+            .collect()
+    }
+
+    /// The valid `[calls]` choices: call activity -> start event (entries that do not bind
+    /// are left out; `check` reports them).
+    pub fn call_starts(&self, project: &Project) -> BTreeMap<QId, QId> {
+        self.calls
+            .iter()
+            .filter_map(|(key, spec)| {
+                let call = resolve(project, key, "call activity").ok()?;
+                let choices = project.call_start_choices(project.node(&call)?);
+                let wanted = spec.start.rsplit('#').next().unwrap_or_default();
+                let start = choices.into_iter().find(|c| {
+                    c.id == wanted && (!spec.start.contains('#') || c.to_string() == spec.start)
+                })?;
+                Some((call, start))
+            })
+            .collect()
     }
 
     pub fn to_toml(&self) -> Result<String, ScenarioError> {

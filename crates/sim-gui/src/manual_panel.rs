@@ -49,10 +49,7 @@ impl ManualState {
     }
 
     fn label(&self, id: &QId) -> String {
-        let name = self
-            .project
-            .node(id)
-            .map_or_else(|| id.id.clone(), |n| n.label().to_string());
+        let name = self.project.label_of(id);
         if self.project.files.len() > 1 {
             format!("{name} ({})", id.file)
         } else {
@@ -103,6 +100,9 @@ impl ManualState {
                 Pending::Fire { events, .. } => m.nodes.extend(events),
                 Pending::Continue { at, .. } => {
                     m.nodes.insert(at);
+                }
+                Pending::StartCall { call, .. } => {
+                    m.nodes.insert(call);
                 }
             }
         }
@@ -200,6 +200,12 @@ impl ManualState {
         });
         if let Some(e) = &self.error {
             ui.colored_label(ui.visuals().error_fg_color, e);
+        }
+        if let Some(f) = self.game.failure() {
+            ui.colored_label(
+                ui.visuals().error_fg_color,
+                format!("The case failed: {f}. The halted instances keep their tokens."),
+            );
         }
         let pending = self.game.pending();
         if pending.is_empty() {
@@ -306,6 +312,24 @@ impl ManualState {
                             let what = if sending { "Send from" } else { "Go on from" };
                             if ui.button(format!("{what} {}", self.label(&at))).clicked() {
                                 self.apply(Action::Continue { token });
+                            }
+                        }
+                        Pending::StartCall {
+                            token,
+                            call,
+                            starts,
+                        } => {
+                            ui.label(
+                                RichText::new(format!("{} starts at:", self.label(&call)))
+                                    .color(accent(ui.visuals())),
+                            )
+                            .on_hover_text(
+                                "The called process has several none start events; only one fires (BPMN 2.0.2 R-10.5.2-04).",
+                            );
+                            for start in starts {
+                                if ui.button(self.label(&start)).clicked() {
+                                    self.apply(Action::StartCall { token, start });
+                                }
                             }
                         }
                     });
