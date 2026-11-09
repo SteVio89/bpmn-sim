@@ -254,19 +254,77 @@ pub fn run_replications(m: &BoundModel) -> Vec<ReplicationResult> {
     run_replications_with(m, |_, _| {})
 }
 
-/// Like `run_replications`; `progress(done, total)` is called after each replication.
+/// Like `run_replications`; `progress(done, total)` is called on the calling thread after each
+/// replication.
+///
+/// Replications are independent, so they run on all available cores. Every replication keeps
+/// its own seed and the results come back in replication order: the outcome is the same as
+/// running them one after another.
 pub fn run_replications_with(
     m: &BoundModel,
+    progress: impl FnMut(u32, u32),
+) -> Vec<ReplicationResult> {
+    let threads = std::thread::available_parallelism().map_or(1, |n| n.get());
+    run_replications_on(m, threads, progress)
+}
+
+/// `run_replications_with` on at most `threads` threads.
+pub fn run_replications_on(
+    m: &BoundModel,
+    threads: usize,
     mut progress: impl FnMut(u32, u32),
 ) -> Vec<ReplicationResult> {
+    use std::sync::atomic::{AtomicU32, Ordering};
+    use std::sync::mpsc;
+
     let total = m.sim.replications;
-    (0..total)
-        .map(|i| {
-            let r = run_replication(m, i);
-            progress(i + 1, total);
-            r
-        })
+    let threads = threads.min(total as usize);
+    if threads <= 1 {
+        return (0..total)
+            .map(|i| {
+                let r = run_replication(m, i);
+                progress(i + 1, total);
+                r
+            })
+            .collect();
+    }
+    // Workers take the next replication number until none are left, so slow and fast
+    // replications even out across the threads.
+    let next = AtomicU32::new(0);
+    let (tx, rx) = mpsc::channel();
+    let mut results: Vec<Option<ReplicationResult>> = (0..total).map(|_| None).collect();
+    std::thread::scope(|s| {
+        for _ in 0..threads {
+            let tx = tx.clone();
+            let next = &next;
+            s.spawn(move || {
+                loop {
+                    let i = next.fetch_add(1, Ordering::Relaxed);
+                    if i >= total {
+                        break;
+                    }
+                    // The receiver lives until every worker has finished.
+                    let _ = tx.send((i, run_replication(m, i)));
+                }
+            });
+        }
+        drop(tx);
+        for (done, (i, r)) in (1..).zip(rx) {
+            results[i as usize] = Some(r);
+            progress(done, total);
+        }
+    });
+    results
+        .into_iter()
+        .map(|r| r.expect("every replication ran"))
         .collect()
+}
+
+/// Drop the spare capacity of a vector kept in a result: with many replications held at
+/// once, it adds up.
+fn compact<T>(mut v: Vec<T>) -> Vec<T> {
+    v.shrink_to_fit();
+    v
 }
 
 /// Replication `i` (from 0) of a run, with the seed `run_replications` gives it, for callers
@@ -1944,15 +2002,17 @@ impl<'a> Engine<'a> {
         let free = match &cfg.pool {
             None => true,
             Some(p) => {
-                let cap = self.m.pools.get(p).map_or(0, |d| d.count);
-                self.pools.get(p).is_some_and(|pool| pool.busy < cap)
+                let cap = self.m.pools.get(p.as_str()).map_or(0, |d| d.count);
+                self.pools
+                    .get(p.as_str())
+                    .is_some_and(|pool| pool.busy < cap)
             }
         };
         if free {
             self.start_task(id);
         } else if let Some(p) = &cfg.pool {
             self.set_token(inst, tok, &node.id, &format!("queued for resource '{p}'"));
-            if let Some(pool) = self.pools.get_mut(p) {
+            if let Some(pool) = self.pools.get_mut(p.as_str()) {
                 pool.queue.push_back(id);
             }
         }
@@ -1964,7 +2024,11 @@ impl<'a> Engine<'a> {
             return;
         };
         let duration = cfg.duration.sample(&mut self.rng);
-        if let Some(pool) = cfg.pool.as_ref().and_then(|p| self.pools.get_mut(p)) {
+        if let Some(pool) = cfg
+            .pool
+            .as_ref()
+            .and_then(|p| self.pools.get_mut(p.as_str()))
+        {
             pool.busy += 1;
         }
         // With a calendar the work starts when the resource is next open and pauses outside
@@ -1992,7 +2056,7 @@ impl<'a> Engine<'a> {
             .get(activity)?
             .pool
             .as_ref()
-            .and_then(|p| m.pools.get(p))
+            .and_then(|p| m.pools.get(p.as_str()))
             .and_then(|d| d.calendar.as_ref())
     }
 
@@ -2036,7 +2100,7 @@ impl<'a> Engine<'a> {
         let rate = cfg
             .pool
             .as_ref()
-            .and_then(|p| m.pools.get(p))
+            .and_then(|p| m.pools.get(p.as_str()))
             .map_or(0.0, |d| d.cost_per_hour);
         let cost = duration / 3600.0 * rate + cfg.fixed_cost;
         let case = self.instances[inst].case;
@@ -2046,7 +2110,7 @@ impl<'a> Engine<'a> {
             instance: inst as u64,
             token: tok,
             activity: node_id.clone(),
-            resource: cfg.pool.clone(),
+            resource: cfg.pool,
             queued,
             start,
             end: self.now,
@@ -2058,7 +2122,7 @@ impl<'a> Engine<'a> {
             let r = &mut self.scope_runs[run];
             r.waiting += start - queued;
             r.working += duration;
-            r.pools.extend(cfg.pool.clone());
+            r.pools.extend(cfg.pool.map(String::from));
         }
         if let Some(t) = self.instances[inst].tokens.get_mut(&tok) {
             t.run = None;
@@ -2171,7 +2235,7 @@ impl<'a> Engine<'a> {
         let rate = cfg
             .pool
             .as_ref()
-            .and_then(|p| m.pools.get(p))
+            .and_then(|p| m.pools.get(p.as_str()))
             .map_or(0.0, |d| d.cost_per_hour);
         let cost = worked / 3600.0 * rate;
         let case = self.instances[inst].case;
@@ -2181,7 +2245,7 @@ impl<'a> Engine<'a> {
             instance: inst as u64,
             token: tok,
             activity: node_id,
-            resource: cfg.pool.clone(),
+            resource: cfg.pool,
             queued,
             start: begun,
             end: self.now,
@@ -2644,15 +2708,18 @@ impl<'a> Engine<'a> {
         // The observation window is the whole run; utilisation includes warm-up cases.
         let end_time = self.now;
         // Tasks still running at the horizon have worked until then.
-        let mut busy: BTreeMap<&String, f64> =
-            self.pools.iter().map(|(n, p)| (n, p.busy_time)).collect();
+        let mut busy: BTreeMap<&str, f64> = self
+            .pools
+            .iter()
+            .map(|(n, p)| (n.as_str(), p.busy_time))
+            .collect();
         for r in self.runs.iter().filter(|r| r.state == RunState::Running) {
             if let Some(pool) = self.m.activities.get(&r.node).and_then(|a| a.pool.as_ref()) {
                 let worked = match self.calendar_of(&r.node) {
                     Some(c) => c.open_between(r.start, end_time),
                     None => (end_time - r.start).max(0.0),
                 };
-                if let Some(b) = busy.get_mut(pool) {
+                if let Some(b) = busy.get_mut(pool.as_str()) {
                     *b += worked.min(r.duration);
                 }
             }
@@ -2666,7 +2733,7 @@ impl<'a> Engine<'a> {
                     Some(c) => c.open_between(0.0, end_time),
                     None => end_time,
                 };
-                let busy_time = busy[name];
+                let busy_time = busy[name.as_str()];
                 let available = f64::from(def.count) * open;
                 (
                     name.clone(),
@@ -2763,14 +2830,14 @@ impl<'a> Engine<'a> {
                     count: *n,
                 })
                 .collect(),
-            messages: self.messages,
-            signals: self.signals,
+            messages: compact(self.messages),
+            signals: compact(self.signals),
             boundary_fired: self.boundary_fired,
             decisions: self.decision_stats,
-            trace: self.trace,
+            trace: compact(self.trace),
             processes,
             cases,
-            records: self.records,
+            records: compact(self.records),
         }
     }
 }

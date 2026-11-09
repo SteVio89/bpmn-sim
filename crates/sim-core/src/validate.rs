@@ -278,7 +278,7 @@ fn mirror_consistency(project: &Project) -> Vec<Issue> {
                     continue;
                 };
                 let (seen, what) = if *end == scope.id {
-                    (&mut outer, f.id.id.clone())
+                    (&mut outer, f.id.id.to_string())
                 } else if let Some(n) = project.node(end)
                     && is_inside(project, scope, n)
                 {
@@ -374,7 +374,7 @@ fn is_inside(project: &Project, scope: &FlowNode, n: &FlowNode) -> bool {
 /// Whether the subprocess `s` is drawn collapsed: it has a shape in the file's (first) diagram,
 /// but nothing inside it has one (its content is on a diagram of its own).
 fn drawn_collapsed(project: &Project, s: &FlowNode) -> bool {
-    let Some(file) = project.files.get(&s.id.file) else {
+    let Some(file) = project.files.get(s.id.file.as_str()) else {
         return false;
     };
     let shapes = &file.diagram.shapes;
@@ -388,14 +388,14 @@ fn drawn_collapsed(project: &Project, s: &FlowNode) -> bool {
 /// Name (else id) of the pool at the end `end` of a message flow: the participant itself, or
 /// the participant of the element's process.
 fn party_name(project: &Project, end: &QId) -> Option<String> {
-    let participants = &project.files.get(&end.file)?.participants;
+    let participants = &project.files.get(end.file.as_str())?.participants;
     let p = match project.node(end) {
         Some(n) => participants
             .values()
             .find(|p| p.process.as_ref() == Some(&n.process))?,
         None => participants.get(end)?,
     };
-    Some(p.name.clone().unwrap_or_else(|| p.id.id.clone()))
+    Some(p.name.clone().unwrap_or_else(|| p.id.id.to_string()))
 }
 
 fn link_catch<'a>(project: &'a Project, process: &QId, name: &str) -> Option<&'a FlowNode> {

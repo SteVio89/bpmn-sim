@@ -289,14 +289,14 @@ pub fn name_of(project: &Project, r: &ReplicationResult, root: u64) -> String {
     };
     let pool = project
         .files
-        .get(&i.process.file)
+        .get(i.process.file.as_str())
         .and_then(|f| {
             f.participants
                 .values()
                 .find(|p| p.process.as_ref() == Some(&i.process))
         })
         .and_then(|p| p.name.clone())
-        .unwrap_or_else(|| i.process.id.clone());
+        .unwrap_or_else(|| i.process.id.to_string());
     let siblings = r
         .instances
         .iter()
@@ -465,19 +465,24 @@ pub fn token_point(project: &Project, place: &TokenPlace) -> Option<(String, Pos
         TokenPlace::OnFlow { flow, fraction } => {
             let pts: Vec<Pos2> = project
                 .files
-                .get(&flow.file)?
+                .get(flow.file.as_str())?
                 .diagram
                 .edges
                 .get(flow)?
                 .iter()
                 .map(|(x, y)| Pos2::new(*x as f32, *y as f32))
                 .collect();
-            Some((flow.file.clone(), point_along(&pts, *fraction)))
+            Some((flow.file.to_string(), point_along(&pts, *fraction)))
         }
         TokenPlace::Waiting { node } | TokenPlace::Working { node } | TokenPlace::At { node } => {
-            let b = project.files.get(&node.file)?.diagram.shapes.get(node)?;
+            let b = project
+                .files
+                .get(node.file.as_str())?
+                .diagram
+                .shapes
+                .get(node)?;
             Some((
-                node.file.clone(),
+                node.file.to_string(),
                 Pos2::new((b.x + b.width / 2.0) as f32, (b.y + b.height / 2.0) as f32),
             ))
         }
@@ -489,7 +494,7 @@ pub fn status(project: &Project, t: &TokenView) -> String {
     let label = |q: &QId| {
         project
             .node(q)
-            .map_or(q.id.clone(), |n| n.label().to_string())
+            .map_or(q.id.to_string(), |n| n.label().to_string())
     };
     match &t.place {
         TokenPlace::OnFlow { flow, .. } => match project.flow(flow) {
@@ -522,7 +527,7 @@ fn callers(r: &ReplicationResult, mut inst: u64) -> Vec<String> {
     while let Some(i) = r.instances.get(inst as usize) {
         match (i.parent, &i.call) {
             (Some(p), Some(c)) => {
-                out.push(c.file.clone());
+                out.push(c.file.to_string());
                 inst = p;
             }
             _ => break,

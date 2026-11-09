@@ -1711,7 +1711,7 @@ mod tests {
                 .game
                 .tokens()
                 .iter()
-                .map(|t| t.node.id.clone())
+                .map(|t| t.node.id.to_string())
                 .collect()
         };
         // Click the start event: the token moves to the first task and waits there.

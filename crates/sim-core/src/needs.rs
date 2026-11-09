@@ -205,7 +205,7 @@ pub fn match_flows(
             .iter()
             .filter_map(|v| OutputValue::from_value(v))
             .collect();
-        map.insert(f.id.clone(), OutputValues::from_vec(literals));
+        map.insert(f.id.to_string(), OutputValues::from_vec(literals));
     }
     Some(map)
 }
@@ -587,8 +587,8 @@ pub fn key_of<T>(map: &BTreeMap<String, T>, project: &Project, q: &QId) -> Optio
     if map.contains_key(&full) {
         return Some(full);
     }
-    (map.contains_key(&q.id) && project.nodes().filter(|n| n.id.id == q.id).count() == 1)
-        .then(|| q.id.clone())
+    (map.contains_key(q.id.as_str()) && project.nodes().filter(|n| n.id.id == q.id).count() == 1)
+        .then(|| q.id.to_string())
 }
 
 /// Whether element key `key` refers to an element that exists in the project.
@@ -647,7 +647,7 @@ impl Scenario {
     pub fn arrivals_of(&self, project: &Project, q: &QId) -> Vec<usize> {
         let full = q.to_string();
         let unique = project.nodes().filter(|n| n.id.id == q.id).count() == 1
-            || project.processes.get(&q.id) == Some(q);
+            || project.processes.get(q.id.as_str()) == Some(q);
         self.arrivals
             .iter()
             .enumerate()
@@ -715,7 +715,9 @@ impl Scenario {
             let triggers: Vec<String> = project
                 .nodes()
                 .filter(|n| {
-                    is_arrival_start(n) && Some(&n.id.file) == main.as_ref() && !called(&n.process)
+                    is_arrival_start(n)
+                        && Some(n.id.file.as_str()) == main.as_deref()
+                        && !called(&n.process)
                 })
                 .map(|n| n.id.to_string())
                 .chain(
@@ -723,7 +725,7 @@ impl Scenario {
                         .processes
                         .values()
                         .filter(|p| {
-                            Some(&p.file) == main.as_ref()
+                            Some(p.file.as_str()) == main.as_deref()
                                 && crate::scenario::is_startless_process(project, p)
                                 && !called(p)
                         })
@@ -789,7 +791,10 @@ impl Scenario {
                             };
                             GatewaySpec {
                                 label: n.name.clone(),
-                                probabilities: flows.iter().map(|f| (f.id.clone(), p)).collect(),
+                                probabilities: flows
+                                    .iter()
+                                    .map(|f| (f.id.to_string(), p))
+                                    .collect(),
                                 if_completed: None,
                                 then: None,
                                 output: None,
@@ -848,7 +853,7 @@ impl Scenario {
                             key.clone(),
                             CallSpec {
                                 label: n.name.clone(),
-                                start: first.id.clone(),
+                                start: first.id.to_string(),
                             },
                         );
                     }

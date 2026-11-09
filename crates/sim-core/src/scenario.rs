@@ -585,7 +585,7 @@ pub struct ActivityCfg {
     pub duration: Dist,
     pub fixed_cost: f64,
     /// Resource pool name; `None` = no resource needed.
-    pub pool: Option<String>,
+    pub pool: Option<Name>,
 }
 
 #[derive(Debug, Clone)]
@@ -1187,7 +1187,7 @@ impl Scenario {
                 None => {
                     let is_black_box = project
                         .files
-                        .get(&f.target.file)
+                        .get(f.target.file.as_str())
                         .and_then(|file| file.participants.get(&f.target))
                         .is_some_and(|p| p.process.is_none());
                     if !is_black_box {
@@ -1453,13 +1453,13 @@ impl Scenario {
         let silent_black_box = |p: &QId| -> Option<String> {
             let name = project
                 .files
-                .get(&p.file)?
+                .get(p.file.as_str())?
                 .participants
                 .get(p)
                 .filter(|p| p.process.is_none())?
                 .name
                 .clone()
-                .unwrap_or_else(|| p.id.clone());
+                .unwrap_or_else(|| p.id.to_string());
             let contacted = sent_flows.iter().any(|g| {
                 g.target == *p
                     && project
@@ -1697,7 +1697,7 @@ impl Scenario {
                 ActivityCfg {
                     duration,
                     fixed_cost: spec.fixed_cost,
-                    pool,
+                    pool: pool.map(Name::from),
                 },
             );
         }
@@ -2057,7 +2057,7 @@ impl Scenario {
             for (k, p) in &spec.probabilities {
                 let q = match k.split_once('#') {
                     Some((f, i)) => QId::new(f, i),
-                    None => QId::new(&n.id.file, k),
+                    None => QId::new(n.id.file, k),
                 };
                 if !n.outgoing.contains(&q) {
                     errors.at(
@@ -2143,7 +2143,7 @@ impl Scenario {
                     for (k, p) in &spec.probabilities {
                         let q = match k.split_once('#') {
                             Some((f, i)) => QId::new(f, i),
-                            None => QId::new(&n.id.file, k),
+                            None => QId::new(n.id.file, k),
                         };
                         if !split.conditional.iter().any(|(f, _)| *f == q) {
                             errors.at(
@@ -2333,7 +2333,7 @@ fn history_cfg(project: &Project, n: &FlowNode, spec: &GatewaySpec) -> Result<Hi
     let element = resolve(project, element, "if_completed: element")?;
     let then = match then.split_once('#') {
         Some((f, i)) => QId::new(f, i),
-        None => QId::new(&n.id.file, then),
+        None => QId::new(n.id.file, then),
     };
     let Some(otherwise) = n.outgoing.iter().find(|f| **f != then).cloned() else {
         return Err("the two outgoing flows are the same".into());
@@ -2401,7 +2401,7 @@ fn output_cfg(
     for (k, vs) in &spec.values {
         let q = match k.split_once('#') {
             Some((f, i)) => QId::new(f, i),
-            None => QId::new(&n.id.file, k),
+            None => QId::new(n.id.file, k),
         };
         if !n.outgoing.contains(&q) {
             return Err(format!("'{k}' is not an outgoing flow of this gateway"));

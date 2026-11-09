@@ -158,7 +158,7 @@ fn the_token_game_starts_a_subprocess_without_start_event_at_its_free_activities
     let mut g = Game::new(Arc::new(startless_sub()));
     g.apply(manual::Action::Start { event: q("Start") })
         .unwrap();
-    let mut at: Vec<String> = g.tokens().iter().map(|t| t.node.id.clone()).collect();
+    let mut at: Vec<String> = g.tokens().iter().map(|t| t.node.id.to_string()).collect();
     at.sort();
     assert_eq!(at, ["A", "B", "Sub"]);
 }
@@ -482,7 +482,7 @@ fn the_token_game_offers_and_runs_event_subprocesses() {
         event: q("EvStart"),
     })
     .unwrap();
-    let mut at: Vec<String> = g.tokens().iter().map(|t| t.node.id.clone()).collect();
+    let mut at: Vec<String> = g.tokens().iter().map(|t| t.node.id.to_string()).collect();
     at.sort();
     // `Work` is cancelled; the event subprocess waits while `Handle` runs.
     assert_eq!(at, ["EvSub", "Handle"]);
@@ -510,7 +510,7 @@ fn the_token_game_catches_errors_in_event_subprocesses() {
         })
         .expect("Work waits");
     g.apply(manual::Action::Complete { token: work }).unwrap();
-    let mut at: Vec<String> = g.tokens().iter().map(|t| t.node.id.clone()).collect();
+    let mut at: Vec<String> = g.tokens().iter().map(|t| t.node.id.to_string()).collect();
     at.sort();
     assert_eq!(at, ["Catch", "Handle", "Sub"]);
     assert!(

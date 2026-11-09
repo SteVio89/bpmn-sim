@@ -67,7 +67,7 @@ impl ManualState {
                         .map_or(fl.target.id.as_str(), |n| n.label())
                 )
             }),
-            None => f.id.clone(),
+            None => f.id.to_string(),
         }
     }
 

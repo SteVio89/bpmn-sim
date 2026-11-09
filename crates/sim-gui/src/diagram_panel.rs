@@ -394,7 +394,7 @@ fn heat_color(f: f32) -> Color32 {
 /// The file whose diagram shows the process a call activity calls.
 fn called_file<'p>(project: &'p Project, n: &FlowNode) -> Option<(&'p QId, &'p BpmnFile)> {
     let q = project.processes.get(n.called_element.as_ref()?)?;
-    Some((q, project.files.get(&q.file)?))
+    Some((q, project.files.get(q.file.as_str())?))
 }
 
 pub fn show(app: &mut App, ui: &mut Ui) {
@@ -2086,7 +2086,7 @@ fn follow_manual_focus(v: &mut DiagramView, project: &Project) {
     if !std::mem::take(&mut m.moved) {
         return;
     }
-    let Some(target) = m.game.focus().map(|n| n.file) else {
+    let Some(target) = m.game.focus().map(|n| n.file.to_string()) else {
         return;
     };
     if v.file.as_ref() == Some(&target)
@@ -2097,7 +2097,12 @@ fn follow_manual_focus(v: &mut DiagramView, project: &Project) {
     {
         return;
     }
-    v.history = m.game.focus_calls().into_iter().map(|c| c.file).collect();
+    v.history = m
+        .game
+        .focus_calls()
+        .into_iter()
+        .map(|c| c.file.to_string())
+        .collect();
     v.file = Some(target);
     v.fit = true;
 }
