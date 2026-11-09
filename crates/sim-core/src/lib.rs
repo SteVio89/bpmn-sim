@@ -10,6 +10,7 @@ pub mod engine;
 pub mod error;
 pub mod export;
 pub mod feel;
+pub mod insights;
 pub mod manual;
 pub mod model;
 pub mod needs;
@@ -25,6 +26,7 @@ pub use engine::{
     Engine, run_replication, run_replications, run_replications_on, run_replications_with,
 };
 pub use error::ParseError;
+pub use insights::Insights;
 pub use model::*;
 pub use project::{Project, discover_files};
 pub use scenario::{BoundModel, InclusiveJoin, Scenario, ScenarioError, SignalScope};
