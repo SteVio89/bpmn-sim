@@ -254,18 +254,69 @@ pub fn run_replications(m: &BoundModel) -> Vec<ReplicationResult> {
     run_replications_with(m, |_, _| {})
 }
 
-/// Like `run_replications`; `progress(done, total)` is called after each replication.
+/// Like `run_replications`; `progress(done, total)` is called on the calling thread after each
+/// replication.
+///
+/// Replications are independent, so they run on all available cores. Every replication keeps
+/// its own seed and the results come back in replication order: the outcome is the same as
+/// running them one after another.
 pub fn run_replications_with(
     m: &BoundModel,
+    progress: impl FnMut(u32, u32),
+) -> Vec<ReplicationResult> {
+    let threads = std::thread::available_parallelism().map_or(1, |n| n.get());
+    run_replications_on(m, threads, progress)
+}
+
+/// `run_replications_with` on at most `threads` threads.
+pub fn run_replications_on(
+    m: &BoundModel,
+    threads: usize,
     mut progress: impl FnMut(u32, u32),
 ) -> Vec<ReplicationResult> {
+    use std::sync::atomic::{AtomicU32, Ordering};
+    use std::sync::mpsc;
+
     let total = m.sim.replications;
-    (0..total)
-        .map(|i| {
-            let r = run_replication(m, i);
-            progress(i + 1, total);
-            r
-        })
+    let threads = threads.min(total as usize);
+    if threads <= 1 {
+        return (0..total)
+            .map(|i| {
+                let r = run_replication(m, i);
+                progress(i + 1, total);
+                r
+            })
+            .collect();
+    }
+    // Workers take the next replication number until none are left, so slow and fast
+    // replications even out across the threads.
+    let next = AtomicU32::new(0);
+    let (tx, rx) = mpsc::channel();
+    let mut results: Vec<Option<ReplicationResult>> = (0..total).map(|_| None).collect();
+    std::thread::scope(|s| {
+        for _ in 0..threads {
+            let tx = tx.clone();
+            let next = &next;
+            s.spawn(move || {
+                loop {
+                    let i = next.fetch_add(1, Ordering::Relaxed);
+                    if i >= total {
+                        break;
+                    }
+                    // The receiver lives until every worker has finished.
+                    let _ = tx.send((i, run_replication(m, i)));
+                }
+            });
+        }
+        drop(tx);
+        for (done, (i, r)) in (1..).zip(rx) {
+            results[i as usize] = Some(r);
+            progress(done, total);
+        }
+    });
+    results
+        .into_iter()
+        .map(|r| r.expect("every replication ran"))
         .collect()
 }
 
