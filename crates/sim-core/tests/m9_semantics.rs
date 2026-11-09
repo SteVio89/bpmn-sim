@@ -160,7 +160,8 @@ fn probabilities_only_apply_to_conditional_flows() {
 }
 
 #[test]
-fn a_task_without_a_true_condition_and_default_flow_gets_stuck() {
+fn a_task_without_a_true_condition_and_default_flow_fails_the_case() {
+    // M18 (D-3, R-13.3.1-01): a runtime exception, reported as a failed case, not as stuck.
     let p = model(
         r#"
         <bpmn:startEvent id="Start"/><bpmn:task id="T"/><bpmn:endEvent id="E"/>
@@ -171,8 +172,19 @@ fn a_task_without_a_true_condition_and_default_flow_gets_stuck() {
     );
     let r = run(&p, &base(3, &fixed("T", 5)));
     assert_eq!(r.cases_completed, 0);
-    assert_eq!(r.stuck.len(), 3);
-    assert!(r.stuck[0].state.contains("no outgoing condition is true"));
+    assert!(r.stuck.is_empty());
+    assert_eq!(r.failed.len(), 3);
+    assert_eq!(
+        r.failed[0].reason,
+        FailureReason::RuntimeException {
+            rule: "R-13.3.1-01".into()
+        }
+    );
+    assert!(
+        r.failed[0].tokens[0]
+            .state
+            .contains("no outgoing condition is true")
+    );
 }
 
 #[test]
@@ -290,16 +302,24 @@ fn an_exact_error_code_wins_over_a_catch_all_boundary_event() {
 }
 
 #[test]
-fn an_uncaught_error_leaves_the_token_stuck_at_the_end_event() {
+fn an_uncaught_error_fails_the_case_and_keeps_the_token_at_the_end_event() {
+    // M18 (D-4, R-10.5.1-03): an incident, no longer a stuck token.
     let r = run(&erroring(r#"errorRef="Err_B""#, ON_A), &error_scenario());
     assert_eq!(r.cases_completed, 0);
+    assert!(r.stuck.is_empty());
+    assert_eq!(r.failed.len(), 10);
     let errs: Vec<_> = r
-        .stuck
+        .failed
         .iter()
+        .flat_map(|f| &f.tokens)
         .filter(|s| s.element == q("ErrEnd"))
         .collect();
     assert_eq!(errs.len(), 10);
     assert_eq!(errs[0].state, "uncaught error 'B'");
+    assert_eq!(
+        r.failed[0].reason,
+        FailureReason::UncaughtError { code: "B".into() }
+    );
 }
 
 #[test]

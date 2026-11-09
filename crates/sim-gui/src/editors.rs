@@ -372,7 +372,7 @@ fn output_editor(ui: &mut Ui, project: &Project, n: &FlowNode, g: &mut GatewaySp
             "A value no flow takes goes along the default flow ({}).",
             flow_label(project, d)
         ),
-        None => "A value no flow takes leaves the token stuck at the gateway (there is no default flow).".into(),
+        None => "A value no flow takes is a runtime exception: the case fails and halts at the gateway (there is no default flow).".into(),
     };
     let how = match (
         n.kind == NodeKind::InclusiveGateway,

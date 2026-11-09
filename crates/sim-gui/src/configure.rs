@@ -596,6 +596,12 @@ pub fn pilot_summary(ui: &mut Ui, runner: &mut PilotRunner) {
                         format!("{} token(s) got stuck", p.stuck),
                     );
                 }
+                if p.failed > 0 {
+                    ui.colored_label(
+                        ui.visuals().error_fg_color,
+                        format!("{} case(s) failed (incident)", p.failed),
+                    );
+                }
             }
         }
         if runner.busy() {

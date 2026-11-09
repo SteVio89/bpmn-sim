@@ -201,6 +201,12 @@ impl ManualState {
         if let Some(e) = &self.error {
             ui.colored_label(ui.visuals().error_fg_color, e);
         }
+        if let Some(f) = self.game.failure() {
+            ui.colored_label(
+                ui.visuals().error_fg_color,
+                format!("The case failed: {f}. The halted instances keep their tokens."),
+            );
+        }
         let pending = self.game.pending();
         if pending.is_empty() {
             let msg = if self.game.tokens().is_empty() {

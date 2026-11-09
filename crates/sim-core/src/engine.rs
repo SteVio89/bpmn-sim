@@ -56,6 +56,8 @@ struct Case {
     completion: Option<f64>,
     /// Elements that history gateways ask about and that have completed in this case.
     completed: BTreeSet<QId>,
+    /// The first incident of the case: (time, process, element, reason).
+    failure: Option<(f64, QId, QId, FailureReason)>,
 }
 
 struct Token {
@@ -143,6 +145,8 @@ struct Instance {
     /// Subscriptions of the event subprocesses at the top level.
     event_subs: Vec<usize>,
     done: bool,
+    /// Halted by an incident: its tokens stay where they are and nothing moves any more.
+    halted: bool,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -226,6 +230,7 @@ pub struct Engine<'a> {
     buffer: BTreeMap<(usize, QId), usize>,
     messages: Vec<MessageRecord>,
     signals: Vec<SignalRecord>,
+    escalations: Vec<UncaughtEscalation>,
     // Static lookups derived from the model.
     boundaries_of: BTreeMap<QId, Vec<QId>>,
     sub_starts: BTreeMap<QId, Vec<QId>>,
@@ -363,6 +368,7 @@ impl<'a> Engine<'a> {
             buffer: BTreeMap::new(),
             messages: Vec::new(),
             signals: Vec::new(),
+            escalations: Vec::new(),
             boundaries_of,
             sub_starts,
             event_subs_of,
@@ -442,6 +448,7 @@ impl<'a> Engine<'a> {
             cost: 0.0,
             completion: None,
             completed: BTreeSet::new(),
+            failure: None,
         });
         self.started += 1;
 
@@ -488,6 +495,7 @@ impl<'a> Engine<'a> {
             joins: BTreeMap::new(),
             event_subs: Vec::new(),
             done: false,
+            halted: false,
         });
         self.cases[case].open_instances += 1;
         inst
@@ -589,6 +597,9 @@ impl<'a> Engine<'a> {
     fn process(&mut self, inst: usize, mut work: Vec<Work>) {
         loop {
             self.run_work(inst, &mut work);
+            if self.instances[inst].halted {
+                return;
+            }
             // Inclusive joins can only be judged once every token has settled.
             if !self.fire_or_joins(inst, &mut work) {
                 break;
@@ -600,6 +611,10 @@ impl<'a> Engine<'a> {
     fn run_work(&mut self, inst: usize, work: &mut Vec<Work>) {
         let mut work = std::mem::take(work);
         while let Some((tok, node_id, via)) = work.pop() {
+            // An incident halted the instance: nothing moves any more.
+            if self.instances[inst].halted {
+                return;
+            }
             // The token may have been cancelled (terminate, interrupting boundary) meanwhile.
             if !self.alive(inst, tok) {
                 continue;
@@ -635,21 +650,26 @@ impl<'a> Engine<'a> {
                         Some(EventDef::Terminate) => self.terminate(inst, tok),
                         Some(EventDef::Error(code)) => {
                             if !self.raise(inst, tok, true, code.as_deref(), &mut work) {
-                                // Camunda raises an incident: the token stays and is reported.
+                                // An incident (D-4): the whole instance halts.
+                                let code = code.clone().unwrap_or_default();
                                 self.set_token(
                                     inst,
                                     tok,
                                     &node_id,
-                                    &format!(
-                                        "uncaught error '{}'",
-                                        code.as_deref().unwrap_or_default()
-                                    ),
+                                    &format!("uncaught error '{code}'"),
                                 );
-                                continue;
+                                self.incident(
+                                    inst,
+                                    &node_id,
+                                    FailureReason::UncaughtError { code },
+                                );
+                                return;
                             }
                         }
                         Some(EventDef::Escalation(code)) => {
-                            self.raise(inst, tok, false, code.as_deref(), &mut work);
+                            if !self.raise(inst, tok, false, code.as_deref(), &mut work) {
+                                self.uncaught_escalation(inst, &node_id, code.as_deref());
+                            }
                         }
                         _ => {}
                     }
@@ -692,8 +712,9 @@ impl<'a> Engine<'a> {
                         self.throw(inst, node);
                         if let Some(EventDef::Escalation(code)) = first_def
                             && self.alive(inst, tok)
+                            && !self.raise(inst, tok, false, code.as_deref(), &mut work)
                         {
-                            self.raise(inst, tok, false, code.as_deref(), &mut work);
+                            self.uncaught_escalation(inst, &node_id, code.as_deref());
                         }
                         if self.alive(inst, tok) {
                             self.route(inst, tok, node, &mut work);
@@ -737,6 +758,9 @@ impl<'a> Engine<'a> {
             .map(|(j, _)| j.clone())
             .collect();
         for j in joins {
+            if self.instances[inst].halted {
+                break;
+            }
             let Some(reach) = self.or_reach.get(&j).cloned() else {
                 continue;
             };
@@ -899,13 +923,14 @@ impl<'a> Engine<'a> {
                 taken.extend(cfg.default.as_ref());
             }
             if taken.is_empty() && cfg.always.is_empty() {
-                // BPMN would raise an error; the token stays here and is reported as stuck.
+                // A runtime exception (D-3): the activity acts as an inclusive split (Fig. 13.1).
                 self.set_token(
                     inst,
                     tok,
                     &node.id,
                     "no outgoing condition is true and there is no default flow",
                 );
+                self.runtime_exception(inst, node, "R-13.3.1-01");
                 return;
             }
             let flows: Vec<QId> = node
@@ -942,7 +967,7 @@ impl<'a> Engine<'a> {
                 match &cfg.default {
                     Some(d) => chosen.push(d.clone()),
                     None => {
-                        // BPMN would raise an error; the token stays here and is reported as stuck.
+                        // A runtime exception (D-3): the token stays and the instance halts.
                         let state = match &cfg.output {
                             Some(var) => format!(
                                 "decision output {var} = {} takes no flow and there is no default flow",
@@ -953,6 +978,12 @@ impl<'a> Engine<'a> {
                             }
                         };
                         self.set_token(inst, tok, &node.id, &state);
+                        let rule = if node.kind == NodeKind::ExclusiveGateway {
+                            "R-13.4.2-01"
+                        } else {
+                            "R-10.6.3-01"
+                        };
+                        self.runtime_exception(inst, node, rule);
                         return;
                     }
                 }
@@ -2191,7 +2222,7 @@ impl<'a> Engine<'a> {
                 }
                 return;
             } else if target.kind == NodeKind::StartEvent && target.parent.is_none() {
-                if self.cases[case].completion.is_none() {
+                if self.cases[case].completion.is_none() && self.cases[case].failure.is_none() {
                     self.log_message(group, f, MessageOutcome::StartedInstance);
                     let inst = self.create_instance(case, group, target.process.clone(), None);
                     self.start_instance(inst, vec![target.id.clone()]);
@@ -2309,7 +2340,7 @@ impl<'a> Engine<'a> {
         // Signal start events create instances in the sender's case.
         let mut started = 0;
         for start in self.signal_starts.get(&name).cloned().unwrap_or_default() {
-            if self.cases[case].completion.is_some() {
+            if self.cases[case].completion.is_some() || self.cases[case].failure.is_some() {
                 break;
             }
             let Some(node) = self.m.project.node(&start) else {
@@ -2325,6 +2356,95 @@ impl<'a> Engine<'a> {
             name,
             receivers,
             started,
+        });
+    }
+
+    // ------------------------------------------------------------ incidents
+
+    fn runtime_exception(&mut self, inst: usize, node: &FlowNode, rule: &str) {
+        self.incident(
+            inst,
+            &node.id,
+            FailureReason::RuntimeException { rule: rule.into() },
+        );
+    }
+
+    /// An incident at `element` (D-3, D-4): the instance halts together with the processes it
+    /// called and the instances that called it (they would wait for it forever). Their tokens
+    /// stay where they are; running and queued tasks are cancelled and release their resources.
+    /// The case is reported as failed and never completes.
+    fn incident(&mut self, inst: usize, element: &QId, reason: FailureReason) {
+        let case = self.instances[inst].case;
+        if self.cases[case].failure.is_none() {
+            let process = self.instances[inst].process.clone();
+            self.cases[case].failure = Some((self.now, process, element.clone(), reason));
+        }
+        let mut tree: BTreeSet<usize> = BTreeSet::new();
+        // Callers, up to the top.
+        let mut i = Some(inst);
+        while let Some(x) = i {
+            tree.insert(x);
+            i = self.instances[x].parent.map(|(p, _)| p);
+        }
+        // Everything `inst` called (at any depth).
+        loop {
+            let more: Vec<usize> = (0..self.instances.len())
+                .filter(|c| {
+                    !tree.contains(c)
+                        && self.instances[*c]
+                            .parent
+                            .is_some_and(|(p, _)| p == inst || self.is_below(p, inst))
+                })
+                .collect();
+            if more.is_empty() {
+                break;
+            }
+            tree.extend(more);
+        }
+        for i in tree {
+            self.halt(i);
+        }
+    }
+
+    /// Whether instance `i` was called (directly or indirectly) by `ancestor`.
+    fn is_below(&self, mut i: usize, ancestor: usize) -> bool {
+        while let Some((p, _)) = self.instances[i].parent {
+            if p == ancestor {
+                return true;
+            }
+            i = p;
+        }
+        false
+    }
+
+    fn halt(&mut self, inst: usize) {
+        let i = &self.instances[inst];
+        if i.halted || i.done {
+            return;
+        }
+        self.instances[inst].halted = true;
+        let toks: Vec<u64> = self.instances[inst].tokens.keys().copied().collect();
+        for t in toks {
+            self.cancel_subs(inst, t);
+            let run = self.instances[inst]
+                .tokens
+                .get_mut(&t)
+                .and_then(|x| x.run.take());
+            if let Some(r) = run {
+                self.cancel_run(r);
+            }
+        }
+        self.deactivate_event_subs(inst, None, NO_TOKEN);
+    }
+
+    fn uncaught_escalation(&mut self, inst: usize, element: &QId, code: Option<&str>) {
+        let i = &self.instances[inst];
+        self.escalations.push(UncaughtEscalation {
+            time: self.now,
+            case: i.case as u64,
+            process: i.process.clone(),
+            element: element.clone(),
+            code: code.unwrap_or_default().to_string(),
         });
     }
 
@@ -2388,6 +2508,7 @@ impl<'a> Engine<'a> {
                 completion: c.completion,
                 cost: c.cost,
                 warm_up: is_warm(i),
+                failed: c.failure.is_some(),
             })
             .collect();
         let counted = || {
@@ -2536,7 +2657,7 @@ impl<'a> Engine<'a> {
             .collect();
 
         // A token sitting at an embedded subprocess is not reported itself: its inner tokens are.
-        let alive_tokens: Vec<StuckToken> = self
+        let (failed_tokens, alive_tokens): (Vec<StuckToken>, Vec<StuckToken>) = self
             .instances
             .iter()
             .flat_map(|inst| {
@@ -2550,6 +2671,27 @@ impl<'a> Engine<'a> {
                         name: self.m.project.node(&t.node).and_then(|n| n.name.clone()),
                         state: t.state.clone(),
                     })
+            })
+            .partition(|t| self.cases[t.case as usize].failure.is_some());
+        let failed: Vec<CaseFailure> = self
+            .cases
+            .iter()
+            .enumerate()
+            .filter_map(|(i, c)| {
+                let (time, process, element, reason) = c.failure.clone()?;
+                Some(CaseFailure {
+                    case: i as u64,
+                    time,
+                    process,
+                    name: self.m.project.node(&element).and_then(|n| n.name.clone()),
+                    element,
+                    reason,
+                    tokens: failed_tokens
+                        .iter()
+                        .filter(|t| t.case == i as u64)
+                        .cloned()
+                        .collect(),
+                })
             })
             .collect();
         // Cut off by the horizon: unfinished work is not a deadlock.
@@ -2573,6 +2715,8 @@ impl<'a> Engine<'a> {
             end_events: self.end_events,
             stuck,
             unfinished,
+            failed,
+            uncaught_escalations: self.escalations,
             horizon_reached: self.horizon_reached,
             start_epoch: self.m.sim.clock.epoch,
             messages_lost: self

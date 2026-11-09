@@ -32,6 +32,8 @@ pub struct Pilot {
     pub flows: BTreeMap<QId, u64>,
     /// Tokens stuck at the end.
     pub stuck: usize,
+    /// Cases that failed through an incident (runtime exception, uncaught error).
+    pub failed: usize,
 }
 
 impl Pilot {
@@ -110,5 +112,6 @@ pub fn pilot(project: &Project, scenario: &Scenario) -> Result<Pilot, String> {
         pools,
         flows,
         stuck: r.stuck.len(),
+        failed: r.failed.len(),
     })
 }

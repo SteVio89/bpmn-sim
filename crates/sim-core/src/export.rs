@@ -5,7 +5,7 @@ use std::collections::BTreeMap;
 use crate::aggregate::AggregateResult;
 use crate::calendar::SimClock;
 use crate::project::Project;
-use crate::stats::ReplicationResult;
+use crate::stats::{FailureReason, ReplicationResult};
 
 fn field(s: &str) -> String {
     if s.contains([',', '"', '\n']) {
@@ -190,6 +190,21 @@ pub fn summary_csv(project: &Project, results: &[ReplicationResult]) -> String {
             r.undelivered.iter().map(|u| u.count).sum::<usize>() as f64,
         );
         row("problems", "", "", "stuck_tokens", r.stuck.len() as f64);
+        let failed = |runtime: bool| {
+            r.failed
+                .iter()
+                .filter(|f| matches!(f.reason, FailureReason::RuntimeException { .. }) == runtime)
+                .count() as f64
+        };
+        row("problems", "", "", "failed_runtime_exception", failed(true));
+        row("problems", "", "", "failed_uncaught_error", failed(false));
+        row(
+            "problems",
+            "",
+            "",
+            "uncaught_escalations",
+            r.uncaught_escalations.len() as f64,
+        );
     }
     out
 }
@@ -261,5 +276,13 @@ pub fn aggregate_csv(project: &Project, agg: &AggregateResult) -> String {
     }
     row("problems", "", "", "lost_messages", &agg.messages_lost);
     row("problems", "", "", "stuck_tokens", &agg.stuck_tokens);
+    row("problems", "", "", "failed_cases", &agg.failed_cases);
+    row(
+        "problems",
+        "",
+        "",
+        "uncaught_escalations",
+        &agg.uncaught_escalations,
+    );
     out
 }

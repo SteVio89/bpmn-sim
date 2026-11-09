@@ -133,12 +133,16 @@ fn no_matching_rule_and_no_true_condition_leaves_the_token_stuck() {
     q.add_dmn_source("claim-route.dmn", &text).unwrap();
     let r = run_replications(&Scenario::from_toml(&s).unwrap().bind(&q).unwrap()).remove(0);
     assert_eq!(r.decisions["claim-route"].no_match, 3);
-    assert_eq!(r.stuck.len(), 3);
-    assert!(
-        r.stuck
-            .iter()
-            .all(|t| t.element.id == "Gateway_Route" && t.state.contains("no outgoing condition"))
-    );
+    // M18 (D-3): a runtime exception fails the case (R-13.4.2-01 at an XOR gateway).
+    assert!(r.stuck.is_empty());
+    assert_eq!(r.failed.len(), 3);
+    assert!(r.failed.iter().all(|f| {
+        f.element.id == "Gateway_Route"
+            && f.reason.to_string() == "runtime exception (R-13.4.2-01)"
+            && f.tokens
+                .iter()
+                .all(|t| t.state.contains("no outgoing condition"))
+    }));
     drop(p);
 }
 

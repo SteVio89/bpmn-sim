@@ -182,7 +182,8 @@ fn the_output_name_alone_works_as_well() {
 }
 
 #[test]
-fn an_unmapped_value_without_default_flow_is_reported_and_leaves_the_token_stuck() {
+fn an_unmapped_value_without_default_flow_is_reported_and_fails_the_case() {
+    // M18 (D-3): a runtime exception, reported as a failed case with the token kept.
     let s = with_gateway(
         "Gateway_Queue",
         "output = \"triage.queue\"\nvalues = { Flow_front = \"front\", Flow_back = \"back\", Flow_expert = \"elsewhere\" }",
@@ -197,12 +198,15 @@ fn an_unmapped_value_without_default_flow_is_reported_and_leaves_the_token_stuck
         b.warnings
     );
     let r = run_replications(&b).remove(0);
-    assert!(!r.stuck.is_empty());
+    assert!(r.stuck.is_empty());
+    assert!(!r.failed.is_empty());
     assert!(
-        r.stuck.iter().all(|t| t.element.id == "Gateway_Queue"
-            && t.state.contains("triage.queue = \"specialist\"")),
+        r.failed.iter().all(|f| f.element.id == "Gateway_Queue"
+            && matches!(f.reason, FailureReason::RuntimeException { .. })
+            && f.tokens.iter().any(|t| t.element.id == "Gateway_Queue"
+                && t.state.contains("triage.queue = \"specialist\""))),
         "{:?}",
-        r.stuck
+        r.failed
     );
 }
 

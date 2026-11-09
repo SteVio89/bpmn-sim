@@ -56,6 +56,8 @@ struct Inst {
     group: usize,
     parent: Option<(usize, u64)>,
     done: bool,
+    /// Halted by an incident (D-4): its tokens stay and can no longer move.
+    halted: bool,
 }
 
 /// A token as shown to the player.
@@ -136,6 +138,8 @@ pub struct Game {
     or_reach: BTreeMap<QId, BTreeSet<QId>>,
     /// What happened, in words.
     pub log: Vec<String>,
+    /// Why the case failed (an incident), if it did.
+    failure: Option<String>,
     /// Order in which tokens came to rest (token -> sequence number), for `focus`.
     rested: BTreeMap<u64, u64>,
     rest_seq: u64,
@@ -162,6 +166,7 @@ impl Game {
             joins: BTreeMap::new(),
             or_reach,
             log: Vec::new(),
+            failure: None,
             rested: BTreeMap::new(),
             rest_seq: 0,
         }
@@ -219,9 +224,17 @@ impl Game {
             .collect()
     }
 
+    /// Why the case failed, e.g. "uncaught error 'E' (R-10.5.1-03)", if an incident halted it.
+    pub fn failure(&self) -> Option<&str> {
+        self.failure.as_deref()
+    }
+
     pub fn pending(&self) -> Vec<Pending> {
         let mut out = Vec::new();
         for (id, t) in &self.tokens {
+            if self.insts[t.inst].halted {
+                continue;
+            }
             let Some(n) = self.project.node(&t.node) else {
                 continue;
             };
@@ -302,7 +315,7 @@ impl Game {
         // Event subprocesses at the top level of an instance, offered through one of its
         // top-level tokens.
         for (i, inst) in self.insts.iter().enumerate() {
-            if inst.done {
+            if inst.done || inst.halted {
                 continue;
             }
             let Some((&token, t)) = self
@@ -384,7 +397,11 @@ impl Game {
         };
         candidates
             .into_iter()
-            .filter(|(i, sc)| !self.interrupted.contains(&(*i, *sc)) && !self.completing(*i, *sc))
+            .filter(|(i, sc)| {
+                !self.insts[*i].halted
+                    && !self.interrupted.contains(&(*i, *sc))
+                    && !self.completing(*i, *sc)
+            })
             .collect()
     }
 
@@ -494,6 +511,18 @@ impl Game {
     }
 
     pub fn apply(&mut self, action: Action) -> Result<(), String> {
+        let token = match &action {
+            Action::Start { .. } => None,
+            Action::Choose { token, .. }
+            | Action::Complete { token }
+            | Action::Fire { token, .. }
+            | Action::Continue { token } => Some(*token),
+        };
+        if let Some(t) = token.and_then(|t| self.tokens.get(&t))
+            && self.insts[t.inst].halted
+        {
+            return Err("this token's instance was halted by an incident".into());
+        }
         match action {
             Action::Start { event } => {
                 if !self.start_events().contains(&event) {
@@ -655,6 +684,7 @@ impl Game {
             group,
             parent,
             done: false,
+            halted: false,
         });
         self.insts.len() - 1
     }
@@ -747,7 +777,7 @@ impl Game {
     fn process(&mut self, inst: usize, mut work: Vec<Work>) {
         loop {
             while let Some((tok, node_id, via)) = work.pop() {
-                if !self.tokens.contains_key(&tok) {
+                if !self.tokens.contains_key(&tok) || self.insts[self.tokens[&tok].inst].halted {
                     continue;
                 }
                 let Some(n) = self.project.node(&node_id).cloned() else {
@@ -1081,7 +1111,10 @@ impl Game {
             .joins
             .iter()
             .filter(|((i, j), w)| {
-                *i == inst && self.or_reach.contains_key(j) && w.values().any(|q| !q.is_empty())
+                *i == inst
+                    && !self.insts[*i].halted
+                    && self.or_reach.contains_key(j)
+                    && w.values().any(|q| !q.is_empty())
             })
             .map(|(k, _)| k.clone())
             .collect();
@@ -1145,16 +1178,19 @@ impl Game {
                 self.log.push(format!("terminate at '{}'", n.label()));
             }
             Some(EventDef::Error(code)) if !self.raise(tok, true, code.as_deref(), work) => {
+                let code = code.as_deref().unwrap_or_default();
                 self.log.push(format!(
-                    "error '{}' is not caught; the token stays at '{}'",
-                    code.as_deref().unwrap_or_default(),
+                    "error '{code}' is not caught at '{}': the instance halts (incident)",
                     n.label()
                 ));
                 self.set(tok, &n.id, TokenState::Passing);
+                self.incident(inst, format!("uncaught error '{code}' (R-10.5.1-03)"));
                 return;
             }
             Some(EventDef::Escalation(code)) => {
-                self.raise(tok, false, code.as_deref(), work);
+                if !self.raise(tok, false, code.as_deref(), work) {
+                    self.uncaught_escalation(n, code.as_deref());
+                }
             }
             _ => {}
         }
@@ -1168,8 +1204,9 @@ impl Game {
         self.throw(inst, n);
         if let Some(EventDef::Escalation(code)) = n.event_defs.first()
             && self.tokens.contains_key(&tok)
+            && !self.raise(tok, false, code.as_deref(), work)
         {
-            self.raise(tok, false, code.as_deref(), work);
+            self.uncaught_escalation(n, code.as_deref());
         }
         if self.tokens.contains_key(&tok) {
             self.route(tok, n, None, work);
@@ -1283,6 +1320,44 @@ impl Game {
             work.push((nt, b, None));
         }
         true
+    }
+
+    fn uncaught_escalation(&mut self, n: &FlowNode, code: Option<&str>) {
+        self.log.push(format!(
+            "escalation '{}' at '{}' is not caught; it has no effect",
+            code.unwrap_or_default(),
+            n.label()
+        ));
+    }
+
+    /// An incident (as in the engine): the instance halts together with the processes it
+    /// called and the instances that called it; their tokens stay where they are.
+    fn incident(&mut self, inst: usize, reason: String) {
+        if self.failure.is_none() {
+            self.failure = Some(reason);
+        }
+        let below = |insts: &[Inst], mut i: usize| {
+            while let Some((p, _)) = insts[i].parent {
+                if p == inst {
+                    return true;
+                }
+                i = p;
+            }
+            false
+        };
+        let mut halt: Vec<usize> = (0..self.insts.len())
+            .filter(|i| below(&self.insts, *i))
+            .collect();
+        let mut i = Some(inst);
+        while let Some(x) = i {
+            halt.push(x);
+            i = self.insts[x].parent.map(|(p, _)| p);
+        }
+        for i in halt {
+            if !self.insts[i].done {
+                self.insts[i].halted = true;
+            }
+        }
     }
 
     fn terminate(&mut self, tok: u64) {
@@ -1408,6 +1483,7 @@ impl Game {
         };
         let waiting = self.tokens.iter().find(|(_, t)| {
             self.insts[t.inst].group == group
+                && !self.insts[t.inst].halted
                 && ((t.node == f.target && t.state == TokenState::WaitMessage)
                     || (t.state == TokenState::WaitEventGateway
                         && self
@@ -1441,6 +1517,11 @@ impl Game {
                     target.label()
                 )),
             }
+        } else if target.kind == NodeKind::StartEvent && self.failure.is_some() {
+            self.log.push(format!(
+                "message for '{}' is lost: the case failed",
+                target.label()
+            ));
         } else if target.kind == NodeKind::StartEvent {
             self.log
                 .push(format!("message starts '{}'", target.label()));
@@ -1460,6 +1541,7 @@ impl Game {
         let woken: Vec<(u64, QId)> = self
             .tokens
             .iter()
+            .filter(|(_, t)| !self.insts[t.inst].halted)
             .filter_map(|(id, t)| match &t.state {
                 TokenState::WaitSignal(s) if *s == name => Some((*id, t.node.clone())),
                 TokenState::WaitEventGateway => self.project.node(&t.node).and_then(|g| {
@@ -1495,7 +1577,8 @@ impl Game {
             })
             .cloned()
             .collect();
-        for s in starts {
+        let failed = self.failure.is_some();
+        for s in starts.into_iter().filter(|_| !failed) {
             let inst = self.new_instance(s.process.clone(), group, None);
             self.start_instance(inst, vec![s.id.clone()]);
         }
