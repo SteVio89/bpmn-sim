@@ -320,6 +320,13 @@ pub fn run_replications_on(
         .collect()
 }
 
+/// Drop the spare capacity of a vector kept in a result: with many replications held at
+/// once, it adds up.
+fn compact<T>(mut v: Vec<T>) -> Vec<T> {
+    v.shrink_to_fit();
+    v
+}
+
 /// Replication `i` (from 0) of a run, with the seed `run_replications` gives it, for callers
 /// that run the replications one at a time.
 pub fn run_replication(m: &BoundModel, i: u32) -> ReplicationResult {
@@ -2823,14 +2830,14 @@ impl<'a> Engine<'a> {
                     count: *n,
                 })
                 .collect(),
-            messages: self.messages,
-            signals: self.signals,
+            messages: compact(self.messages),
+            signals: compact(self.signals),
             boundary_fired: self.boundary_fired,
             decisions: self.decision_stats,
-            trace: self.trace,
+            trace: compact(self.trace),
             processes,
             cases,
-            records: self.records,
+            records: compact(self.records),
         }
     }
 }
