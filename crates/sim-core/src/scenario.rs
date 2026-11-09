@@ -2057,7 +2057,7 @@ impl Scenario {
             for (k, p) in &spec.probabilities {
                 let q = match k.split_once('#') {
                     Some((f, i)) => QId::new(f, i),
-                    None => QId::new(&n.id.file, k),
+                    None => QId::new(n.id.file, k),
                 };
                 if !n.outgoing.contains(&q) {
                     errors.at(
@@ -2143,7 +2143,7 @@ impl Scenario {
                     for (k, p) in &spec.probabilities {
                         let q = match k.split_once('#') {
                             Some((f, i)) => QId::new(f, i),
-                            None => QId::new(&n.id.file, k),
+                            None => QId::new(n.id.file, k),
                         };
                         if !split.conditional.iter().any(|(f, _)| *f == q) {
                             errors.at(
@@ -2333,7 +2333,7 @@ fn history_cfg(project: &Project, n: &FlowNode, spec: &GatewaySpec) -> Result<Hi
     let element = resolve(project, element, "if_completed: element")?;
     let then = match then.split_once('#') {
         Some((f, i)) => QId::new(f, i),
-        None => QId::new(&n.id.file, then),
+        None => QId::new(n.id.file, then),
     };
     let Some(otherwise) = n.outgoing.iter().find(|f| **f != then).cloned() else {
         return Err("the two outgoing flows are the same".into());
@@ -2401,7 +2401,7 @@ fn output_cfg(
     for (k, vs) in &spec.values {
         let q = match k.split_once('#') {
             Some((f, i)) => QId::new(f, i),
-            None => QId::new(&n.id.file, k),
+            None => QId::new(n.id.file, k),
         };
         if !n.outgoing.contains(&q) {
             return Err(format!("'{k}' is not an outgoing flow of this gateway"));

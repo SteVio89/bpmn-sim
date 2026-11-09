@@ -54,6 +54,18 @@ about 40 elements) take about 0.4 s including process start; the 20 × 40 000 ca
 experiment takes about 1.3 s. This meets the target of §11 (10 000 cases of a 50 element model in
 a few seconds).
 
+Many replications (bpmn-sim-2): V13 (`tests/fixtures/v13-model.*`) with 1000 instead of 30
+replications of 5 000 cases, release build, 11 cores in a Linux VM: 49 s before, 3.7 s after.
+The results are byte for byte the same. Three changes made the difference:
+
+- Replications run in parallel on all cores (about 3.5× here; it levels off above 4 cores
+  because the work is mostly allocation and memory traffic).
+- Element ids (`QId`) and pool names are interned (`Name`): copying one, which the engine does
+  for every token step and record, no longer allocates, and threads no longer contend on shared
+  reference counts. One core got about 45% faster.
+- Each replication keeps about 3 MB of per-case data (activity records, instances, cases) for
+  the event log and the case views; 1000 replications hold about 3 GB at once.
+
 ## V13: cross-check with QBP / BIMP (to be done by hand)
 
 **Status: not yet done.** QBP and BIMP are not available in the environment where the simulator

@@ -29,7 +29,7 @@ impl QId {
 ///
 /// Every distinct name is stored once and kept for the rest of the program. That stays small:
 /// it is the vocabulary of file names and element ids of the models loaded.
-#[derive(Clone, Copy, Hash)]
+#[derive(Clone, Copy)]
 pub struct Name(&'static str);
 
 impl Name {
@@ -63,6 +63,13 @@ impl PartialEq for Name {
 }
 
 impl Eq for Name {}
+
+impl std::hash::Hash for Name {
+    fn hash<H: std::hash::Hasher>(&self, h: &mut H) {
+        // Like `str`, consistent with equality (equal names are equal strings).
+        self.0.hash(h)
+    }
+}
 
 impl PartialOrd for Name {
     fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {

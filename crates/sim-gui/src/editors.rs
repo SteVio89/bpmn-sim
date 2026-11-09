@@ -574,7 +574,7 @@ fn xor_editor(ui: &mut Ui, project: &Project, n: &FlowNode, g: &mut GatewaySpec)
         .show(ui, |ui| {
             let last = keys.len() - 1;
             for (i, k) in keys.iter().enumerate() {
-                let f = QId::new(&n.id.file, k.rsplit('#').next().unwrap_or(k));
+                let f = QId::new(n.id.file, k.rsplit('#').next().unwrap_or(k));
                 ui.colored_label(case_color(i as u64), flow_label(project, &f));
                 let mut pct = g.probabilities[k] * 100.0;
                 if i == last {
@@ -623,7 +623,7 @@ fn inclusive_editor(ui: &mut Ui, project: &Project, n: &FlowNode, g: &mut Gatewa
         .num_columns(2)
         .show(ui, |ui| {
             for (i, k) in keys.iter().enumerate() {
-                let f = QId::new(&n.id.file, k.rsplit('#').next().unwrap_or(k));
+                let f = QId::new(n.id.file, k.rsplit('#').next().unwrap_or(k));
                 ui.colored_label(case_color(i as u64), flow_label(project, &f));
                 let p = g.probabilities.get_mut(k).expect("flow");
                 let mut pct = *p * 100.0;
