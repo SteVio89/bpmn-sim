@@ -1363,7 +1363,11 @@ impl<'a> Engine<'a> {
         else {
             return;
         };
-        let starts = m.project.start_nodes(process, None);
+        // Exactly one start fires when the process has several None start events (D-2).
+        let starts = match m.call_starts.get(&node.id) {
+            Some(s) => vec![s.clone()],
+            None => m.project.start_nodes(process, None),
+        };
         let case = self.instances[inst].case;
         let group = self.groups.len();
         self.groups.push(case);

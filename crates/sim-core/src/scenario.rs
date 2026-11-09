@@ -58,6 +58,19 @@ pub struct Scenario {
     /// Activity with a standard loop -> how often it repeats.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub loops: BTreeMap<String, LoopSpec>,
+    /// Call activity -> the None start event of the called process it starts with, when that
+    /// process has several (D-2, R-10.5.2-04).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub calls: BTreeMap<String, CallSpec>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CallSpec {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
+    /// Id of a None start event of the called process (`id` or `file#id`).
+    pub start: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -599,6 +612,9 @@ pub struct BoundModel<'p> {
     pub buffer_unconsumed: bool,
     pub signal_scope: SignalScope,
     pub inclusive_join: InclusiveJoin,
+    /// Call activity -> the start event of the called process it starts (only for processes
+    /// with several None start events).
+    pub call_starts: BTreeMap<QId, QId>,
     /// Black-box participant -> reply delay.
     pub black_box_reply: BTreeMap<QId, Dist>,
     /// Delay of externally triggered catch events (timer events, optionally message/signal).
@@ -1248,6 +1264,14 @@ impl Scenario {
                     errors.at(&n.id, format!("{} ({}): {why}", n.id, n.label()));
                 }
             } else if n.kind == NodeKind::SubProcess
+                && project.none_starts(&n.process, Some(&n.id)).len() > 1
+            {
+                errors.at(&n.id, format!(
+                    "{} ({}): embedded subprocess has several none start events; it must have exactly one (BPMN 2.0.2 §13.3.4, R-13.3.4-01)",
+                    n.id,
+                    n.label()
+                ));
+            } else if n.kind == NodeKind::SubProcess
                 && project.start_nodes(&n.process, Some(&n.id)).is_empty()
             {
                 errors.at(&n.id, format!(
@@ -1255,6 +1279,59 @@ impl Scenario {
                     n.id,
                     n.label()
                 ));
+            }
+        }
+
+        // Call activities into a process with several None start events name the one they use.
+        let mut call_starts = BTreeMap::new();
+        let mut call_specs: BTreeMap<QId, (&String, &CallSpec)> = BTreeMap::new();
+        for (key, spec) in &self.calls {
+            match resolve(project, key, "call activity") {
+                Ok(q) if project.node(&q).map(|n| &n.kind) == Some(&NodeKind::CallActivity) => {
+                    call_specs.insert(q, (key, spec));
+                }
+                Ok(q) => errors.at(&q, format!("[calls.{key}]: '{q}' is not a call activity")),
+                Err(e) => errors.push(format!("[calls]: {e}")),
+            }
+        }
+        for n in nodes.iter().filter(|n| n.kind == NodeKind::CallActivity) {
+            let choices = project.call_start_choices(n);
+            let list = || {
+                choices
+                    .iter()
+                    .map(|c| format!("'{}'", c.id))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            };
+            match (call_specs.get(&n.id), choices.is_empty()) {
+                (None, true) => {}
+                (None, false) => errors.at(&n.id, format!(
+                    "{} ({}): the called process '{}' has several none start events ({}); only one fires (BPMN 2.0.2 R-10.5.2-04), so name it with [calls.\"{}\"] start = \"<start event>\"",
+                    n.id,
+                    n.label(),
+                    n.called_element.as_deref().unwrap_or_default(),
+                    list(),
+                    n.id.id
+                )),
+                (Some((key, _)), true) => warnings.at(&n.id, format!(
+                    "[calls.{key}]: the process '{}' calls has at most one none start event, the entry is ignored",
+                    n.called_element.as_deref().unwrap_or_default()
+                )),
+                (Some((key, spec)), false) => {
+                    let wanted = spec.start.rsplit('#').next().unwrap_or_default();
+                    match choices.iter().find(|c| {
+                        c.id == wanted && (!spec.start.contains('#') || c.to_string() == spec.start)
+                    }) {
+                        Some(c) => {
+                            call_starts.insert(n.id.clone(), c.clone());
+                        }
+                        None => errors.at(&n.id, format!(
+                            "[calls.{key}]: start '{}' is not a none start event of the called process; choose one of {}",
+                            spec.start,
+                            list()
+                        )),
+                    }
+                }
             }
         }
 
@@ -2117,6 +2194,7 @@ impl Scenario {
             buffer_unconsumed: messages.buffer_unconsumed,
             signal_scope: sim.signal_scope,
             inclusive_join: sim.inclusive_join,
+            call_starts,
             black_box_reply,
             events,
             boundaries,
@@ -2520,6 +2598,23 @@ impl Scenario {
         };
         s.update_from_model(project);
         s
+    }
+
+    /// The valid `[calls]` choices: call activity -> start event (entries that do not bind
+    /// are left out; `check` reports them).
+    pub fn call_starts(&self, project: &Project) -> BTreeMap<QId, QId> {
+        self.calls
+            .iter()
+            .filter_map(|(key, spec)| {
+                let call = resolve(project, key, "call activity").ok()?;
+                let choices = project.call_start_choices(project.node(&call)?);
+                let wanted = spec.start.rsplit('#').next().unwrap_or_default();
+                let start = choices.into_iter().find(|c| {
+                    c.id == wanted && (!spec.start.contains('#') || c.to_string() == spec.start)
+                })?;
+                Some((call, start))
+            })
+            .collect()
     }
 
     pub fn to_toml(&self) -> Result<String, ScenarioError> {

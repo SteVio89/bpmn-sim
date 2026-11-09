@@ -193,6 +193,34 @@ impl Project {
             .collect()
     }
 
+    /// The None start events of the top level of `process` (`scope` = `None`) or of the embedded
+    /// subprocess `scope`.
+    pub fn none_starts(&self, process: &QId, scope: Option<&QId>) -> Vec<QId> {
+        self.nodes()
+            .filter(|n| {
+                n.process == *process
+                    && n.parent.as_ref() == scope
+                    && n.kind == NodeKind::StartEvent
+                    && n.event_defs.iter().all(|d| matches!(d, EventDef::None))
+            })
+            .map(|n| n.id.clone())
+            .collect()
+    }
+
+    /// The start events a call activity has to choose from (D-2, R-10.5.2-04): the None start
+    /// events of the called process when it has several, else nothing to choose.
+    pub fn call_start_choices(&self, call: &FlowNode) -> Vec<QId> {
+        let Some(process) = call
+            .called_element
+            .as_ref()
+            .and_then(|c| self.processes.get(c))
+        else {
+            return Vec::new();
+        };
+        let starts = self.none_starts(process, None);
+        if starts.len() > 1 { starts } else { Vec::new() }
+    }
+
     /// The start events of the event subprocesses directly inside `container` (an embedded
     /// subprocess or event subprocess, `None` for the top level of `process`).
     pub fn event_sub_starts(&self, process: &QId, container: Option<&QId>) -> Vec<&FlowNode> {

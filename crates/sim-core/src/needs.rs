@@ -33,6 +33,9 @@ pub enum Need {
         decision: String,
         inputs: Vec<String>,
     },
+    /// A call activity whose process has several None start events: which one it starts
+    /// (`[calls]`, D-2). `choices` are those start events.
+    CallStart { choices: Vec<QId> },
 }
 
 /// Variables that decisions set: table outputs and result variables.
@@ -458,6 +461,12 @@ pub fn needs(project: &Project, n: &FlowNode) -> Vec<Need> {
         NodeKind::Task(_) => out.push(Need::Duration),
         // A call activity whose process is not loaded runs as a task.
         NodeKind::CallActivity if !calls_loaded_process(project, n) => out.push(Need::Duration),
+        NodeKind::CallActivity => {
+            let choices = project.call_start_choices(n);
+            if !choices.is_empty() {
+                out.push(Need::CallStart { choices });
+            }
+        }
         NodeKind::ExclusiveGateway | NodeKind::InclusiveGateway if n.outgoing.len() > 1 => {
             // A split whose every (non-default) flow has a FEEL condition is decided by them;
             // conditions in other languages (XPath, the BPMN default, or JUEL) need shares.
@@ -670,6 +679,7 @@ impl Scenario {
                     Need::DecisionInputs { inputs, .. } => {
                         inputs.iter().all(|i| self.has_decision_input(i))
                     }
+                    Need::CallStart { .. } => key_of(&self.calls, project, &n.id).is_some(),
                 };
                 !covered
             })
@@ -824,6 +834,17 @@ impl Scenario {
                         },
                     );
                 }
+                Need::CallStart { choices } => {
+                    if let Some(first) = choices.first() {
+                        self.calls.insert(
+                            key.clone(),
+                            CallSpec {
+                                label: n.name.clone(),
+                                start: first.id.clone(),
+                            },
+                        );
+                    }
+                }
                 Need::DecisionInputs { decision, inputs } => {
                     for i in inputs {
                         if !self.has_decision_input(&i) {
@@ -876,6 +897,7 @@ impl Scenario {
         check("boundary", self.boundary.keys().collect());
         check("multi_instance", self.multi_instance.keys().collect());
         check("loops", self.loops.keys().collect());
+        check("calls", self.calls.keys().collect());
         for k in self.decisions.keys() {
             if !project.decisions.contains_key(k) {
                 out.push(format!("decisions.{k}"));
@@ -892,6 +914,7 @@ impl Scenario {
         self.boundary.retain(|k, _| resolves(project, k));
         self.multi_instance.retain(|k, _| resolves(project, k));
         self.loops.retain(|k, _| resolves(project, k));
+        self.calls.retain(|k, _| resolves(project, k));
         self.decisions
             .retain(|k, _| project.decisions.contains_key(k));
     }

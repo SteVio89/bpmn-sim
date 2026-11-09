@@ -240,6 +240,16 @@ pub fn overlay(
                     }
                 }
                 Need::DecisionInputs { .. } => {}
+                Need::CallStart { choices } => {
+                    if let Some(c) = key_of(&s.calls, project, &n.id).map(|k| &s.calls[&k]) {
+                        let name = choices
+                            .iter()
+                            .find(|q| q.id == c.start || q.to_string() == c.start)
+                            .and_then(|q| project.node(q))
+                            .map_or(c.start.as_str(), |n| n.label());
+                        parts.push(format!("starts at {}", short(name, 24)));
+                    }
+                }
             }
         }
         if is_arrival_start(n) {

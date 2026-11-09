@@ -34,6 +34,9 @@ pub enum TokenState {
     /// At an embedded subprocess / call activity while its content runs.
     InSubprocess,
     InCall,
+    /// At a call activity whose process has several None start events: waits for the player
+    /// to pick the one that fires (D-2).
+    ChooseStart,
     /// At an event whose moment has come (a message or signal arrived, or a throw event about
     /// to send): waits for the player to go on (with `stop_at_events`, the default).
     Ready,
@@ -93,6 +96,12 @@ pub enum Pending {
     /// Go on from an event that is ready (send its message / signal, or continue after a
     /// received one).
     Continue { token: u64, at: QId },
+    /// Pick the None start event the called process starts with (D-2, R-10.5.2-04).
+    StartCall {
+        token: u64,
+        call: QId,
+        starts: Vec<QId>,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -102,6 +111,7 @@ pub enum Action {
     Complete { token: u64 },
     Fire { token: u64, event: QId },
     Continue { token: u64 },
+    StartCall { token: u64, start: QId },
 }
 
 type Work = (u64, QId, Option<QId>);
@@ -139,6 +149,9 @@ pub struct Game {
     or_joins: BTreeMap<QId, crate::engine::OrJoin>,
     /// When inclusive joins fire (as `simulation.inclusive_join` in a scenario).
     pub inclusive_join: InclusiveJoin,
+    /// Call activity -> the start event its process starts with, when that process has several
+    /// None start events (as `[calls]` in a scenario). Without an entry the player picks.
+    pub call_starts: BTreeMap<QId, QId>,
     /// What happened, in words.
     pub log: Vec<String>,
     /// Why the case failed (an incident), if it did.
@@ -169,6 +182,7 @@ impl Game {
             joins: BTreeMap::new(),
             or_joins,
             inclusive_join: InclusiveJoin::default(),
+            call_starts: BTreeMap::new(),
             log: Vec::new(),
             failure: None,
             rested: BTreeMap::new(),
@@ -178,6 +192,12 @@ impl Game {
 
     fn label(&self, id: &QId) -> String {
         self.project.label_of(id)
+    }
+
+    /// Play by the options of a scenario: its inclusive join rule and its `[calls]` choices.
+    pub fn use_scenario(&mut self, s: &crate::scenario::Scenario) {
+        self.inclusive_join = s.simulation.inclusive_join;
+        self.call_starts = s.call_starts(&self.project);
     }
 
     /// Start events the player can start a case (or another pool of it) with, and processes
@@ -309,6 +329,11 @@ impl Game {
                 TokenState::Ready => out.push(Pending::Continue {
                     token: *id,
                     at: t.node.clone(),
+                }),
+                TokenState::ChooseStart => out.push(Pending::StartCall {
+                    token: *id,
+                    call: t.node.clone(),
+                    starts: self.project.call_start_choices(n),
                 }),
                 TokenState::InSubprocess | TokenState::InCall => {
                     let mut events = boundaries;
@@ -530,7 +555,8 @@ impl Game {
             Action::Choose { token, .. }
             | Action::Complete { token }
             | Action::Fire { token, .. }
-            | Action::Continue { token } => Some(*token),
+            | Action::Continue { token }
+            | Action::StartCall { token, .. } => Some(*token),
         };
         if let Some(t) = token.and_then(|t| self.tokens.get(&t))
             && self.insts[t.inst].halted
@@ -628,6 +654,26 @@ impl Game {
                     _ => self.route(token, &n, None, &mut work),
                 }
                 self.process(t.inst, work);
+                Ok(())
+            }
+            Action::StartCall { token, start } => {
+                let t = self.tokens.get(&token).ok_or("no such token")?.clone();
+                if t.state != TokenState::ChooseStart {
+                    return Err("this token is not waiting for a start event to be chosen".into());
+                }
+                let n = self.project.node(&t.node).cloned().ok_or("unknown call")?;
+                if !self.project.call_start_choices(&n).contains(&start) {
+                    return Err(format!(
+                        "'{}' is not a none start event of the called process",
+                        self.label(&start)
+                    ));
+                }
+                self.log.push(format!(
+                    "'{}' starts its process at '{}'",
+                    n.label(),
+                    self.label(&start)
+                ));
+                self.enter_call(token, &n, vec![start]);
                 Ok(())
             }
             Action::Fire { token, event } => {
@@ -773,7 +819,8 @@ impl Game {
                 Pending::Choose { token, .. }
                 | Pending::Complete { token, .. }
                 | Pending::Fire { token, .. }
-                | Pending::Continue { token, .. } => token,
+                | Pending::Continue { token, .. }
+                | Pending::StartCall { token, .. } => token,
             })
             .collect();
         waiting
@@ -945,15 +992,21 @@ impl Game {
                                 self.route(tok, &n, None, &mut work);
                             }
                             Some(p) => {
-                                let starts = self.project.start_nodes(&p, None);
-                                let group = self.groups;
-                                self.groups += 1;
-                                self.set(tok, &node_id, TokenState::InCall);
-                                let child = self.new_instance(p, group, Some((inst, tok)));
-                                if let Some(t) = self.tokens.get_mut(&tok) {
-                                    t.child_inst = Some(child);
+                                // Exactly one of several None start events fires (D-2): the
+                                // scenario's choice, else the player's.
+                                let choices = self.project.call_start_choices(&n);
+                                match self.call_starts.get(&node_id) {
+                                    Some(s) if choices.contains(s) => {
+                                        self.enter_call(tok, &n, vec![s.clone()])
+                                    }
+                                    _ if !choices.is_empty() => {
+                                        self.set(tok, &node_id, TokenState::ChooseStart)
+                                    }
+                                    _ => {
+                                        let starts = self.project.start_nodes(&p, None);
+                                        self.enter_call(tok, &n, starts);
+                                    }
                                 }
-                                self.start_instance(child, starts);
                             }
                         }
                     }
@@ -965,6 +1018,29 @@ impl Game {
             }
         }
         self.check_instances();
+    }
+
+    /// Start the process call activity `n` (where token `tok` is) calls, at `starts`.
+    fn enter_call(&mut self, tok: u64, n: &FlowNode, starts: Vec<QId>) {
+        let Some(p) = n
+            .called_element
+            .as_ref()
+            .and_then(|c| self.project.processes.get(c))
+            .cloned()
+        else {
+            return;
+        };
+        let Some(inst) = self.tokens.get(&tok).map(|t| t.inst) else {
+            return;
+        };
+        let group = self.groups;
+        self.groups += 1;
+        self.set(tok, &n.id, TokenState::InCall);
+        let child = self.new_instance(p, group, Some((inst, tok)));
+        if let Some(t) = self.tokens.get_mut(&tok) {
+            t.child_inst = Some(child);
+        }
+        self.start_instance(child, starts);
     }
 
     /// Jump from a link throw event to the link catch event with the same name.

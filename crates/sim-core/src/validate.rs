@@ -138,6 +138,17 @@ pub fn validate(project: &Project) -> Vec<Issue> {
             }
         }
 
+        if n.kind == NodeKind::SubProcess
+            && !n.triggered_by_event
+            && project.none_starts(&n.process, Some(&n.id)).len() > 1
+        {
+            push(
+                Severity::Error,
+                n,
+                "embedded subprocess has several none start events; it must have exactly one (BPMN 2.0.2 §13.3.4, R-13.3.4-01)".into(),
+            );
+        }
+
         if n.kind == NodeKind::CallActivity {
             match &n.called_element {
                 None => push(

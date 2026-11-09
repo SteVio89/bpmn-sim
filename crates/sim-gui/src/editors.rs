@@ -144,6 +144,34 @@ pub fn need_editor(
         Need::DecisionInputs { decision, inputs } => {
             crate::decision_inputs::decision_editor(ui, project, s, &decision, &inputs);
         }
+        Need::CallStart { choices } => {
+            let Some(k) = key_of(&s.calls, project, &n.id) else {
+                return;
+            };
+            let c = s.calls.get_mut(&k).expect("key exists");
+            let label = |q: &QId| {
+                project
+                    .node(q)
+                    .map_or_else(|| q.id.clone(), |n| format!("{} ({})", n.label(), q.id))
+            };
+            let current = choices
+                .iter()
+                .find(|q| q.id == c.start || q.to_string() == c.start);
+            ui.horizontal(|ui| {
+                ui.label("Starts at");
+                ComboBox::from_id_salt(("call-start", &n.id))
+                    .selected_text(current.map_or_else(|| c.start.clone(), label))
+                    .show_ui(ui, |ui| {
+                        for q in &choices {
+                            ui.selectable_value(&mut c.start, q.id.clone(), label(q));
+                        }
+                    });
+            })
+            .response
+            .on_hover_text(
+                "The called process has several none start events; only the one chosen here fires (BPMN 2.0.2 R-10.5.2-04).",
+            );
+        }
     }
 }
 

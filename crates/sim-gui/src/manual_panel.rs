@@ -101,6 +101,9 @@ impl ManualState {
                 Pending::Continue { at, .. } => {
                     m.nodes.insert(at);
                 }
+                Pending::StartCall { call, .. } => {
+                    m.nodes.insert(call);
+                }
             }
         }
         m
@@ -309,6 +312,24 @@ impl ManualState {
                             let what = if sending { "Send from" } else { "Go on from" };
                             if ui.button(format!("{what} {}", self.label(&at))).clicked() {
                                 self.apply(Action::Continue { token });
+                            }
+                        }
+                        Pending::StartCall {
+                            token,
+                            call,
+                            starts,
+                        } => {
+                            ui.label(
+                                RichText::new(format!("{} starts at:", self.label(&call)))
+                                    .color(accent(ui.visuals())),
+                            )
+                            .on_hover_text(
+                                "The called process has several none start events; only one fires (BPMN 2.0.2 R-10.5.2-04).",
+                            );
+                            for start in starts {
+                                if ui.button(self.label(&start)).clicked() {
+                                    self.apply(Action::StartCall { token, start });
+                                }
                             }
                         }
                     });

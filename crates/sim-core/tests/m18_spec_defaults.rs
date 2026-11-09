@@ -667,3 +667,137 @@ fn d1_r_10_3_04_free_nodes_next_to_start_events_are_an_error_and_never_run() {
     assert_eq!((runs(&r, "T"), runs(&r, "Free")), (2, 0));
     assert_eq!(r.cases_completed, 2);
 }
+
+// ---------------------------------------------------------------- D-2: R-10.5.2-04, R-13.3.4-01
+
+#[test]
+fn d2_r_13_3_4_01_an_embedded_subprocess_with_several_none_starts_is_an_error() {
+    let p = model(
+        r#"
+        <bpmn:startEvent id="Start"/>
+        <bpmn:subProcess id="Sub">
+          <bpmn:startEvent id="S1"/><bpmn:startEvent id="S2"/>
+          <bpmn:endEvent id="SE"/>
+          <bpmn:sequenceFlow id="S1e" sourceRef="S1" targetRef="SE"/>
+          <bpmn:sequenceFlow id="S2e" sourceRef="S2" targetRef="SE"/>
+        </bpmn:subProcess>
+        <bpmn:endEvent id="End"/>
+        <bpmn:sequenceFlow id="F0" sourceRef="Start" targetRef="Sub"/>
+        <bpmn:sequenceFlow id="F1" sourceRef="Sub" targetRef="End"/>"#,
+    );
+    let issues = issues_of(&p, "Sub");
+    assert!(
+        issues
+            .iter()
+            .any(|(s, m)| *s == Severity::Error && m.contains("R-13.3.4-01")),
+        "{issues:?}"
+    );
+    let e = bind_err(&p, &base(1, "1h", "\"Start\"", ""));
+    assert!(
+        e.contains("several none start events") && e.contains("R-13.3.4-01"),
+        "{e}"
+    );
+}
+
+/// P calls Q, which has two None start events: S1 -> T1 and S2 -> T2.
+fn call_with_two_starts() -> Project {
+    file(
+        r#"
+        <bpmn:process id="P">
+          <bpmn:startEvent id="Start"/>
+          <bpmn:callActivity id="Call" calledElement="Q"/>
+          <bpmn:endEvent id="End"/>
+          <bpmn:sequenceFlow id="F0" sourceRef="Start" targetRef="Call"/>
+          <bpmn:sequenceFlow id="F1" sourceRef="Call" targetRef="End"/>
+        </bpmn:process>
+        <bpmn:process id="Q">
+          <bpmn:startEvent id="S1"/><bpmn:startEvent id="S2"/>
+          <bpmn:task id="T1"/><bpmn:task id="T2"/>
+          <bpmn:endEvent id="E1"/><bpmn:endEvent id="E2"/>
+          <bpmn:sequenceFlow id="Q1" sourceRef="S1" targetRef="T1"/>
+          <bpmn:sequenceFlow id="Q2" sourceRef="T1" targetRef="E1"/>
+          <bpmn:sequenceFlow id="Q3" sourceRef="S2" targetRef="T2"/>
+          <bpmn:sequenceFlow id="Q4" sourceRef="T2" targetRef="E2"/>
+        </bpmn:process>"#,
+    )
+}
+
+fn call_scenario(calls: &str) -> String {
+    base(
+        3,
+        "1h",
+        "\"Start\"",
+        &format!("{}{}{calls}", fixed("T1", 10), fixed("T2", 20)),
+    )
+}
+
+#[test]
+fn d2_r_10_5_2_04_a_call_needs_to_name_one_of_several_none_starts() {
+    let p = call_with_two_starts();
+    let e = bind_err(&p, &call_scenario(""));
+    assert!(
+        e.contains("several none start events ('S1', 'S2')")
+            && e.contains("R-10.5.2-04")
+            && e.contains("[calls.\"Call\"] start"),
+        "{e}"
+    );
+    let e = bind_err(&p, &call_scenario("[calls.Call]\nstart = \"T1\"\n"));
+    assert!(e.contains("choose one of 'S1', 'S2'"), "{e}");
+}
+
+#[test]
+fn d2_r_10_5_2_04_exactly_the_chosen_start_fires() {
+    let p = call_with_two_starts();
+    let r = run(&p, &call_scenario("[calls.Call]\nstart = \"S2\"\n"));
+    assert_eq!(r.cases_completed, 3);
+    assert_eq!((runs(&r, "T1"), runs(&r, "T2")), (0, 3));
+    assert_eq!(r.case_cycle_time.mean, 20.0 * MIN);
+    let r = run(&p, &call_scenario("[calls.Call]\nstart = \"m.bpmn#S1\"\n"));
+    assert_eq!((runs(&r, "T1"), runs(&r, "T2")), (3, 0));
+}
+
+#[test]
+fn d2_skeleton_and_update_from_model_offer_the_choice() {
+    let p = call_with_two_starts();
+    let s = Scenario::skeleton(&p, None);
+    assert_eq!(s.calls["m.bpmn#Call"].start, "S1");
+    assert!(s.bind(&p).is_ok());
+    let needs = sim_core::needs::needs(&p, p.node(&q("Call")).unwrap());
+    assert_eq!(
+        needs,
+        [sim_core::needs::Need::CallStart {
+            choices: vec![q("S1"), q("S2")]
+        }]
+    );
+    let toml = s.to_toml().unwrap();
+    assert!(toml.contains("[calls.\"m.bpmn#Call\"]"), "{toml}");
+}
+
+#[test]
+fn d2_the_token_game_lets_the_player_pick_the_start_or_follows_the_scenario() {
+    let mut g = Game::new(Arc::new(call_with_two_starts()));
+    g.apply(Action::Start { event: q("Start") }).unwrap();
+    let (token, starts) = g
+        .pending()
+        .into_iter()
+        .find_map(|p| match p {
+            Pending::StartCall { token, starts, .. } => Some((token, starts)),
+            _ => None,
+        })
+        .expect("the player picks the start event");
+    assert_eq!(starts, [q("S1"), q("S2")]);
+    g.apply(Action::StartCall {
+        token,
+        start: q("S2"),
+    })
+    .unwrap();
+    let at: Vec<QId> = g.tokens().into_iter().map(|t| t.node).collect();
+    assert!(at.contains(&q("T2")) && !at.contains(&q("T1")), "{at:?}");
+
+    // With a scenario's [calls] entry the game starts there by itself.
+    let mut g = Game::new(Arc::new(call_with_two_starts()));
+    g.use_scenario(&Scenario::from_toml(&call_scenario("[calls.Call]\nstart = \"S1\"\n")).unwrap());
+    g.apply(Action::Start { event: q("Start") }).unwrap();
+    let at: Vec<QId> = g.tokens().into_iter().map(|t| t.node).collect();
+    assert!(at.contains(&q("T1")) && !at.contains(&q("T2")), "{at:?}");
+}
