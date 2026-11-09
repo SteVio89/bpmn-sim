@@ -34,6 +34,7 @@ pub fn parse_file(file: &str, xml: &str) -> Result<BpmnFile, ParseError> {
             ..BpmnFile::default()
         },
         root_event_defs: BTreeMap::new(),
+        root_timers: BTreeMap::new(),
     };
     p.read_definitions(root)?;
     Ok(p.out)
@@ -60,6 +61,18 @@ struct Parser<'f> {
     out: BpmnFile,
     /// Event definitions declared as root elements, for `eventDefinitionRef`.
     root_event_defs: BTreeMap<String, EventDef>,
+    /// Timer kinds of root timer event definitions.
+    root_timers: BTreeMap<String, TimerKind>,
+}
+
+/// The kind of time a `timerEventDefinition` gives (`timeDate`, `timeDuration`, `timeCycle`).
+fn timer_kind(d: Node) -> Option<TimerKind> {
+    bpmn_children(d).find_map(|c| match c.tag_name().name() {
+        "timeDate" => Some(TimerKind::Date),
+        "timeDuration" => Some(TimerKind::Duration),
+        "timeCycle" => Some(TimerKind::cycle(c.text().unwrap_or_default())),
+        _ => None,
+    })
 }
 
 impl Parser<'_> {
@@ -114,6 +127,9 @@ impl Parser<'_> {
         for c in bpmn_children(root).filter(|c| c.tag_name().name().ends_with("EventDefinition")) {
             let id = self.required_id(c)?;
             let def = self.event_def(c);
+            if let Some(t) = timer_kind(c) {
+                self.root_timers.insert(id.clone(), t);
+            }
             self.root_event_defs.insert(id, def);
         }
         for c in bpmn_children(root) {
@@ -418,13 +434,18 @@ impl Parser<'_> {
             _ => kind,
         };
         let mut event_defs = Vec::new();
+        let mut timer = None;
         if kind.is_event() {
             for d in bpmn_children(n) {
                 let local = d.tag_name().name();
                 if local.ends_with("EventDefinition") {
+                    if local == "timerEventDefinition" {
+                        timer = timer.or(timer_kind(d));
+                    }
                     event_defs.push(self.event_def(d));
                 } else if local == "eventDefinitionRef" {
                     let r = d.text().map(str::trim).unwrap_or_default();
+                    timer = timer.or(self.root_timers.get(local_ref(r)).copied());
                     let def = self.root_event_defs.get(local_ref(r)).ok_or_else(|| {
                         self.err(id, format!("eventDefinitionRef '{r}' is not a root event definition of this file"))
                     })?;
@@ -479,6 +500,7 @@ impl Parser<'_> {
             looping: looping(n),
             triggered_by_event,
             instantiate: n.attribute("instantiate") == Some("true"),
+            timer,
             incoming: Vec::new(),
             outgoing: Vec::new(),
         })

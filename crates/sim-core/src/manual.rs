@@ -152,6 +152,13 @@ pub struct Game {
     /// Call activity -> the start event its process starts with, when that process has several
     /// None start events (as `[calls]` in a scenario). Without an entry the player picks.
     pub call_starts: BTreeMap<QId, QId>,
+    /// Timer -> how often a non-interrupting timeCycle timer may fire (a scenario's `repeat`;
+    /// else the model's `R<n>/`, else unbounded).
+    pub timer_repeats: BTreeMap<QId, u32>,
+    /// How often non-interrupting timers fired: per (token at the activity, boundary event) and
+    /// per (instance, scope, event subprocess start event).
+    boundary_timer_fired: BTreeMap<(u64, QId), u32>,
+    start_timer_fired: BTreeMap<(usize, Option<usize>, QId), u32>,
     /// What happened, in words.
     pub log: Vec<String>,
     /// Why the case failed (an incident), if it did.
@@ -183,6 +190,9 @@ impl Game {
             or_joins,
             inclusive_join: InclusiveJoin::default(),
             call_starts: BTreeMap::new(),
+            timer_repeats: BTreeMap::new(),
+            boundary_timer_fired: BTreeMap::new(),
+            start_timer_fired: BTreeMap::new(),
             log: Vec::new(),
             failure: None,
             rested: BTreeMap::new(),
@@ -198,6 +208,24 @@ impl Game {
     pub fn use_scenario(&mut self, s: &crate::scenario::Scenario) {
         self.inclusive_join = s.simulation.inclusive_join;
         self.call_starts = s.call_starts(&self.project);
+        self.timer_repeats = s.timer_repeats(&self.project);
+    }
+
+    /// How often non-interrupting timer `n` may fire in one activation: once, or for a
+    /// timeCycle up to its count (R-10.5.5-03). Other events have no limit here.
+    fn timer_limit(&self, n: &FlowNode) -> u32 {
+        if n.cancel_activity || !matches!(n.event_defs.first(), Some(EventDef::Timer)) {
+            return u32::MAX;
+        }
+        match n.timer {
+            Some(TimerKind::Cycle { repeat }) => self
+                .timer_repeats
+                .get(&n.id)
+                .copied()
+                .or(repeat)
+                .unwrap_or(u32::MAX),
+            _ => 1,
+        }
     }
 
     /// Start events the player can start a case (or another pool of it) with, and processes
@@ -275,7 +303,14 @@ impl Game {
             let boundaries: Vec<QId> = self
                 .project
                 .nodes()
-                .filter(|b| b.attached_to.as_ref() == Some(&t.node) && self.fireable(&b.id))
+                .filter(|b| {
+                    b.attached_to.as_ref() == Some(&t.node)
+                        && self.fireable(&b.id)
+                        && self
+                            .boundary_timer_fired
+                            .get(&(*id, b.id.clone()))
+                            .is_none_or(|k| *k < self.timer_limit(b))
+                })
                 .map(|b| b.id.clone())
                 .collect();
             match &t.state {
@@ -396,6 +431,10 @@ impl Game {
                     s.event_defs.first(),
                     Some(EventDef::Timer | EventDef::Message(_) | EventDef::Signal(_))
                 ) && self.fireable(&s.id)
+                    && self
+                        .start_timer_fired
+                        .get(&(inst, scope, s.id.clone()))
+                        .is_none_or(|k| *k < self.timer_limit(s))
             })
             .map(|s| s.id.clone())
             .collect()
@@ -696,9 +735,17 @@ impl Game {
                 self.log.push(format!("'{}' happens", ev.label()));
                 let mut work = Vec::new();
                 if let Some(scope) = self.event_sub_scope(&t, &ev) {
+                    *self
+                        .start_timer_fired
+                        .entry((t.inst, scope, event.clone()))
+                        .or_default() += 1;
                     self.start_event_sub(t.inst, scope, &ev, ev.cancel_activity, &mut work);
                 } else if ev.attached_to.as_ref() == Some(&t.node) {
                     // Boundary event of the activity the token is at.
+                    *self
+                        .boundary_timer_fired
+                        .entry((token, event.clone()))
+                        .or_default() += 1;
                     if ev.cancel_activity {
                         self.cancel_activity(token);
                         self.set(token, &event, TokenState::Passing);
@@ -777,6 +824,10 @@ impl Game {
 
     fn set(&mut self, tok: u64, node: &QId, state: TokenState) {
         let rests = state != TokenState::Passing;
+        // Leaving an activity ends its activation: its timers count afresh next time.
+        if self.tokens.get(&tok).is_some_and(|t| t.node != *node) {
+            self.boundary_timer_fired.retain(|(t, _), _| *t != tok);
+        }
         if let Some(t) = self.tokens.get_mut(&tok) {
             t.node = node.clone();
             t.state = state;

@@ -801,3 +801,188 @@ fn d2_the_token_game_lets_the_player_pick_the_start_or_follows_the_scenario() {
     let at: Vec<QId> = g.tokens().into_iter().map(|t| t.node).collect();
     assert!(at.contains(&q("T1")) && !at.contains(&q("T2")), "{at:?}");
 }
+
+// ---------------------------------------------------------------- R-10.5.5-03: timeCycle
+
+/// Work (45m) with a non-interrupting timer boundary event `timer` (its definition content)
+/// that leads to Remind (1m).
+fn with_reminder(timer: &str) -> Project {
+    model(&format!(
+        r#"
+        <bpmn:startEvent id="Start"/><bpmn:task id="Work"/><bpmn:task id="Remind"/>
+        <bpmn:boundaryEvent id="Tick" attachedToRef="Work" cancelActivity="false">
+          <bpmn:timerEventDefinition>{timer}</bpmn:timerEventDefinition>
+        </bpmn:boundaryEvent>
+        <bpmn:endEvent id="End"/><bpmn:endEvent id="RemEnd"/>
+        <bpmn:sequenceFlow id="F0" sourceRef="Start" targetRef="Work"/>
+        <bpmn:sequenceFlow id="F1" sourceRef="Work" targetRef="End"/>
+        <bpmn:sequenceFlow id="F2" sourceRef="Tick" targetRef="Remind"/>
+        <bpmn:sequenceFlow id="F3" sourceRef="Remind" targetRef="RemEnd"/>"#
+    ))
+}
+
+fn reminder_scenario(boundary: &str, sim: &str) -> String {
+    base(
+        2,
+        "2h",
+        "\"Start\"",
+        &format!(
+            "{}{}[boundary.Tick]\ndelay = {{ dist = \"fixed\", value = \"10m\" }}\n{boundary}",
+            fixed("Work", 45),
+            fixed("Remind", 1)
+        ),
+    )
+    .replace("cases = 2", &format!("cases = 2\n{sim}"))
+}
+
+#[test]
+fn r_10_5_5_03_the_parser_records_the_timer_kind() {
+    let kind = |t: &str| with_reminder(t).node(&q("Tick")).unwrap().timer;
+    assert_eq!(
+        kind("<bpmn:timeDate>2024-01-01T00:00:00Z</bpmn:timeDate>"),
+        Some(TimerKind::Date)
+    );
+    assert_eq!(
+        kind("<bpmn:timeDuration>PT10M</bpmn:timeDuration>"),
+        Some(TimerKind::Duration)
+    );
+    assert_eq!(
+        kind("<bpmn:timeCycle>R3/PT10M</bpmn:timeCycle>"),
+        Some(TimerKind::Cycle { repeat: Some(3) })
+    );
+    assert_eq!(
+        kind("<bpmn:timeCycle>R/PT10M</bpmn:timeCycle>"),
+        Some(TimerKind::Cycle { repeat: None })
+    );
+    assert_eq!(
+        kind("<bpmn:timeCycle>0 0 9 * * ?</bpmn:timeCycle>"),
+        Some(TimerKind::Cycle { repeat: None })
+    );
+    assert_eq!(kind(""), None);
+}
+
+#[test]
+fn r_10_5_5_03_a_non_interrupting_time_cycle_boundary_fires_repeatedly() {
+    // R3/PT10M on a 45-minute task: at 10, 20 and 30 minutes.
+    let r = run(
+        &with_reminder("<bpmn:timeCycle>R3/PT10M</bpmn:timeCycle>"),
+        &reminder_scenario("", ""),
+    );
+    assert_eq!(r.boundary_fired[&q("Tick")], 6);
+    assert_eq!(runs(&r, "Remind"), 6);
+    let starts: Vec<f64> = r
+        .records
+        .iter()
+        .filter(|x| x.activity.id == "Remind" && x.case == 0)
+        .map(|x| x.start / MIN)
+        .collect();
+    assert_eq!(starts, [10.0, 20.0, 30.0]);
+    assert_eq!(r.cases_completed, 2);
+    // A scenario repeat overrides the model's count.
+    let r = run(
+        &with_reminder("<bpmn:timeCycle>R3/PT10M</bpmn:timeCycle>"),
+        &reminder_scenario("repeat = 2\n", ""),
+    );
+    assert_eq!(r.boundary_fired[&q("Tick")], 4);
+}
+
+#[test]
+fn r_10_5_5_03_other_timers_fire_once() {
+    let r = run(
+        &with_reminder("<bpmn:timeDuration>PT10M</bpmn:timeDuration>"),
+        &reminder_scenario("", ""),
+    );
+    assert_eq!(r.boundary_fired[&q("Tick")], 2);
+    let r = run(&with_reminder(""), &reminder_scenario("", ""));
+    assert_eq!(r.boundary_fired[&q("Tick")], 2);
+    // repeat is only for non-interrupting timeCycle timers.
+    let p = with_reminder("");
+    let b = bind(&p, &reminder_scenario("repeat = 3\n", ""));
+    assert!(
+        b.warnings.iter().any(|w| w.contains("repeat is ignored")),
+        "{:?}",
+        b.warnings
+    );
+}
+
+#[test]
+fn r_10_5_5_03_an_unbounded_cycle_needs_a_count_or_a_horizon() {
+    let p = with_reminder("<bpmn:timeCycle>R/PT10M</bpmn:timeCycle>");
+    let e = bind_err(&p, &reminder_scenario("", ""));
+    assert!(
+        e.contains("no repeat count") && e.contains("simulation.horizon"),
+        "{e}"
+    );
+    // With a horizon it fires as long as the task runs: at 10, 20, 30 and 40 minutes.
+    let r = run(&p, &reminder_scenario("", "horizon = \"10h\""));
+    assert_eq!(r.boundary_fired[&q("Tick")], 8);
+    assert_eq!(r.cases_completed, 2);
+    // Or a count from the scenario.
+    let r = run(&p, &reminder_scenario("repeat = 1\n", ""));
+    assert_eq!(r.boundary_fired[&q("Tick")], 2);
+}
+
+#[test]
+fn r_10_5_5_03_a_non_interrupting_time_cycle_event_subprocess_starts_repeatedly() {
+    let p = model(
+        r#"
+        <bpmn:startEvent id="Start"/><bpmn:task id="Work"/><bpmn:endEvent id="End"/>
+        <bpmn:sequenceFlow id="F0" sourceRef="Start" targetRef="Work"/>
+        <bpmn:sequenceFlow id="F1" sourceRef="Work" targetRef="End"/>
+        <bpmn:subProcess id="EvSub" triggeredByEvent="true">
+          <bpmn:startEvent id="EvStart" isInterrupting="false">
+            <bpmn:timerEventDefinition><bpmn:timeCycle>R2/PT10M</bpmn:timeCycle></bpmn:timerEventDefinition>
+          </bpmn:startEvent>
+          <bpmn:endEvent id="EvEnd"/>
+          <bpmn:sequenceFlow id="E0" sourceRef="EvStart" targetRef="EvEnd"/>
+        </bpmn:subProcess>"#,
+    );
+    let s = base(
+        2,
+        "2h",
+        "\"Start\"",
+        &format!(
+            "{}[events.EvStart]\ndelay = {{ dist = \"fixed\", value = \"10m\" }}\n",
+            fixed("Work", 45)
+        ),
+    );
+    let r = run(&p, &s);
+    assert_eq!(r.boundary_fired[&q("EvStart")], 4);
+    assert_eq!(r.cases_completed, 2);
+    let r = run(
+        &p,
+        &s.replace("value = \"10m\" }", "value = \"10m\" }\nrepeat = 3"),
+    );
+    assert_eq!(r.boundary_fired[&q("EvStart")], 6);
+}
+
+#[test]
+fn r_10_5_5_03_the_token_game_fires_timers_as_often_as_the_engine() {
+    let fire_count = |timer: &str| {
+        let mut g = Game::new(Arc::new(with_reminder(timer)));
+        g.stop_at_tasks = true;
+        g.apply(Action::Start { event: q("Start") }).unwrap();
+        let mut n = 0;
+        while let Some(token) = g.pending().into_iter().find_map(|p| match p {
+            Pending::Fire { token, events, .. } if events.contains(&q("Tick")) => Some(token),
+            _ => None,
+        }) {
+            g.apply(Action::Fire {
+                token,
+                event: q("Tick"),
+            })
+            .unwrap();
+            n += 1;
+            if n > 10 {
+                break;
+            }
+        }
+        n
+    };
+    assert_eq!(
+        fire_count("<bpmn:timeDuration>PT10M</bpmn:timeDuration>"),
+        1
+    );
+    assert_eq!(fire_count("<bpmn:timeCycle>R3/PT10M</bpmn:timeCycle>"), 3);
+    assert_eq!(fire_count("<bpmn:timeCycle>R/PT10M</bpmn:timeCycle>"), 11);
+}

@@ -253,6 +253,10 @@ pub struct ConditionCfg {
 pub struct EventSpec {
     pub label: Option<String>,
     pub delay: DistSpec,
+    /// Non-interrupting `timeCycle` timer start of an event subprocess: how often it fires
+    /// (overrides the model's `R<n>/`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub repeat: Option<u32>,
 }
 
 /// Timer boundary: `delay` (+ optional `probability`, default 1). Error/escalation boundary:
@@ -263,6 +267,10 @@ pub struct BoundarySpec {
     pub label: Option<String>,
     pub probability: Option<f64>,
     pub delay: Option<DistSpec>,
+    /// Non-interrupting `timeCycle` timer: how often it fires while its activity runs
+    /// (overrides the model's `R<n>/`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub repeat: Option<u32>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -620,6 +628,10 @@ pub struct BoundModel<'p> {
     /// Delay of externally triggered catch events (timer events, optionally message/signal).
     pub events: BTreeMap<QId, Dist>,
     pub boundaries: BTreeMap<QId, BoundaryCfg>,
+    /// Non-interrupting `timeCycle` timers (boundary events, event subprocess starts) -> how
+    /// often they fire at most (`u32::MAX`: as long as their activity or scope runs; only with
+    /// a horizon). Other timers fire once.
+    pub timer_cycles: BTreeMap<QId, u32>,
     /// Processes that take part in the run (triggered, or reached by messages/signals).
     pub active: Vec<QId>,
     pub warnings: Vec<String>,
@@ -1575,6 +1587,48 @@ impl Scenario {
             boundaries.insert(n.id.clone(), BoundaryCfg { probability, delay });
         }
 
+        // Non-interrupting timeCycle timers fire repeatedly (R-10.5.5-03); the scenario delay
+        // is the interval, the count comes from the scenario or the model's `R<n>/`.
+        let mut timer_cycles = BTreeMap::new();
+        for n in &nodes {
+            let is_timer = matches!(n.event_defs.first(), Some(EventDef::Timer));
+            let repeats = is_timer
+                && !n.cancel_activity
+                && matches!(n.timer, Some(TimerKind::Cycle { .. }))
+                && (n.kind == NodeKind::BoundaryEvent || project.is_event_sub_start(n));
+            let given = boundary_specs
+                .get(&n.id)
+                .and_then(|s| s.repeat)
+                .or_else(|| event_specs.get(&n.id).and_then(|s| s.repeat));
+            let name = format!("{} ({})", n.id, n.label());
+            if !repeats {
+                if given.is_some() {
+                    warnings.at(&n.id, format!(
+                        "{name}: only a non-interrupting timer with a timeCycle repeats; repeat is ignored"
+                    ));
+                }
+                continue;
+            }
+            let model = match n.timer {
+                Some(TimerKind::Cycle { repeat }) => repeat,
+                _ => None,
+            };
+            match given.or(model) {
+                Some(0) => errors.at(&n.id, format!("{name}: repeat must be at least 1")),
+                Some(k) => {
+                    timer_cycles.insert(n.id.clone(), k);
+                }
+                None if horizon.is_some() => {
+                    timer_cycles.insert(n.id.clone(), u32::MAX);
+                }
+                None => errors.at(&n.id, format!(
+                    "{name}: its timeCycle has no repeat count, so it would fire as long as its {} runs and the run might never end; give the cycle a count (R<n>/...), a repeat = <n> in its [{}] entry, or a simulation.horizon",
+                    if n.kind == NodeKind::BoundaryEvent { "activity" } else { "scope" },
+                    if n.kind == NodeKind::BoundaryEvent { "boundary" } else { "events" },
+                )),
+            }
+        }
+
         let mut configured: BTreeMap<QId, &ActivitySpec> = BTreeMap::new();
         for (key, spec) in &self.activities {
             match resolve(project, key, "activity") {
@@ -2198,6 +2252,7 @@ impl Scenario {
             black_box_reply,
             events,
             boundaries,
+            timer_cycles,
             active: processes,
             warnings: warning_texts,
         });
@@ -2598,6 +2653,16 @@ impl Scenario {
         };
         s.update_from_model(project);
         s
+    }
+
+    /// The `repeat` counts the scenario gives timers (`[boundary]`, `[events]`).
+    pub fn timer_repeats(&self, project: &Project) -> BTreeMap<QId, u32> {
+        let boundary = self.boundary.iter().map(|(k, s)| (k, s.repeat));
+        let events = self.events.iter().map(|(k, s)| (k, s.repeat));
+        boundary
+            .chain(events)
+            .filter_map(|(k, r)| Some((resolve(project, k, "timer").ok()?, r?)))
+            .collect()
     }
 
     /// The valid `[calls]` choices: call activity -> start event (entries that do not bind

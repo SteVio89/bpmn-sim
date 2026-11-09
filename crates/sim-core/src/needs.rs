@@ -799,6 +799,7 @@ impl Scenario {
                         EventSpec {
                             label: n.name.clone(),
                             delay: fixed(3600.0),
+                            repeat: None,
                         },
                     );
                 }
@@ -808,6 +809,7 @@ impl Scenario {
                         label: n.name.clone(),
                         probability: None,
                         delay: None,
+                        repeat: None,
                     });
                     if probability {
                         b.probability.get_or_insert(0.1);

@@ -867,6 +867,7 @@ fn start_delay_editor(
                     EventSpec {
                         label: n.name.clone(),
                         delay: default_dist(1, 86_400.0),
+                        repeat: None,
                     },
                 );
             }

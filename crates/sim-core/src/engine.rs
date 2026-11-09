@@ -123,6 +123,8 @@ struct Sub {
     boundary: bool,
     kind: SubKind,
     active: bool,
+    /// How often a timer subscription has fired (timeCycle timers fire repeatedly).
+    fired: u32,
 }
 
 struct Instance {
@@ -1430,6 +1432,7 @@ impl<'a> Engine<'a> {
             boundary,
             kind,
             active: true,
+            fired: 0,
         });
         if let Some(t) = self.instances[inst].tokens.get_mut(&owner) {
             t.subs.push(id);
@@ -1718,9 +1721,11 @@ impl<'a> Engine<'a> {
             self.set_token(inst, owner, &node_id, "passing");
             work.push((owner, node_id, None));
         } else {
-            // Non-interrupting: a timer fires once; message/signal boundaries stay armed.
+            // Non-interrupting: a timer fires once, a timeCycle timer up to its count
+            // (R-10.5.5-03); message/signal boundaries stay armed.
             if matches!(self.subs[s].kind, SubKind::Timer) {
-                self.deactivate_sub(s);
+                let delay = m.boundaries.get(&node_id).and_then(|c| c.delay.as_ref());
+                self.repeat_timer(s, &node_id, delay);
             }
             let scope = self.instances[inst]
                 .tokens
@@ -1791,6 +1796,20 @@ impl<'a> Engine<'a> {
         }
     }
 
+    /// A non-interrupting timer subscription fired: schedule its next firing after a new
+    /// `interval` if it is a timeCycle timer with firings left, else end it.
+    fn repeat_timer(&mut self, s: usize, node: &QId, interval: Option<&crate::dist::Dist>) {
+        self.subs[s].fired += 1;
+        let max = self.m.timer_cycles.get(node).copied().unwrap_or(1);
+        match interval {
+            Some(d) if self.subs[s].fired < max => {
+                let delay = d.sample(&mut self.rng);
+                self.schedule(self.now + delay, Ev::Timer(s));
+            }
+            _ => self.deactivate_sub(s),
+        }
+    }
+
     /// The trigger of an event subprocess's start event happened.
     fn fire_event_sub(&mut self, s: usize, scope: Option<usize>) {
         let (inst, owner, start) = {
@@ -1812,8 +1831,10 @@ impl<'a> Engine<'a> {
             .node(&start)
             .is_some_and(|n| n.cancel_activity);
         if !interrupting && matches!(self.subs[s].kind, SubKind::Timer) {
-            // A non-interrupting timer fires once; messages and signals stay armed.
-            self.deactivate_sub(s);
+            // A non-interrupting timer fires once, a timeCycle timer up to its count
+            // (R-10.5.5-03); messages and signals stay armed.
+            let m = self.m;
+            self.repeat_timer(s, &start, m.events.get(&start));
         }
         *self.boundary_fired.entry(start.clone()).or_default() += 1;
         let item = self.start_event_sub(inst, scope, owner, &start, interrupting);
