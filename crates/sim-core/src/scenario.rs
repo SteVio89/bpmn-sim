@@ -279,9 +279,10 @@ impl Default for MessagesSection {
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum SignalScope {
-    /// Signals reach only instances of the same case (default, spec §5.4).
-    #[default]
+    /// Signals reach only instances of the same case (the default before M18).
     Case,
+    /// Signals are broadcast across all cases (BPMN 2.0.2 §10.5.1, R-10.5.1-01; the default).
+    #[default]
     Global,
 }
 
@@ -347,7 +348,7 @@ fn is_default_join(j: &InclusiveJoin) -> bool {
 }
 
 fn is_default_scope(s: &SignalScope) -> bool {
-    *s == SignalScope::Case
+    *s == SignalScope::Global
 }
 
 fn default_seed() -> u64 {
@@ -370,7 +371,7 @@ impl Default for SimulationSection {
             start: None,
             warm_up_cases: 0,
             time_unit: default_time_unit(),
-            signal_scope: SignalScope::Case,
+            signal_scope: SignalScope::Global,
             inclusive_join: InclusiveJoin::Spec,
             trace_cases: default_trace_cases(),
         }

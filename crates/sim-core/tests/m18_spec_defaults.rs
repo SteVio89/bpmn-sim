@@ -522,3 +522,46 @@ fn r_13_4_3_01_the_token_game_uses_the_same_join_rule() {
     complete(&mut g, "T1");
     assert!(!at_after(&g), "old rule: the join waits for T2's token");
 }
+
+// ---------------------------------------------------------------- R-10.5.1-01: signals
+
+/// A throws signal S after T (10m); the other branch waits for S.
+fn signal_model() -> Project {
+    model(
+        r#"
+        <bpmn:startEvent id="Start"/>
+        <bpmn:parallelGateway id="And"/>
+        <bpmn:task id="T"/>
+        <bpmn:intermediateThrowEvent id="Throw"><bpmn:signalEventDefinition signalRef="Sig"/></bpmn:intermediateThrowEvent>
+        <bpmn:intermediateCatchEvent id="Catch"><bpmn:signalEventDefinition signalRef="Sig"/></bpmn:intermediateCatchEvent>
+        <bpmn:endEvent id="E1"/><bpmn:endEvent id="E2"/>
+        <bpmn:sequenceFlow id="F0" sourceRef="Start" targetRef="And"/>
+        <bpmn:sequenceFlow id="F1" sourceRef="And" targetRef="T"/>
+        <bpmn:sequenceFlow id="F2" sourceRef="T" targetRef="Throw"/>
+        <bpmn:sequenceFlow id="F3" sourceRef="Throw" targetRef="E1"/>
+        <bpmn:sequenceFlow id="F4" sourceRef="And" targetRef="Catch"/>
+        <bpmn:sequenceFlow id="F5" sourceRef="Catch" targetRef="E2"/>"#,
+    )
+}
+
+#[test]
+fn r_10_5_1_01_signals_are_broadcast_across_cases_by_default() {
+    // Cases at 0 and 5 minutes. Case 0's signal (at 10) also reaches case 1's waiting catch
+    // event, which then goes on at 10 instead of 15.
+    let s = |opt: &str| {
+        base(2, "5m", "\"Start\"", &fixed("T", 10))
+            .replace("cases = 2", &format!("cases = 2\n{opt}"))
+    };
+    let r = run(&signal_model(), &s(""));
+    assert_eq!(r.signals[0].receivers, 2);
+    assert_eq!(r.signals[1].receivers, 0);
+    assert_eq!(r.cases_completed, 2);
+    assert_eq!(
+        Scenario::from_toml(&s("")).unwrap().simulation.signal_scope,
+        SignalScope::Global
+    );
+    // signal_scope = "case": the behaviour before M18.
+    let r = run(&signal_model(), &s("signal_scope = \"case\""));
+    assert_eq!(r.signals[0].receivers, 1);
+    assert_eq!(r.signals[1].receivers, 1);
+}

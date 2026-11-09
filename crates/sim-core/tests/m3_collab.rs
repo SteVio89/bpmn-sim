@@ -201,12 +201,15 @@ fn unknown_black_box_participant_is_a_scenario_error() {
 
 #[test]
 fn v8_signal_thrown_before_the_catch_is_active_leaves_the_receiver_stuck() {
+    // Within the case (with the global default since M18, R-10.5.1-01, the next case's signal
+    // would wake the previous case's receiver).
     let r = run(
         "v8-signal-early.bpmn",
         &scenario(
             BOTH,
             "[activities.Task_B]\nduration = { dist = \"fixed\", value = \"5m\" }\n",
-        ),
+        )
+        .replace("cases = 10", "cases = 10\nsignal_scope = \"case\""),
     );
     assert!(
         r.signals.iter().all(|s| s.name == "Go" && s.receivers == 0),
@@ -237,9 +240,9 @@ fn signal_reaches_a_waiting_catch_event() {
 }
 
 #[test]
-fn signals_stay_within_the_case_unless_global() {
+fn signals_reach_all_cases_unless_scoped_to_the_case() {
     // Arrivals every 5 minutes, signal sent at t = 10 + 5k. Case 0's signal reaches case 1's
-    // waiting catch event only with global scope.
+    // waiting catch event only with global scope (the default since M18, R-10.5.1-01).
     let sc = |scope: &str| {
         scenario(
             BOTH,
@@ -248,9 +251,13 @@ fn signals_stay_within_the_case_unless_global() {
         .replace("value = \"60m\"", "value = \"5m\"")
         .replace("cases = 10", &format!("cases = 2\n{scope}"))
     };
-    let local = run("v8-signal-ok.bpmn", &sc(""));
+    let local = run("v8-signal-ok.bpmn", &sc("signal_scope = \"case\""));
     assert_eq!(local.signals[0].receivers, 1);
-    let global = run("v8-signal-ok.bpmn", &sc("signal_scope = \"global\""));
+    let global = run("v8-signal-ok.bpmn", &sc(""));
+    assert_eq!(
+        global,
+        run("v8-signal-ok.bpmn", &sc("signal_scope = \"global\""))
+    );
     assert_eq!(global.signals[0].receivers, 2);
     assert_eq!(global.signals[1].receivers, 0);
     assert_eq!(global.cases_completed, 2);
