@@ -629,7 +629,7 @@ fn d1_skeleton_and_token_game_start_a_process_without_start_events() {
     let mut g = Game::new(Arc::new(startless()));
     assert_eq!(g.start_events(), [q("P")]);
     g.apply(Action::Start { event: q("P") }).unwrap();
-    let mut at: Vec<String> = g.tokens().iter().map(|t| t.node.id.clone()).collect();
+    let mut at: Vec<String> = g.tokens().iter().map(|t| t.node.id.to_string()).collect();
     at.sort();
     assert_eq!(at, ["A", "B"]);
 }

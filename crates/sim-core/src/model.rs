@@ -1,21 +1,185 @@
 //! Internal model. Every element is identified by a qualified id `<file>#<element id>` (spec §3.2).
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
+use std::sync::Mutex;
 
 /// Qualified id: file name plus element id (ids are only unique within one file).
+///
+/// Both parts are interned names: the engine copies ids into every token, event and record,
+/// and a copy is just two pointers.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct QId {
-    pub file: String,
-    pub id: String,
+    pub file: Name,
+    pub id: Name,
 }
 
 impl QId {
-    pub fn new(file: impl Into<String>, id: impl Into<String>) -> Self {
+    pub fn new(file: impl Into<Name>, id: impl Into<Name>) -> Self {
         Self {
             file: file.into(),
             id: id.into(),
         }
+    }
+}
+
+/// An interned string, for the parts of a `QId`: copying one is free and two names are equal
+/// exactly when they point to the same string. It is used like a `str` (it dereferences to one
+/// and compares with `str` and `String`) and orders like one.
+///
+/// Every distinct name is stored once and kept for the rest of the program. That stays small:
+/// it is the vocabulary of file names and element ids of the models loaded.
+#[derive(Clone, Copy, Hash)]
+pub struct Name(&'static str);
+
+impl Name {
+    pub fn new(s: &str) -> Self {
+        static NAMES: Mutex<BTreeSet<&'static str>> = Mutex::new(BTreeSet::new());
+        let mut names = NAMES.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(&n) = names.get(s) {
+            return Self(n);
+        }
+        let n: &'static str = Box::leak(s.into());
+        names.insert(n);
+        Self(n)
+    }
+
+    pub fn as_str(&self) -> &'static str {
+        self.0
+    }
+}
+
+impl Default for Name {
+    fn default() -> Self {
+        Self::new("")
+    }
+}
+
+impl PartialEq for Name {
+    fn eq(&self, other: &Self) -> bool {
+        // Interned: equal names are the same string.
+        std::ptr::eq(self.0, other.0)
+    }
+}
+
+impl Eq for Name {}
+
+impl PartialOrd for Name {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for Name {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        if self == other {
+            std::cmp::Ordering::Equal
+        } else {
+            self.0.cmp(other.0)
+        }
+    }
+}
+
+impl std::ops::Deref for Name {
+    type Target = str;
+    fn deref(&self) -> &str {
+        self.0
+    }
+}
+
+impl AsRef<str> for Name {
+    fn as_ref(&self) -> &str {
+        self.0
+    }
+}
+
+impl std::borrow::Borrow<str> for Name {
+    fn borrow(&self) -> &str {
+        self.0
+    }
+}
+
+impl From<&str> for Name {
+    fn from(s: &str) -> Self {
+        Self::new(s)
+    }
+}
+
+impl From<&String> for Name {
+    fn from(s: &String) -> Self {
+        Self::new(s)
+    }
+}
+
+impl From<String> for Name {
+    fn from(s: String) -> Self {
+        Self::new(&s)
+    }
+}
+
+impl From<&Name> for Name {
+    fn from(s: &Name) -> Self {
+        *s
+    }
+}
+
+impl From<Name> for String {
+    fn from(s: Name) -> Self {
+        s.as_str().to_owned()
+    }
+}
+
+impl PartialEq<str> for Name {
+    fn eq(&self, other: &str) -> bool {
+        self.as_str() == other
+    }
+}
+
+impl PartialEq<&str> for Name {
+    fn eq(&self, other: &&str) -> bool {
+        self.as_str() == *other
+    }
+}
+
+impl PartialEq<String> for Name {
+    fn eq(&self, other: &String) -> bool {
+        self.as_str() == other
+    }
+}
+
+impl PartialEq<Name> for str {
+    fn eq(&self, other: &Name) -> bool {
+        self == other.as_str()
+    }
+}
+
+impl PartialEq<Name> for &str {
+    fn eq(&self, other: &Name) -> bool {
+        *self == other.as_str()
+    }
+}
+
+impl PartialEq<Name> for String {
+    fn eq(&self, other: &Name) -> bool {
+        self == other.as_str()
+    }
+}
+
+impl fmt::Debug for Name {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Debug::fmt(self.as_str(), f)
+    }
+}
+
+impl fmt::Display for Name {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self)
+    }
+}
+
+impl serde::Serialize for Name {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        s.serialize_str(self)
     }
 }
 

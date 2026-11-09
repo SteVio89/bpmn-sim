@@ -32,16 +32,16 @@ impl Project {
         }
         let file = parse_file(name, xml)?;
         for pid in file.processes.keys() {
-            if let Some(existing) = self.processes.get(&pid.id) {
+            if let Some(existing) = self.processes.get(pid.id.as_str()) {
                 return Err(ParseError::DuplicateProcess {
-                    process: pid.id.clone(),
-                    first: existing.file.clone(),
+                    process: pid.id.to_string(),
+                    first: existing.file.to_string(),
                     second: name.into(),
                 });
             }
         }
         for pid in file.processes.keys() {
-            self.processes.insert(pid.id.clone(), pid.clone());
+            self.processes.insert(pid.id.to_string(), pid.clone());
         }
         self.files.insert(name.to_string(), file);
         Ok(())
@@ -111,7 +111,7 @@ impl Project {
     }
 
     pub fn node(&self, id: &QId) -> Option<&FlowNode> {
-        self.files.get(&id.file)?.nodes.get(id)
+        self.files.get(id.file.as_str())?.nodes.get(id)
     }
 
     pub fn nodes(&self) -> impl Iterator<Item = &FlowNode> {
@@ -120,13 +120,13 @@ impl Project {
 
     pub fn process(&self, process_id: &str) -> Option<&Process> {
         let q = self.processes.get(process_id)?;
-        self.files.get(&q.file)?.processes.get(q)
+        self.files.get(q.file.as_str())?.processes.get(q)
     }
 }
 
 impl Project {
     pub fn flow(&self, id: &QId) -> Option<&SequenceFlow> {
-        self.files.get(&id.file)?.sequence_flows.get(id)
+        self.files.get(id.file.as_str())?.sequence_flows.get(id)
     }
 
     /// A message flow at a call activity or subprocess (BPMN §9.3) only shows on the outside
@@ -148,14 +148,14 @@ impl Project {
                 .participant_name(id)
                 .map(str::to_string)
                 .or_else(|| self.process(&id.id).and_then(|p| p.name.clone()))
-                .unwrap_or_else(|| id.id.clone()),
+                .unwrap_or_else(|| id.id.to_string()),
         }
     }
 
     /// Name of the participant (pool) whose process contains `process`, if the file has a collaboration.
     pub fn participant_name(&self, process: &QId) -> Option<&str> {
         self.files
-            .get(&process.file)?
+            .get(process.file.as_str())?
             .participants
             .values()
             .find(|p| p.process.as_ref() == Some(process))
@@ -340,7 +340,7 @@ pub fn discover_files(main: &Path) -> Result<Vec<PathBuf>, ParseError> {
     for f in std::iter::once(&main_file).chain(bpmn.values().map(|(_, f)| f)) {
         for pid in f.processes.keys() {
             defines
-                .entry(pid.id.clone())
+                .entry(pid.id.to_string())
                 .or_default()
                 .push(f.name.clone());
         }

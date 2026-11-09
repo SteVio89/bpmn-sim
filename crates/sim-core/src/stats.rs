@@ -4,7 +4,7 @@ use std::collections::BTreeMap;
 
 use serde::Serialize;
 
-use crate::model::QId;
+use crate::model::{Name, QId};
 
 /// Descriptive statistics. Percentiles use linear interpolation between closest ranks
 /// (R type 7). Everything is 0 when `count` is 0.
@@ -61,7 +61,7 @@ pub struct ActivityRecord {
     /// Token that ran the task (tells the instances of a multi-instance task apart).
     pub token: u64,
     pub activity: QId,
-    pub resource: Option<String>,
+    pub resource: Option<Name>,
     /// Time the token arrived at the task.
     pub queued: f64,
     pub start: f64,

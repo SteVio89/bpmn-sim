@@ -35,7 +35,7 @@ fn choice(g: &Game) -> (u64, Vec<String>) {
         .into_iter()
         .filter_map(|p| match p {
             Pending::Choose { token, flows, .. } => {
-                Some((token, flows.iter().map(|f| f.id.clone()).collect()))
+                Some((token, flows.iter().map(|f| f.id.to_string()).collect()))
             }
             _ => None,
         })
@@ -54,7 +54,7 @@ fn choose(g: &mut Game, file: &str, flows: &[&str]) {
 }
 
 fn at(g: &Game) -> Vec<String> {
-    let mut v: Vec<String> = g.tokens().iter().map(|t| t.node.id.clone()).collect();
+    let mut v: Vec<String> = g.tokens().iter().map(|t| t.node.id.to_string()).collect();
     v.sort();
     v
 }
@@ -342,7 +342,7 @@ fn focus_follows_the_token_into_called_processes_and_back() {
         if let Some(f) = g.focus()
             && files.last() != Some(&f.file)
         {
-            calls_seen.push(g.focus_calls().iter().map(|c| c.id.clone()).collect());
+            calls_seen.push(g.focus_calls().iter().map(|c| c.id.to_string()).collect());
             files.push(f.file);
         }
     }

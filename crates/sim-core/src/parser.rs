@@ -285,7 +285,7 @@ impl Parser<'_> {
 
         // Lanes, then incoming/outgoing wiring for the nodes of this process.
         for node in self.out.nodes.values_mut().filter(|nd| nd.process == pid) {
-            node.lane = lane_of.get(&node.id.id).cloned();
+            node.lane = lane_of.get(node.id.id.as_str()).cloned();
         }
         let wiring: Vec<(QId, QId, QId)> = flows
             .iter()

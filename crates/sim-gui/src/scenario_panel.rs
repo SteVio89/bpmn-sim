@@ -209,7 +209,7 @@ pub fn show(app: &mut App, ui: &mut Ui) {
                 .values()
                 .flat_map(|f| f.participants.values())
                 .filter(|p| p.process.is_none())
-                .map(|p| (p.id.clone(), p.name.clone().unwrap_or(p.id.id.clone())))
+                .map(|p| (p.id.clone(), p.name.clone().unwrap_or(p.id.id.to_string())))
                 .collect();
             for (id, name) in black_boxes {
                 let t = Target::BlackBox(id.clone());
@@ -694,7 +694,10 @@ fn task_table(
     let mut groups: BTreeMap<(String, String), Vec<&FlowNode>> = BTreeMap::new();
     for n in tasks {
         let lane = default_pool(project, n).unwrap_or_default();
-        groups.entry((n.id.file.clone(), lane)).or_default().push(n);
+        groups
+            .entry((n.id.file.to_string(), lane))
+            .or_default()
+            .push(n);
     }
     let files = project.files.len();
     let pools: Vec<String> = s.resources.keys().cloned().collect();

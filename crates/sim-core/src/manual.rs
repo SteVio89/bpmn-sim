@@ -781,7 +781,7 @@ impl Game {
                 .name
                 .clone()
                 .unwrap_or_else(|| format!("to '{}'", self.label(&fl.target))),
-            None => f.id.clone(),
+            None => f.id.to_string(),
         }
     }
 

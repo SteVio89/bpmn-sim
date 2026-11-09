@@ -158,8 +158,10 @@ pub fn overlay(
                         if g.by_output() {
                             let var = g.output.as_deref().unwrap_or("?");
                             for f in &n.outgoing {
-                                let values =
-                                    g.values.get(&f.id).or_else(|| g.values.get(&f.to_string()));
+                                let values = g
+                                    .values
+                                    .get(f.id.as_str())
+                                    .or_else(|| g.values.get(&f.to_string()));
                                 let text = match values {
                                     Some(vs) => {
                                         let parts: Vec<String> =
@@ -198,7 +200,7 @@ pub fn overlay(
                         for f in &n.outgoing {
                             let p = g
                                 .probabilities
-                                .get(&f.id)
+                                .get(f.id.as_str())
                                 .or_else(|| g.probabilities.get(&f.to_string()));
                             match p {
                                 Some(p) => {
@@ -325,8 +327,8 @@ pub fn overlay(
 pub fn locate(project: &Project, t: &Target) -> Option<(String, sim_core::Bounds)> {
     match t {
         Target::Node(q) | Target::BlackBox(q) => {
-            let f = project.files.get(&q.file)?;
-            Some((q.file.clone(), *f.diagram.shapes.get(q)?))
+            let f = project.files.get(q.file.as_str())?;
+            Some((q.file.to_string(), *f.diagram.shapes.get(q)?))
         }
         Target::Pool(name) => project.files.values().find_map(|f| {
             let lane = f.lanes.iter().find(|(_, n)| *n == name).map(|(id, _)| id);
@@ -360,14 +362,14 @@ pub fn target_name(project: &Project, t: &Target) -> String {
     match t {
         Target::Node(q) => project
             .node(q)
-            .map_or(q.id.clone(), |n| n.label().to_string()),
+            .map_or(q.id.to_string(), |n| n.label().to_string()),
         Target::Pool(name) => name.clone(),
         Target::BlackBox(q) => project
             .files
-            .get(&q.file)
+            .get(q.file.as_str())
             .and_then(|f| f.participants.get(q))
             .and_then(|p| p.name.clone())
-            .unwrap_or(q.id.clone()),
+            .unwrap_or(q.id.to_string()),
     }
 }
 

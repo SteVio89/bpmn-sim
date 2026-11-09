@@ -496,7 +496,7 @@ fn the_token_game_catches_thrown_errors_too() {
         })
         .expect("Work waits");
     g.apply(Action::Complete { token: work }).unwrap();
-    let at: Vec<String> = g.tokens().iter().map(|t| t.node.id.clone()).collect();
+    let at: Vec<String> = g.tokens().iter().map(|t| t.node.id.to_string()).collect();
     assert_eq!(at, ["Handle"]);
     assert!(
         g.log.iter().any(|l| l == "error 'A' caught by 'B_A'"),

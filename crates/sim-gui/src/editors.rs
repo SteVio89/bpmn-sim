@@ -36,7 +36,7 @@ pub fn flow_label(project: &Project, f: &QId) -> String {
                         .map_or(fl.target.id.as_str(), |n| n.label())
                 )
             }),
-        None => f.id.clone(),
+        None => f.id.to_string(),
     }
 }
 
@@ -158,7 +158,7 @@ pub fn need_editor(
             let label = |q: &QId| {
                 project
                     .node(q)
-                    .map_or_else(|| q.id.clone(), |n| format!("{} ({})", n.label(), q.id))
+                    .map_or_else(|| q.id.to_string(), |n| format!("{} ({})", n.label(), q.id))
             };
             let current = choices
                 .iter()
@@ -169,7 +169,7 @@ pub fn need_editor(
                     .selected_text(current.map_or_else(|| c.start.clone(), label))
                     .show_ui(ui, |ui| {
                         for q in &choices {
-                            ui.selectable_value(&mut c.start, q.id.clone(), label(q));
+                            ui.selectable_value(&mut c.start, q.id.to_string(), label(q));
                         }
                     });
             })
@@ -275,12 +275,12 @@ fn decide_by(ui: &mut Ui, project: &Project, n: &FlowNode, g: &mut GatewaySpec) 
                 } else {
                     1.0 / flows.len() as f64
                 };
-                g.probabilities = flows.iter().map(|f| (f.id.clone(), p)).collect();
+                g.probabilities = flows.iter().map(|f| (f.id.to_string(), p)).collect();
             }
             DecideBy::History => {
                 // The default flow usually is the "yes, already done" answer.
                 let then = n.default_flow.as_ref().unwrap_or(&n.outgoing[0]);
-                g.then = Some(then.id.clone());
+                g.then = Some(then.id.to_string());
             }
             DecideBy::Output => {
                 // The output whose values the flow names match, else the closest decision's.
@@ -305,7 +305,7 @@ fn output_editor(ui: &mut Ui, project: &Project, n: &FlowNode, g: &mut GatewaySp
     let task_label = |o: &DecisionOutput| {
         project
             .node(&o.task)
-            .map_or(o.task.id.clone(), |t| t.label().to_string())
+            .map_or(o.task.id.to_string(), |t| t.label().to_string())
     };
     ui.horizontal(|ui| {
         ui.label("Output");
@@ -341,7 +341,7 @@ fn output_editor(ui: &mut Ui, project: &Project, n: &FlowNode, g: &mut GatewaySp
                 let key = if g.values.contains_key(&f.to_string()) {
                     f.to_string()
                 } else {
-                    f.id.clone()
+                    f.id.to_string()
                 };
                 let mut chosen: Vec<OutputValue> = g
                     .values
@@ -508,7 +508,7 @@ fn history_editor(ui: &mut Ui, project: &Project, n: &FlowNode, g: &mut GatewayS
                             .selectable_label(then.as_ref() == Some(f), flow_label(project, f))
                             .clicked()
                         {
-                            g.then = Some(f.id.clone());
+                            g.then = Some(f.id.to_string());
                         }
                     }
                 });
@@ -660,7 +660,7 @@ fn flow_keys(n: &FlowNode, g: &mut GatewaySpec, inclusive: bool) -> Vec<String> 
             let key = if g.probabilities.contains_key(&full) {
                 full
             } else {
-                f.id.clone()
+                f.id.to_string()
             };
             g.probabilities.entry(key.clone()).or_insert(0.0);
             key
@@ -1167,10 +1167,10 @@ pub fn pool_editor(ui: &mut Ui, project: &Project, s: &mut Scenario, name: &str)
 /// A black-box pool: whether (and after how long) it replies along its message flows.
 pub fn black_box_editor(ui: &mut Ui, s: &mut Scenario, id: &QId) {
     let m = s.messages.get_or_insert_with(Default::default);
-    let key = [id.to_string(), id.id.clone()]
+    let key = [id.to_string(), id.id.to_string()]
         .into_iter()
         .find(|k| m.black_box_reply.contains_key(k))
-        .unwrap_or(id.id.clone());
+        .unwrap_or(id.id.to_string());
     let mut replies = m.black_box_reply.contains_key(&key);
     if ui
         .checkbox(&mut replies, "replies along its outgoing message flows")
