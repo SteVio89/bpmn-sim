@@ -23,8 +23,8 @@ plus the tests and `docs/semantics.md`. Keep this file up to date when behaviour
 
 | Status | Rules |
 |---|---|
-| follows | 68 |
-| differs | 8 |
+| follows | 76 |
+| differs | 0 |
 | open (decision) | 0 |
 | not run, flagged | 18 |
 | not run, NOT flagged | 11 |
@@ -55,12 +55,8 @@ plus the tests and `docs/semantics.md`. Keep this file up to date when behaviour
 | R-10.3-01 | not run, NOT flagged | M19 | Not parsed. Such an activity runs as an ordinary one or is started implicitly. |
 | R-10.3-02 | not run, NOT flagged | M19 | Not parsed. A value >1 is ignored. |
 | R-10.3-03 | not run, NOT flagged | M19 | Not parsed. |
-| R-10.3-04 | differs | M18 | D-1: a top-level process without start events must start its free nodes (today it does not start at all). In a scope with start events, free nodes are a validation error (today a warning). |
 | R-10.3.8-04 | not run, NOT flagged | M19 | Not parsed. |
-| R-10.5.1-01 | differs | M18 | The default is the case. `signal_scope = "global"` gives the spec behaviour. |
-| R-10.5.1-03 | differs | M18 | D-4: today only the thrower's token stays stuck. An uncaught error must halt the whole instance as an incident ("failed: uncaught error"). Uncaught escalations must be listed in the report. |
 | R-10.5.2-01 | structural, not checked | M20 |  |
-| R-10.5.2-04 | differs | M18 | D-2: all of them fire today. Exactly one must fire, the one the scenario names; without a choice, binding fails. |
 | R-10.5.2-07 | structural, not checked | M20 | Only "no outgoing flow" is warned about. |
 | R-10.5.3-02 | structural, not checked | M20 |  |
 | R-10.5.3-07 | structural, not checked | M20 |  |
@@ -69,17 +65,13 @@ plus the tests and `docs/semantics.md`. Keep this file up to date when behaviour
 | R-10.5.4-05 | structural, not checked | M20 | The engine always interrupts on errors, but `cancelActivity="false"` on an error boundary event is not reported. |
 | R-10.5.4-08 | structural, not checked | M20 |  |
 | R-10.5.5-01 | structural, not checked | M20 | The timer content is not parsed. |
-| R-10.5.5-03 | differs | M18 | It fires once. |
 | R-10.5.5-04 | structural, not checked | M20 |  |
 | R-10.5.6-03 | structural, not checked | M20 |  |
 | R-10.6.1-01 | structural, not checked | M20 | 1:1 gateways are common in real models, so this should be a warning. |
 | R-10.6.6-01 | structural, not checked | M20 |  |
 | R-10.6.6-03 | structural, not checked | M20 |  |
 | R-10.6.6-06 | not run, NOT flagged | M19 | Not parsed. |
-| R-13.2-01 | differs | M18 | D-1: report as a warning for a top-level process without start events, and as an error for free nodes next to start events. |
-| R-13.3.4-01 | differs | M18 | D-2: several none starts all fire today. In an embedded sub-process this must be a validation error. |
 | R-13.3.4-03 | not run, NOT flagged | M19 | Flows crossing the boundary are neither checked nor defined. |
-| R-13.4.3-01 | differs | M18 | The engine waits while any token can still reach the join (Camunda behaviour). M18: make the spec rule the default. |
 
 ## All rules
 
@@ -134,7 +126,7 @@ plus the tests and `docs/semantics.md`. Keep this file up to date when behaviour
 | R-10.3-01 | not run, NOT flagged |  |  | M19 | Not parsed. Such an activity runs as an ordinary one or is started implicitly. |
 | R-10.3-02 | not run, NOT flagged |  |  | M19 | Not parsed. A value >1 is ignored. |
 | R-10.3-03 | not run, NOT flagged |  |  | M19 | Not parsed. |
-| R-10.3-04 | differs | project.rs start_nodes, validate.rs | m10_spec | M18 | D-1: a top-level process without start events must start its free nodes (today it does not start at all). In a scope with start events, free nodes are a validation error (today a warning). |
+| R-10.3-04 | follows | project.rs start_nodes, scenario.rs (process triggers), validate.rs | m18_spec_defaults::d1_r_10_3_04_a_top_level_process_without_start_events_starts_its_free_nodes, m18_spec_defaults::d1_r_10_3_04_free_nodes_next_to_start_events_are_an_error_and_never_run | M18 | D-1: a top-level process without start events starts its free nodes (an arrival names the process); free nodes next to start events are a validation error and never run. |
 | R-10.3-05 | follows | engine.rs |  |  |  |
 | R-10.3.3-01 | follows | engine.rs | m3_collab |  |  |
 | R-10.3.3-02 | follows | engine.rs | m3_collab::v7_receiver_continues_only_after_the_message |  |  |
@@ -142,7 +134,7 @@ plus the tests and `docs/semantics.md`. Keep this file up to date when behaviour
 | R-10.3.3-04 | n/a |  |  |  | Every task takes a scenario duration and resource. |
 | R-10.3.5-01 | follows | project.rs start_nodes | m10_spec::a_subprocess_without_start_event_starts_every_activity_without_incoming_flow |  |  |
 | R-10.3.5-02 | structural, checked | scenario.rs event_sub_problems | m10_spec::malformed_event_subprocesses_are_binding_errors |  | Binding error. |
-| R-10.3.5-03 | follows | engine.rs | m10_spec::a_non_interrupting_event_subprocess_runs_next_to_its_scope |  | A timer fires once. For timeCycle see R-10.5.5-03. |
+| R-10.3.5-03 | follows | engine.rs | m10_spec::a_non_interrupting_event_subprocess_runs_next_to_its_scope |  | A timer fires once, a non-interrupting `timeCycle` timer repeatedly (R-10.5.5-03). |
 | R-10.3.5-04 | not run, flagged | parser.rs (Unsupported) | m17_conformance::elements_the_simulator_does_not_run_are_reported_not_rejected | on demand |  |
 | R-10.3.5-05 | not run, flagged | parser.rs |  | on demand | Every cancel definition is unsupported. |
 | R-10.3.5-06 | not run, flagged | parser.rs (Unsupported) |  | on demand |  |
@@ -162,15 +154,15 @@ plus the tests and `docs/semantics.md`. Keep this file up to date when behaviour
 | R-10.4-04 | n/a |  |  |  |  |
 | R-10.4-05 | n/a |  |  |  |  |
 | R-10.4-06 | n/a |  |  |  |  |
-| R-10.5.1-01 | differs | engine.rs | m3_collab::signals_stay_within_the_case_unless_global | M18 | The default is the case. `signal_scope = "global"` gives the spec behaviour. |
+| R-10.5.1-01 | follows | engine.rs broadcast | m18_spec_defaults::r_10_5_1_01_signals_are_broadcast_across_cases_by_default, m3_collab::signals_reach_all_cases_unless_scoped_to_the_case | M18 | Global by default. `signal_scope = "case"` keeps the old behaviour. |
 | R-10.5.1-02 | follows | engine.rs | m9_semantics::an_error_travels_up_through_nested_subprocesses |  |  |
-| R-10.5.1-03 | differs | engine.rs | m9_semantics::an_uncaught_error_leaves_the_token_stuck_at_the_end_event | M18 | D-4: today only the thrower's token stays stuck. An uncaught error must halt the whole instance as an incident ("failed: uncaught error"). Uncaught escalations must be listed in the report. |
+| R-10.5.1-03 | follows | engine.rs incident, manual.rs | m18_spec_defaults::d4_r_10_5_1_03_an_uncaught_error_halts_the_whole_instance, m18_spec_defaults::d4_an_uncaught_escalation_has_no_effect_but_is_reported | M18 | D-4: an uncaught error halts the instance as an incident ("failed: uncaught error"); uncaught escalations are listed in the report. |
 | R-10.5.1-04 | follows | engine.rs terminate | m4a_events::terminate_end_event_cancels_the_rest_of_the_instance |  |  |
 | R-10.5.1-05 | not run, flagged | scenario.rs unsupported | m1_engine::unsupported_elements_fail_binding | on demand | Binding error. A top-level start with only none and timer definitions is accepted, because arrivals start it. |
 | R-10.5.2-01 | structural, not checked |  |  | M20 |  |
 | R-10.5.2-02 | follows | project.rs start_nodes | m10_spec |  | Except `isForCompensation` (R-10.3-01). |
 | R-10.5.2-03 | follows | engine.rs |  |  |  |
-| R-10.5.2-04 | differs | project.rs start_nodes |  | M18 | D-2: all of them fire today. Exactly one must fire, the one the scenario names; without a choice, binding fails. |
+| R-10.5.2-04 | follows | scenario.rs [calls], engine.rs call, manual.rs | m18_spec_defaults::d2_r_10_5_2_04_exactly_the_chosen_start_fires, m18_spec_defaults::d2_r_10_5_2_04_a_call_needs_to_name_one_of_several_none_starts | M18 | D-2: exactly one fires, the one `[calls]` names; without a choice, binding fails and lists the candidates (the token game asks the player). |
 | R-10.5.2-05 | structural, checked | scenario.rs unsupported, event_sub_problems | m10_spec::malformed_event_subprocesses_are_binding_errors |  | Conditional, Multiple and Compensation are flagged as unsupported. |
 | R-10.5.2-06 | follows | parser.rs |  |  |  |
 | R-10.5.2-07 | structural, not checked |  |  | M20 | Only "no outgoing flow" is warned about. |
@@ -194,7 +186,7 @@ plus the tests and `docs/semantics.md`. Keep this file up to date when behaviour
 | R-10.5.4-08 | structural, not checked |  |  | M20 |  |
 | R-10.5.5-01 | structural, not checked |  |  | M20 | The timer content is not parsed. |
 | R-10.5.5-02 | scenario replaces | scenario.rs [events]/[boundary] |  |  | The scenario delay replaces the timer value. |
-| R-10.5.5-03 | differs | engine.rs |  | M18 | It fires once. |
+| R-10.5.5-03 | follows | parser.rs (timer kind), scenario.rs timer_cycles, engine.rs repeat_timer, manual.rs | m18_spec_defaults::r_10_5_5_03_a_non_interrupting_time_cycle_boundary_fires_repeatedly, m18_spec_defaults::r_10_5_5_03_a_non_interrupting_time_cycle_event_subprocess_starts_repeatedly | M18 | The scenario delay is the interval; the count comes from `repeat` or `R<n>/`, unbounded only with a horizon. |
 | R-10.5.5-04 | structural, not checked |  |  | M20 |  |
 | R-10.5.5-05 | not run, flagged | parser.rs |  | on demand |  |
 | R-10.5.5-06 | not run, flagged | parser.rs |  | on demand |  |
@@ -205,9 +197,9 @@ plus the tests and `docs/semantics.md`. Keep this file up to date when behaviour
 | R-10.5.6-05 | follows | engine.rs | m10_spec::an_error_thrown_by_an_event_subprocess_goes_to_the_enclosing_activity |  |  |
 | R-10.6.1-01 | structural, not checked |  |  | M20 | 1:1 gateways are common in real models, so this should be a warning. |
 | R-10.6.1-02 | follows | project.rs start_nodes | m10_spec |  |  |
-| R-10.6.2-01 | follows | engine.rs, scenario.rs | m9_semantics::a_task_without_a_true_condition_and_default_flow_gets_stuck | M18 (report) | D-3: the incident (token stays) is today's behaviour. M18 reports it as "failed: runtime exception", separately from deadlocks. |
+| R-10.6.2-01 | follows | engine.rs route, runtime_exception | m18_spec_defaults::d3_r_13_4_2_01_xor_without_true_condition_fails_the_case_and_halts_the_instance, m9_semantics::a_task_without_a_true_condition_and_default_flow_fails_the_case | M18 (report) | D-3: an incident; the case is reported as "failed: runtime exception" with the rule ID, separately from deadlocks. |
 | R-10.6.2-02 | follows | engine.rs |  |  |  |
-| R-10.6.3-01 | follows | engine.rs | m6_gateways::inclusive_split_falls_back_to_the_default_flow | M18 (report) | D-3: as R-10.6.2-01. |
+| R-10.6.3-01 | follows | engine.rs route, runtime_exception | m18_spec_defaults::d3_r_10_6_3_01_inclusive_split_without_true_condition_fails_the_case, m6_gateways::inclusive_split_falls_back_to_the_default_flow | M18 (report) | D-3: as R-10.6.2-01. |
 | R-10.6.4-01 | follows | engine.rs | m1_engine::v5_and_split_join_takes_the_longer_branch |  |  |
 | R-10.6.5-01 | not run, flagged | parser.rs (Unsupported) |  | on demand |  |
 | R-10.6.6-01 | structural, not checked |  |  | M20 |  |
@@ -220,7 +212,7 @@ plus the tests and `docs/semantics.md`. Keep this file up to date when behaviour
 | R-10.8-01 | follows | scenario.rs |  |  | Using a lane name as a resource pool is our extension. |
 | R-10.9-01 | n/a |  |  |  | Non-operational. |
 | R-13.1-01 | n/a |  |  |  | Manual and abstract tasks get scenario durations. |
-| R-13.2-01 | differs | validate.rs |  | M18 | D-1: report as a warning for a top-level process without start events, and as an error for free nodes next to start events. |
+| R-13.2-01 | follows | validate.rs | m18_spec_defaults::d1_r_13_2_01_a_process_without_start_events_is_a_warning, m18_spec_defaults::d1_r_10_3_04_free_nodes_next_to_start_events_are_an_error_and_never_run | M18 | D-1: a warning for a top-level process without start events, an error for free nodes next to start events. |
 | R-13.2-02 | not run, flagged | validate.rs | m10_spec::instantiating_receive_tasks_and_event_gateways_are_reported | on demand |  |
 | R-13.2-03 | follows | engine.rs |  |  |  |
 | R-13.3.1-01 | follows | engine.rs | m9_semantics::conditional_flows_of_a_task_follow_their_conditions_and_the_default |  |  |
@@ -230,7 +222,7 @@ plus the tests and `docs/semantics.md`. Keep this file up to date when behaviour
 | R-13.3.2-03 | follows | engine.rs | m10_spec::an_interrupting_event_subprocess_cancels_the_rest_of_its_scope |  |  |
 | R-13.3.2-04 | n/a |  |  |  | Data is not run. |
 | R-13.3.3-01 | scenario replaces | scenario.rs [boundary] | m4a_events::error_boundary_fires_with_its_probability |  | A probability on the error boundary stands for the fault. |
-| R-13.3.4-01 | differs | project.rs start_nodes | m4a_events::embedded_subprocess_runs_inline | M18 | D-2: several none starts all fire today. In an embedded sub-process this must be a validation error. |
+| R-13.3.4-01 | follows | validate.rs, scenario.rs | m18_spec_defaults::d2_r_13_3_4_01_an_embedded_subprocess_with_several_none_starts_is_an_error | M18 | D-2: several none starts in an embedded sub-process are a validation and binding error. |
 | R-13.3.4-02 | structural, checked | scenario.rs unsupported |  |  |  |
 | R-13.3.4-03 | not run, NOT flagged |  |  | M19 | Flows crossing the boundary are neither checked nor defined. |
 | R-13.3.4-04 | follows | engine.rs | m4a_events |  | D-10: the sub-process ends and the parent continues, as decided. |
@@ -238,8 +230,8 @@ plus the tests and `docs/semantics.md`. Keep this file up to date when behaviour
 | R-13.3.6-01 | scenario replaces | engine.rs | m9_semantics::a_loop_repeats_with_its_probability_up_to_the_maximum |  | See R-10.3.8-01. |
 | R-13.3.7-01 | follows | engine.rs | m9_semantics::parallel_instances_run_at_once_and_compete_for_resources |  |  |
 | R-13.4.1-01 | follows | engine.rs | m1_engine::v6_and_join_never_mixes_instances |  |  |
-| R-13.4.2-01 | follows | engine.rs | m1_engine::v4_xor_frequencies | M18 (report) | D-3: as R-10.6.2-01. |
-| R-13.4.3-01 | differs | engine.rs fire_or_joins | m6_gateways::inclusive_join_waits_only_while_another_token_can_still_arrive | M18 | The engine waits while any token can still reach the join (Camunda behaviour). M18: make the spec rule the default. |
+| R-13.4.2-01 | follows | engine.rs route, runtime_exception | m1_engine::v4_xor_frequencies, m18_spec_defaults::d3_r_13_4_2_01_xor_without_true_condition_fails_the_case_and_halts_the_instance | M18 (report) | D-3: as R-10.6.2-01. |
+| R-13.4.3-01 | follows | engine.rs OrJoin, fire_or_joins; manual.rs | m18_spec_defaults::r_13_4_3_01_inclusive_join_fires_when_waiting_tokens_can_also_reach_a_filled_flow, m18_spec_defaults::r_13_4_3_01_the_token_game_uses_the_same_join_rule | M18 | The spec rule is the default; `inclusive_join = "wait_for_upstream"` keeps the Camunda-like rule. |
 | R-13.4.4-01 | follows | engine.rs | m6_gateways |  | The parallel variant is not parsed (R-10.6.6-06). |
 | R-13.4.5-01 | not run, flagged | parser.rs (Unsupported) |  | on demand |  |
 | R-13.5.2-01 | follows | engine.rs | m3_collab::v7_early_message_is_buffered_by_default |  | Messages that arrive earlier are buffered by default. The spec does not define this, so it is our extension (`buffer_unconsumed`). |
@@ -256,16 +248,16 @@ plus the tests and `docs/semantics.md`. Keep this file up to date when behaviour
 Conformance first. These milestones close every *differs*, *open*, *NOT flagged* and *not checked*
 row:
 
-1. **M18: fix the differences.** The spec rule becomes the default and today's behaviour stays a
-   scenario option. Covers every *differs* and *open* row, once its decision is made:
-   - the exact inclusive join (R-13.4.3-01);
-   - global signals (R-10.5.1-01);
-   - repeating timer cycles (R-10.5.5-03);
-   - D-1 (decided): top-level processes without start events start their free nodes; free nodes next to start events are an error;
-   - D-2 (decided): several none starts in an embedded sub-process are an error; for a called process the scenario names the one start event the call uses;
-   - D-3 (decided): a runtime exception is an incident; the case is reported as "failed: runtime exception" with the rule ID, separately from deadlocks;
-   - D-4 (decided): an uncaught error halts the whole instance as an incident; uncaught escalations are listed in the report;
-   - D-10 (decided): no change; terminate inside a sub-process lets the parent continue.
+1. **M18: fix the differences.** ✅ Done. The spec rule is the default and the old behaviour stays a
+   scenario option (`docs/semantics.md`, M18). Covered every *differs* and *open* row:
+   - [x] the exact inclusive join (R-13.4.3-01; old rule: `inclusive_join = "wait_for_upstream"`);
+   - [x] global signals (R-10.5.1-01; old behaviour: `signal_scope = "case"`);
+   - [x] repeating timer cycles (R-10.5.5-03; `R<n>/` or `repeat`, unbounded only with a horizon);
+   - [x] D-1: top-level processes without start events start their free nodes; free nodes next to start events are an error;
+   - [x] D-2: several none starts in an embedded sub-process are an error; for a called process `[calls]` names the one start event the call uses;
+   - [x] D-3: a runtime exception is an incident; the case is reported as "failed: runtime exception" with the rule ID, separately from deadlocks;
+   - [x] D-4: an uncaught error halts the whole instance as an incident; uncaught escalations are listed in the report;
+   - [x] D-10: no change; terminate inside a sub-process lets the parent continue.
 2. **M19: report everything that is not run.** Every *NOT flagged* row gets a validation message:
    - an error where running it would be wrong, e.g. `startQuantity` > 1, `isForCompensation`,
      `eventGatewayType="Parallel"`, a sub-process entered through inner start events;
