@@ -94,8 +94,12 @@ cargo run --release -p sim-gui
    Scenarios are saved as TOML files.
 4. **Run:** choose how many cases (or how much simulated time) and replications, and start
    the simulation.
-5. **Results:** summary, cases, activities, resources, problems, and confidence intervals
-   across replications; export to JSON, CSV and XES.
+5. **Results:** findings in plain language first: whether the process keeps up with its
+   arrivals, where an average case spends its time, which resource pool is the bottleneck and
+   which is idle. Then cases (time breakdown, cases in progress over time, the slowest cases
+   with their tasks), activities, resources (load, waiting, queues over time, what one person
+   more or less would change), problems, and confidence intervals across replications; export
+   to JSON, CSV and XES. `docs/results.md` explains how to read them.
 6. **Diagram:** the model with a heat map (waiting time, utilisation, ...), an animated
    token replay of the simulated cases, and the manual token game.
 
@@ -117,8 +121,8 @@ cargo run --release -p sim-cli -- run tests/fixtures/v13-model.bpmn \
     --summary-csv summary.csv --event-log log.csv --xes log.xes
 ```
 
-`sim-cli run` prints the results per replication (and with confidence intervals if there are
-several) and exits with status 1 if tokens got stuck or cases failed.
+`sim-cli run` prints the results and findings per replication (and with confidence intervals
+if there are several) and exits with status 1 if tokens got stuck or cases failed.
 
 ## Scenario files
 
@@ -192,6 +196,7 @@ duration = { dist = "uniform", min = "5d", max = "20d" }
 
 - `docs/semantics.md`: how every BPMN element and scenario option behaves in the simulation
   and in the manual token game.
+- `docs/results.md`: what the results mean and when the findings appear.
 - `docs/validation.md`: how the numbers are checked.
 
 ## Pre-built binaries

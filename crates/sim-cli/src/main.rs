@@ -3,8 +3,8 @@ use std::process::ExitCode;
 
 use anyhow::{Context, Result, bail};
 use sim_core::{
-    AggregateResult, Estimate, Project, ReplicationResult, Scenario, Severity, aggregate, export,
-    run_replications, validate,
+    AggregateResult, Estimate, Insights, Project, ReplicationResult, Scenario, Severity, aggregate,
+    export, insights::Level, run_replications, validate,
 };
 
 const USAGE: &str = "usage:
@@ -114,6 +114,7 @@ fn simulate(args: &[String]) -> Result<bool> {
     let results = run_replications(&bound);
     for r in &results {
         print_result(r, bound.sim.time_unit.seconds(), bound.sim.time_unit.name());
+        print_findings(r);
     }
     if results.len() > 1 {
         print_aggregate(
@@ -257,6 +258,23 @@ fn print_result(r: &ReplicationResult, unit: f64, unit_name: &str) {
                 s.case, s.process, s.element, s.state
             );
         }
+    }
+}
+
+/// What the numbers mean, problems first.
+fn print_findings(r: &ReplicationResult) {
+    let findings = Insights::of(r).findings(r);
+    if findings.is_empty() {
+        return;
+    }
+    println!("findings:");
+    for f in findings {
+        let mark = match f.level {
+            Level::Problem => "PROBLEM",
+            Level::Warning => "warning",
+            Level::Info => "-",
+        };
+        println!("  {mark} {}", f.text);
     }
 }
 
