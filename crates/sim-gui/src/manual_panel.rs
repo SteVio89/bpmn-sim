@@ -49,10 +49,7 @@ impl ManualState {
     }
 
     fn label(&self, id: &QId) -> String {
-        let name = self
-            .project
-            .node(id)
-            .map_or_else(|| id.id.clone(), |n| n.label().to_string());
+        let name = self.project.label_of(id);
         if self.project.files.len() > 1 {
             format!("{name} ({})", id.file)
         } else {

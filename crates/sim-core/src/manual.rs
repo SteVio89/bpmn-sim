@@ -177,13 +177,13 @@ impl Game {
     }
 
     fn label(&self, id: &QId) -> String {
-        self.project
-            .node(id)
-            .map_or_else(|| id.id.clone(), |n| n.label().to_string())
+        self.project.label_of(id)
     }
 
-    /// Start events the player can start a case (or another pool of it) with. Processes that
-    /// a call activity calls are started by the call, not offered here.
+    /// Start events the player can start a case (or another pool of it) with, and processes
+    /// without start events (their process id; they start every activity and gateway without
+    /// incoming flow, D-1). Processes that a call activity calls are started by the call, not
+    /// offered here.
     pub fn start_events(&self) -> Vec<QId> {
         let called: BTreeSet<&QId> = self
             .project
@@ -202,6 +202,16 @@ impl Game {
                         .all(|d| matches!(d, EventDef::None | EventDef::Timer))
             })
             .map(|n| n.id.clone())
+            .chain(
+                self.project
+                    .processes
+                    .values()
+                    .filter(|p| {
+                        !called.contains(p)
+                            && crate::scenario::is_startless_process(&self.project, p)
+                    })
+                    .cloned(),
+            )
             .collect()
     }
 
@@ -535,14 +545,14 @@ impl Game {
                         event
                     ));
                 }
-                let process = self
-                    .project
-                    .node(&event)
-                    .map(|n| n.process.clone())
-                    .ok_or("unknown start event")?;
+                // A process without start events starts at its free nodes.
+                let (process, starts) = match self.project.node(&event) {
+                    Some(n) => (n.process.clone(), vec![event.clone()]),
+                    None => (event.clone(), self.project.start_nodes(&event, None)),
+                };
                 self.log.push(format!("start '{}'", self.label(&event)));
                 let inst = self.new_instance(process, 0, None);
-                self.start_instance(inst, vec![event]);
+                self.start_instance(inst, starts);
                 Ok(())
             }
             Action::Choose { token, flows } => {

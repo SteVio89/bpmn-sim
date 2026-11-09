@@ -633,10 +633,12 @@ impl Scenario {
             .any(|d| d.inputs.contains_key(input))
     }
 
-    /// Indices of the arrival generators that fire start event `q`.
+    /// Indices of the arrival generators that fire start event `q` (or process `q`, for a
+    /// process without start events).
     pub fn arrivals_of(&self, project: &Project, q: &QId) -> Vec<usize> {
         let full = q.to_string();
-        let unique = project.nodes().filter(|n| n.id.id == q.id).count() == 1;
+        let unique = project.nodes().filter(|n| n.id.id == q.id).count() == 1
+            || project.processes.get(&q.id) == Some(q);
         self.arrivals
             .iter()
             .enumerate()
@@ -693,10 +695,24 @@ impl Scenario {
                 .as_ref()
                 .and_then(|m| m.main.clone())
                 .or_else(|| project.files.keys().next().cloned());
+            // Processes without start events are triggered by their id (D-1).
             let triggers: Vec<String> = project
                 .nodes()
                 .filter(|n| is_arrival_start(n) && Some(&n.id.file) == main.as_ref())
                 .map(|n| n.id.to_string())
+                .chain(
+                    project
+                        .processes
+                        .values()
+                        .filter(|p| {
+                            Some(&p.file) == main.as_ref()
+                                && crate::scenario::is_startless_process(project, p)
+                                && !project
+                                    .nodes()
+                                    .any(|n| n.called_element.as_deref() == Some(p.id.as_str()))
+                        })
+                        .map(QId::to_string),
+                )
                 .collect();
             self.arrivals.push(ArrivalSpec {
                 label: Some("Arrivals".into()),

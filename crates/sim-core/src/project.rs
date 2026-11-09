@@ -139,6 +139,19 @@ impl Project {
         })
     }
 
+    /// Display label of an element, or of a process (its pool's name, else its own name, else
+    /// its id).
+    pub fn label_of(&self, id: &QId) -> String {
+        match self.node(id) {
+            Some(n) => n.label().to_string(),
+            None => self
+                .participant_name(id)
+                .map(str::to_string)
+                .or_else(|| self.process(&id.id).and_then(|p| p.name.clone()))
+                .unwrap_or_else(|| id.id.clone()),
+        }
+    }
+
     /// Name of the participant (pool) whose process contains `process`, if the file has a collaboration.
     pub fn participant_name(&self, process: &QId) -> Option<&str> {
         self.files

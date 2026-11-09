@@ -552,7 +552,8 @@ pub struct SimParams {
 pub struct Arrival {
     pub label: Option<String>,
     pub inter_arrival: Dist,
-    /// Start events, grouped per process in the order of first appearance.
+    /// Start events (or, for a process without start events, its activities and gateways
+    /// without incoming flow), grouped per process in the order of first appearance.
     pub triggers: Vec<QId>,
     /// Cases start at the next opening of these working hours.
     pub calendar: Option<Calendar>,
@@ -700,6 +701,28 @@ impl CountSpec {
 pub struct BoundaryCfg {
     pub probability: f64,
     pub delay: Option<Dist>,
+}
+
+/// A scenario key that names a process (`P` or `file#P`), if it does.
+pub fn resolve_process(project: &Project, key: &str) -> Option<QId> {
+    match key.split_once('#') {
+        Some((file, id)) => project
+            .processes
+            .get(id)
+            .filter(|q| q.file == file)
+            .cloned(),
+        None => project.processes.get(key).cloned(),
+    }
+}
+
+/// Whether arrivals can start `process` itself: it has flow nodes but no start event at its
+/// top level, so each case starts every activity and gateway without incoming flow (D-1).
+pub fn is_startless_process(project: &Project, process: &QId) -> bool {
+    let mut top = project
+        .nodes()
+        .filter(|n| n.process == *process && n.parent.is_none())
+        .peekable();
+    top.peek().is_some() && !top.any(|n| n.kind == NodeKind::StartEvent)
 }
 
 /// Resolve a scenario key to an element: bare ids must be unique across files (spec §4).
@@ -899,6 +922,28 @@ impl Scenario {
                 .ok();
             let mut triggers = Vec::new();
             for t in &a.triggers {
+                // A process without start events (D-1): every node without incoming flow starts.
+                if let Some(pq) = resolve_process(project, t) {
+                    let has_start = project.nodes().any(|n| {
+                        n.process == pq && n.parent.is_none() && n.kind == NodeKind::StartEvent
+                    });
+                    let starts = project.start_nodes(&pq, None);
+                    if has_start {
+                        errors.push(format!(
+                            "{label}: trigger '{t}' is a process with start events; name one of its none or timer start events instead"
+                        ));
+                    } else if starts.is_empty() {
+                        errors.push(format!(
+                            "{label}: process '{t}' has no start event and no activity or gateway without incoming sequence flow, so nothing would start"
+                        ));
+                    } else {
+                        if !processes.contains(&pq) {
+                            processes.push(pq);
+                        }
+                        triggers.extend(starts);
+                    }
+                    continue;
+                }
                 match resolve(project, t, "trigger") {
                     Ok(q) => {
                         let Some(n) = project.node(&q) else { continue };

@@ -167,10 +167,12 @@ fn the_token_game_starts_a_subprocess_without_start_event_at_its_free_activities
 
 #[test]
 fn instantiating_receive_tasks_and_event_gateways_are_reported() {
+    // (Since M18, D-1, a free event-based gateway in a process without start events starts
+    // with the process, so this one says `instantiate="true"`.)
     let p = model(
         r#"
         <bpmn:receiveTask id="Recv" instantiate="true" messageRef="Msg"/>
-        <bpmn:eventBasedGateway id="Gw"/>
+        <bpmn:eventBasedGateway id="Gw" instantiate="true"/>
         <bpmn:intermediateCatchEvent id="Tm"><bpmn:timerEventDefinition/></bpmn:intermediateCatchEvent>
         <bpmn:endEvent id="End"/>
         <bpmn:sequenceFlow id="F0" sourceRef="Recv" targetRef="End"/>

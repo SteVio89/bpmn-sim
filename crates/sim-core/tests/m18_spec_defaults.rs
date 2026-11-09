@@ -565,3 +565,105 @@ fn r_10_5_1_01_signals_are_broadcast_across_cases_by_default() {
     assert_eq!(r.signals[0].receivers, 1);
     assert_eq!(r.signals[1].receivers, 1);
 }
+
+// ---------------------------------------------------------------- D-1: R-10.3-04, R-13.2-01
+
+/// A process without start events: A and B have no incoming flow.
+fn startless() -> Project {
+    model(
+        r#"
+        <bpmn:task id="A"/><bpmn:task id="B"/>
+        <bpmn:endEvent id="EA"/><bpmn:endEvent id="EB"/>
+        <bpmn:sequenceFlow id="F1" sourceRef="A" targetRef="EA"/>
+        <bpmn:sequenceFlow id="F2" sourceRef="B" targetRef="EB"/>"#,
+    )
+}
+
+#[test]
+fn d1_r_10_3_04_a_top_level_process_without_start_events_starts_its_free_nodes() {
+    let p = startless();
+    let s = base(
+        4,
+        "1h",
+        "\"P\"",
+        &format!("{}{}", fixed("A", 10), fixed("B", 20)),
+    );
+    let r = run(&p, &s);
+    assert_eq!(r.cases_completed, 4);
+    assert_eq!((runs(&r, "A"), runs(&r, "B")), (4, 4));
+    assert_eq!(r.case_cycle_time.mean, 20.0 * MIN);
+    assert_eq!(r.instances.len(), 4, "one instance per case");
+    // A qualified process id works too.
+    let r = run(&p, &s.replace("\"P\"", "\"m.bpmn#P\""));
+    assert_eq!(r.cases_completed, 4);
+}
+
+#[test]
+fn d1_r_13_2_01_a_process_without_start_events_is_a_warning() {
+    let p = startless();
+    let issues = issues_of(&p, "P");
+    assert_eq!(issues.len(), 1, "{issues:?}");
+    assert_eq!(issues[0].0, Severity::Warning);
+    assert!(issues[0].1.contains("R-13.2-01"), "{issues:?}");
+    // Its free nodes are no "no incoming sequence flow" findings: they start the process.
+    assert!(issues_of(&p, "A").is_empty());
+}
+
+#[test]
+fn d1_only_processes_without_start_events_can_be_triggered_by_id() {
+    let p = model(
+        r#"
+        <bpmn:startEvent id="Start"/><bpmn:endEvent id="End"/>
+        <bpmn:sequenceFlow id="F0" sourceRef="Start" targetRef="End"/>"#,
+    );
+    let e = bind_err(&p, &base(1, "1h", "\"P\"", ""));
+    assert!(e.contains("is a process with start events"), "{e}");
+}
+
+#[test]
+fn d1_skeleton_and_token_game_start_a_process_without_start_events() {
+    let p = startless();
+    let s = Scenario::skeleton(&p, None);
+    assert_eq!(s.arrivals[0].triggers, ["m.bpmn#P"]);
+    assert!(s.bind(&p).is_ok());
+    let mut g = Game::new(Arc::new(startless()));
+    assert_eq!(g.start_events(), [q("P")]);
+    g.apply(Action::Start { event: q("P") }).unwrap();
+    let mut at: Vec<String> = g.tokens().iter().map(|t| t.node.id.clone()).collect();
+    at.sort();
+    assert_eq!(at, ["A", "B"]);
+}
+
+#[test]
+fn d1_r_10_3_04_free_nodes_next_to_start_events_are_an_error_and_never_run() {
+    let p = model(
+        r#"
+        <bpmn:startEvent id="Start"/><bpmn:task id="T"/><bpmn:task id="Free"/>
+        <bpmn:exclusiveGateway id="FreeGw"/>
+        <bpmn:endEvent id="End"/>
+        <bpmn:sequenceFlow id="F0" sourceRef="Start" targetRef="T"/>
+        <bpmn:sequenceFlow id="F1" sourceRef="T" targetRef="End"/>
+        <bpmn:sequenceFlow id="F2" sourceRef="Free" targetRef="End"/>
+        <bpmn:sequenceFlow id="F3" sourceRef="FreeGw" targetRef="End"/>"#,
+    );
+    for id in ["Free", "FreeGw"] {
+        let issues = issues_of(&p, id);
+        assert_eq!(issues.len(), 1, "{issues:?}");
+        assert_eq!(issues[0].0, Severity::Error);
+        assert!(
+            issues[0].1.contains("R-10.3-04") && issues[0].1.contains("R-13.2-01"),
+            "{issues:?}"
+        );
+    }
+    let r = run(
+        &p,
+        &base(
+            2,
+            "1h",
+            "\"Start\"",
+            &format!("{}{}", fixed("T", 5), fixed("Free", 5)),
+        ),
+    );
+    assert_eq!((runs(&r, "T"), runs(&r, "Free")), (2, 0));
+    assert_eq!(r.cases_completed, 2);
+}
