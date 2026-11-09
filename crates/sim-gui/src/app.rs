@@ -31,10 +31,33 @@ pub enum ResultsTab {
     Replications,
 }
 
+/// How the case list in the results is ordered.
+#[derive(Clone, Copy, PartialEq, Eq, Default)]
+pub enum CaseSort {
+    #[default]
+    Slowest,
+    MostWaiting,
+    MostExpensive,
+    Arrival,
+}
+
 pub struct RunResults {
     pub data: Vec<ReplicationResult>,
+    /// What the numbers of each replication mean (same order as `data`).
+    pub insights: Vec<sim_core::Insights>,
     pub project: Arc<Project>,
     pub unit: TimeUnit,
+}
+
+impl RunResults {
+    pub fn new(data: Vec<ReplicationResult>, project: Arc<Project>, unit: TimeUnit) -> Self {
+        Self {
+            insights: data.iter().map(sim_core::Insights::of).collect(),
+            data,
+            project,
+            unit,
+        }
+    }
 }
 
 pub struct App {
@@ -51,6 +74,9 @@ pub struct App {
     pub results: Option<RunResults>,
     pub rep: usize,
     pub results_tab: ResultsTab,
+    pub case_sort: CaseSort,
+    /// Case whose tasks the results show.
+    pub selected_case: Option<u64>,
     pub diagram: crate::diagram_panel::DiagramView,
     /// Elements whose parameters are generated placeholders nobody has looked at yet.
     pub unreviewed: BTreeSet<Target>,
@@ -77,6 +103,8 @@ impl Default for App {
             results: None,
             rep: 0,
             results_tab: ResultsTab::default(),
+            case_sort: CaseSort::default(),
+            selected_case: None,
             diagram: Default::default(),
             unreviewed: BTreeSet::new(),
             pilot: PilotRunner::default(),
@@ -260,12 +288,13 @@ impl App {
         match job.finished.take() {
             Some(Ok(data)) => {
                 self.status = format!("Run finished: {} replication(s).", data.len());
-                self.results = Some(RunResults {
+                self.results = Some(RunResults::new(
                     data,
-                    project: self.ws.project.clone(),
-                    unit: self.scenario.simulation.time_unit,
-                });
+                    self.ws.project.clone(),
+                    self.scenario.simulation.time_unit,
+                ));
                 self.rep = 0;
+                self.selected_case = None;
                 self.tab = Tab::Results;
             }
             Some(Err(e)) => self.run_error = Some(e),
@@ -819,6 +848,36 @@ mod tests {
             return;
         };
         let dir = std::path::PathBuf::from(dir);
+        // Results with findings: a normal run and an overloaded one.
+        for (name, overload) in [("results", false), ("results-overload", true)] {
+            let mut app = with_results_edited("v13-model.bpmn", "v13-model.toml", |s| {
+                s.simulation.cases = Some(1500);
+                s.simulation.warm_up_cases = 0;
+                if overload {
+                    s.resources.get_mut("Clerks").unwrap().count = 1;
+                }
+            });
+            app.tab = Tab::Results;
+            app.selected_case = Some(7);
+            for (tab, suffix) in [
+                (ResultsTab::Summary, "summary"),
+                (ResultsTab::Cases, "cases"),
+                (ResultsTab::Resources, "resources"),
+            ] {
+                app.results_tab = tab;
+                let ctx = egui::Context::default();
+                let mut r = crate::snapshot::Renderer::new(1400, 1800);
+                let mut out = None;
+                for _ in 0..4 {
+                    out = Some(r.frame(&ctx, r.input(), |ui| app.draw(ui)));
+                }
+                r.save(
+                    &ctx,
+                    out.unwrap(),
+                    &dir.join(format!("{name}-{suffix}.png")),
+                );
+            }
+        }
         // Light theme: diagram, manual game highlights, validation colours.
         for (name, fixture, tab) in [
             (
@@ -1222,6 +1281,44 @@ mod tests {
         assert_eq!(app.diagram.file.as_deref(), Some("subprocess-a.bpmn"));
     }
 
+    #[test]
+    fn results_explain_cases_and_resources() {
+        // One clerk for the work of two: the findings name the overload and its bottleneck.
+        let mut app = with_results_edited("v13-model.bpmn", "v13-model.toml", |s| {
+            s.simulation.cases = Some(400);
+            s.simulation.warm_up_cases = 0;
+            s.resources.get_mut("Clerks").unwrap().count = 1;
+        });
+        let res = app.results.as_ref().unwrap();
+        assert_eq!(res.insights.len(), res.data.len());
+        let ins = &res.insights[0];
+        assert_eq!(ins.bottleneck.as_deref(), Some("Clerks"));
+        let findings = ins.findings(&res.data[0]);
+        assert!(
+            findings[0].text.contains("does not keep up"),
+            "{findings:?}"
+        );
+        app.tab = Tab::Results;
+        app.selected_case = Some(3);
+        let ctx = egui::Context::default();
+        for tab in [
+            ResultsTab::Summary,
+            ResultsTab::Cases,
+            ResultsTab::Resources,
+        ] {
+            app.results_tab = tab;
+            for sort in [
+                CaseSort::Slowest,
+                CaseSort::MostWaiting,
+                CaseSort::MostExpensive,
+                CaseSort::Arrival,
+            ] {
+                app.case_sort = sort;
+                frames(&mut app, &ctx, 2);
+            }
+        }
+    }
+
     /// Load a model and its scenario and put a finished run into the app (no worker thread).
     fn with_results(fixture: &str, scenario: &str) -> App {
         with_results_edited(fixture, scenario, |_| {})
@@ -1237,11 +1334,11 @@ mod tests {
         edit(&mut app.scenario);
         let bound = app.scenario.bind(&app.ws.project).unwrap();
         let data = sim_core::run_replications(&bound);
-        app.results = Some(RunResults {
+        app.results = Some(RunResults::new(
             data,
-            project: app.ws.project.clone(),
-            unit: app.scenario.simulation.time_unit,
-        });
+            app.ws.project.clone(),
+            app.scenario.simulation.time_unit,
+        ));
         app
     }
 
