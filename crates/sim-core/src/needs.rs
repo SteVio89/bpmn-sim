@@ -705,10 +705,18 @@ impl Scenario {
                 .as_ref()
                 .and_then(|m| m.main.clone())
                 .or_else(|| project.files.keys().next().cloned());
-            // Processes without start events are triggered by their id (D-1).
+            // Processes that a call activity calls start through the call; processes without
+            // start events are triggered by their id (D-1).
+            let called = |p: &QId| {
+                project
+                    .nodes()
+                    .any(|n| n.called_element.as_deref() == Some(p.id.as_str()))
+            };
             let triggers: Vec<String> = project
                 .nodes()
-                .filter(|n| is_arrival_start(n) && Some(&n.id.file) == main.as_ref())
+                .filter(|n| {
+                    is_arrival_start(n) && Some(&n.id.file) == main.as_ref() && !called(&n.process)
+                })
                 .map(|n| n.id.to_string())
                 .chain(
                     project
@@ -717,9 +725,7 @@ impl Scenario {
                         .filter(|p| {
                             Some(&p.file) == main.as_ref()
                                 && crate::scenario::is_startless_process(project, p)
-                                && !project
-                                    .nodes()
-                                    .any(|n| n.called_element.as_deref() == Some(p.id.as_str()))
+                                && !called(p)
                         })
                         .map(QId::to_string),
                 )

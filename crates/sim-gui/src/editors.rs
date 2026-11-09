@@ -53,7 +53,7 @@ pub fn node_editor(ui: &mut Ui, project: &Project, s: &mut Scenario, n: &FlowNod
         need_editor(ui, project, s, n, need, preview);
     }
     if starts_cases {
-        arrival_editor(ui, project, s, n, preview);
+        arrival_editor(ui, project, s, &n.id, n.name.as_ref(), preview);
     }
 }
 
@@ -120,6 +120,9 @@ pub fn need_editor(
             if preview {
                 dist_preview(ui, &e.delay);
             }
+            if let Some(model) = cycle_count(n) {
+                repeat_count(ui, &n.id, &mut e.repeat, model);
+            }
         }
         Need::Boundary { probability } => {
             let Some(k) = key_of(&s.boundary, project, &n.id) else {
@@ -127,6 +130,9 @@ pub fn need_editor(
             };
             let b = s.boundary.get_mut(&k).expect("key exists");
             boundary_editor(ui, &n.id, b, probability, preview);
+            if let Some(model) = cycle_count(n) {
+                repeat_count(ui, &n.id, &mut b.repeat, model);
+            }
         }
         Need::InstanceCount => {
             let Some(k) = key_of(&s.multi_instance, project, &n.id) else {
@@ -662,6 +668,42 @@ fn flow_keys(n: &FlowNode, g: &mut GatewaySpec, inclusive: bool) -> Vec<String> 
         .collect()
 }
 
+/// For a non-interrupting timer with a `timeCycle` (it fires repeatedly, R-10.5.5-03): the
+/// model's repeat count (`None` inside: unbounded).
+fn cycle_count(n: &FlowNode) -> Option<Option<u32>> {
+    match n.timer {
+        Some(sim_core::TimerKind::Cycle { repeat }) if !n.cancel_activity => Some(repeat),
+        _ => None,
+    }
+}
+
+/// How often a timeCycle timer fires: the model's count, or one from the scenario.
+fn repeat_count(ui: &mut Ui, id: &QId, repeat: &mut Option<u32>, model: Option<u32>) {
+    ui.horizontal(|ui| {
+        ui.label("Repeats");
+        let from_model = match model {
+            Some(k) => format!("{k} times (model)"),
+            None => "while it runs (needs a horizon)".into(),
+        };
+        let mut own = repeat.is_some();
+        ComboBox::from_id_salt(("repeat", id))
+            .selected_text(if own { "times:".to_string() } else { from_model.clone() })
+            .show_ui(ui, |ui| {
+                ui.selectable_value(&mut own, false, from_model);
+                ui.selectable_value(&mut own, true, "a number of times");
+            });
+        match (own, repeat.as_mut()) {
+            (true, Some(k)) => {
+                ui.add(DragValue::new(k).range(1..=10_000));
+            }
+            (true, None) => *repeat = Some(model.unwrap_or(3)),
+            (false, _) => *repeat = None,
+        }
+    })
+    .response
+    .on_hover_text("A non-interrupting timer with a timeCycle fires again after each interval while its activity or scope runs (BPMN 2.0.2 §10.5.5).");
+}
+
 fn boundary_editor(ui: &mut Ui, id: &QId, b: &mut BoundarySpec, probability: bool, preview: bool) {
     if probability {
         let p = b.probability.get_or_insert(0.1);
@@ -753,21 +795,24 @@ fn repeat_editor(ui: &mut Ui, l: &mut LoopSpec) {
 }
 
 /// The arrival generators that start cases at start event `n`.
+/// The arrivals that start cases at `id`: a start event, or a process without start events
+/// (D-1: each case starts every activity and gateway without incoming flow).
 pub fn arrival_editor(
     ui: &mut Ui,
     project: &Project,
     s: &mut Scenario,
-    n: &FlowNode,
+    id: &QId,
+    name: Option<&String>,
     preview: bool,
 ) {
-    let mine = s.arrivals_of(project, &n.id);
+    let mine = s.arrivals_of(project, id);
     if mine.is_empty() {
         ui.label(RichText::new("No cases start here.").weak());
         if ui.button("Start cases here").clicked() {
             s.arrivals.push(ArrivalSpec {
-                label: n.name.clone(),
+                label: name.cloned(),
                 inter_arrival: default_dist(3, 3600.0),
-                triggers: vec![n.id.to_string()],
+                triggers: vec![id.to_string()],
                 calendar: None,
             });
         }
@@ -808,7 +853,7 @@ pub fn arrival_editor(
         let others: Vec<&String> = a
             .triggers
             .iter()
-            .filter(|t| **t != n.id.to_string() && **t != n.id.id)
+            .filter(|t| **t != id.to_string() && **t != id.id)
             .collect();
         if !others.is_empty() {
             ui.label(
@@ -828,14 +873,14 @@ pub fn arrival_editor(
             stop = Some(i);
         }
     }
-    if n.event_defs.iter().any(|d| matches!(d, EventDef::Timer)) {
+    if let Some(n) = project.node(id)
+        && n.event_defs.iter().any(|d| matches!(d, EventDef::Timer))
+    {
         start_delay_editor(ui, project, s, n, preview);
     }
     if let Some(i) = stop {
-        let full = n.id.to_string();
-        s.arrivals[i]
-            .triggers
-            .retain(|t| *t != full && *t != n.id.id);
+        let full = id.to_string();
+        s.arrivals[i].triggers.retain(|t| *t != full && *t != id.id);
         if s.arrivals[i].triggers.is_empty() {
             s.arrivals.remove(i);
         }
@@ -1042,6 +1087,16 @@ pub fn add_calendar(calendars: &mut BTreeMap<String, CalendarSpec>) -> String {
 /// A resource pool: number of resources, cost and working hours (editable in place);
 /// lists the tasks using it.
 pub fn pool_editor(ui: &mut Ui, project: &Project, s: &mut Scenario, name: &str) {
+    // A pool whose process has no start event: cases start at its process (D-1).
+    for p in startless_processes_of_pool(project, name) {
+        ui.label(
+            RichText::new("Its process has no start event: each case starts every activity and gateway without incoming flow.")
+                .small()
+                .weak(),
+        );
+        arrival_editor(ui, project, s, &p, Some(&name.to_string()), false);
+        ui.separator();
+    }
     let users: Vec<&str> = project
         .nodes()
         .filter(|n| needs(project, n).contains(&Need::Duration))
@@ -1158,4 +1213,16 @@ pub fn number_fields(ui: &mut Ui, n: &mut NumberSpec) {
             num(ui, "max", max);
         }
     }
+}
+
+/// Processes without start events (D-1) drawn as the pool named `name`.
+pub fn startless_processes_of_pool(project: &Project, name: &str) -> Vec<QId> {
+    project
+        .files
+        .values()
+        .flat_map(|f| f.participants.values())
+        .filter(|p| p.name.as_deref() == Some(name))
+        .filter_map(|p| p.process.clone())
+        .filter(|p| sim_core::scenario::is_startless_process(project, p))
+        .collect()
 }

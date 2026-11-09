@@ -4,9 +4,10 @@ use eframe::egui::{self, ComboBox, DragValue, Id, RichText, Ui};
 use sim_core::dist::{Seconds, format_duration, parse_duration};
 use sim_core::needs::{Need, default_pool, is_arrival_start, key_of, needs};
 use sim_core::scenario::{
-    ActivitySpec, ArrivalSpec, Problem, ResourceSpec, SignalScope, SimulationSection, TimeUnit,
+    ActivitySpec, ArrivalSpec, InclusiveJoin, Problem, ResourceSpec, SignalScope,
+    SimulationSection, TimeUnit,
 };
-use sim_core::{FlowNode, Project, Scenario};
+use sim_core::{FlowNode, Project, QId, Scenario};
 
 use crate::app::App;
 use crate::configure::{Status, Target, problem_target, statuses};
@@ -195,8 +196,13 @@ pub fn show(app: &mut App, ui: &mut Ui) {
             );
             ui.horizontal(|ui| {
                 ui.label("Signals reach");
+                ui.selectable_value(
+                    &mut s.simulation.signal_scope,
+                    SignalScope::Global,
+                    "all cases (BPMN)",
+                )
+                .on_hover_text("BPMN 2.0.2 §10.5.1: a signal is broadcast across processes and pools");
                 ui.selectable_value(&mut s.simulation.signal_scope, SignalScope::Case, "the same case");
-                ui.selectable_value(&mut s.simulation.signal_scope, SignalScope::Global, "all cases");
             });
             let black_boxes: Vec<(sim_core::QId, String)> = project
                 .files
@@ -214,6 +220,26 @@ pub fn show(app: &mut App, ui: &mut Ui) {
                     });
                 });
             }
+        });
+
+        egui::CollapsingHeader::new("Gateways").show(ui, |ui| {
+            ui.horizontal(|ui| {
+                ui.label("Inclusive joins fire");
+                ui.selectable_value(
+                    &mut s.simulation.inclusive_join,
+                    InclusiveJoin::Spec,
+                    "as BPMN says",
+                )
+                .on_hover_text(
+                    "BPMN 2.0.2 §13.4.3: once every token that could still reach an empty incoming flow could also reach a filled one",
+                );
+                ui.selectable_value(
+                    &mut s.simulation.inclusive_join,
+                    InclusiveJoin::WaitForUpstream,
+                    "when no token can arrive any more",
+                )
+                .on_hover_text("as in Camunda: waits while any token of the instance can still reach the join");
+            });
         });
     });
     if let Some(t) = jump {
@@ -386,6 +412,15 @@ fn arrivals(
             .find(|n| n.id.to_string() == t || n.id.id == t)
             .copied()
     };
+    // Processes without start events start at their free nodes (D-1).
+    let startless: Vec<QId> = project
+        .processes
+        .values()
+        .filter(|p| sim_core::scenario::is_startless_process(project, p))
+        .cloned()
+        .collect();
+    let find_process =
+        |t: &str| sim_core::scenario::resolve_process(project, t).filter(|p| startless.contains(p));
     let mut remove = None;
     for i in 0..s.arrivals.len() {
         let targets: Vec<Target> = s.arrivals[i]
@@ -420,9 +455,17 @@ fn arrivals(
                             Some(n) => {
                                 name_cell(ui, n.label(), &Target::Node(n.id.clone()), status, jump)
                             }
-                            None => {
-                                ui.colored_label(ui.visuals().error_fg_color, t);
-                            }
+                            None => match find_process(t) {
+                                Some(p) => {
+                                    ui.label(format!("{} (no start event)", project.label_of(&p)))
+                                        .on_hover_text(
+                                            "each case starts every activity and gateway without incoming flow",
+                                        );
+                                }
+                                None => {
+                                    ui.colored_label(ui.visuals().error_fg_color, t);
+                                }
+                            },
                         }
                         if ui
                             .small_button("x")
@@ -449,6 +492,21 @@ fn arrivals(
                                     .clicked()
                                 {
                                     add = Some(n.id.to_string());
+                                }
+                            }
+                            for p in &startless {
+                                if a.triggers.iter().any(|t| find_process(t).as_ref() == Some(p)) {
+                                    continue;
+                                }
+                                if ui
+                                    .selectable_label(
+                                        false,
+                                        format!("{} (no start event)", project.label_of(p)),
+                                    )
+                                    .on_hover_text(p.to_string())
+                                    .clicked()
+                                {
+                                    add = Some(p.to_string());
                                 }
                             }
                         });

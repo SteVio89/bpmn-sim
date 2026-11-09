@@ -761,6 +761,8 @@ fn d2_skeleton_and_update_from_model_offer_the_choice() {
     let p = call_with_two_starts();
     let s = Scenario::skeleton(&p, None);
     assert_eq!(s.calls["m.bpmn#Call"].start, "S1");
+    // The called process starts through the call, not by arrivals.
+    assert_eq!(s.arrivals[0].triggers, ["m.bpmn#Start"]);
     assert!(s.bind(&p).is_ok());
     let needs = sim_core::needs::needs(&p, p.node(&q("Call")).unwrap());
     assert_eq!(

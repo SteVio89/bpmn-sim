@@ -288,6 +288,28 @@ pub fn overlay(
         }
         o.pool_badges.insert(name.clone(), (text, overloaded));
     }
+    // Pools whose process has no start event show their arrivals (D-1).
+    for part in project.files.values().flat_map(|f| f.participants.values()) {
+        let (Some(name), Some(process)) = (&part.name, &part.process) else {
+            continue;
+        };
+        if !sim_core::scenario::is_startless_process(project, process) {
+            continue;
+        }
+        let arrivals: Vec<String> = s
+            .arrivals_of(project, process)
+            .into_iter()
+            .map(|i| format!("cases every {}", dist_short(&s.arrivals[i].inter_arrival)))
+            .collect();
+        if arrivals.is_empty() {
+            continue;
+        }
+        let badge = o.pool_badges.entry(name.clone()).or_default();
+        if !badge.0.is_empty() {
+            badge.0.push_str(" · ");
+        }
+        badge.0.push_str(&arrivals.join(" · "));
+    }
     if let Some(p) = pilot {
         let max = p.flows.values().copied().max().unwrap_or(0).max(1) as f32;
         o.traffic = p
