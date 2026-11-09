@@ -413,9 +413,15 @@ impl Insights {
             };
             let is_bottleneck = self.bottleneck.as_deref() == Some(p.name.as_str());
             let more = p.count + 1;
+            // An overloaded pool did less work than it was given: the estimate is a floor.
             let plus_one = format!(
-                "With {more} instead of {} it would be about {:.0}% busy.",
+                "With {more} instead of {} it would be {}{:.0}% busy.",
                 p.count,
+                if p.load == Load::Saturated {
+                    "at least "
+                } else {
+                    "about "
+                },
                 100.0 * p.utilisation_with(more)
             );
             match p.load {
