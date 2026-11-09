@@ -285,6 +285,20 @@ pub enum SignalScope {
     Global,
 }
 
+/// When an inclusive (OR) join with several incoming flows fires.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum InclusiveJoin {
+    /// BPMN 2.0.2 §13.4.3 (R-13.4.3-01, the default): it fires when at least one incoming flow
+    /// has a token and every token that can still reach an empty incoming flow (without passing
+    /// the join) can also reach a filled one.
+    #[default]
+    Spec,
+    /// The behaviour before M18 (as in Camunda): it waits while any token of the instance can
+    /// still reach the join at all.
+    WaitForUpstream,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ModelSection {
@@ -316,6 +330,9 @@ pub struct SimulationSection {
     pub time_unit: TimeUnit,
     #[serde(default, skip_serializing_if = "is_default_scope")]
     pub signal_scope: SignalScope,
+    /// When inclusive joins fire (default: the BPMN 2.0.2 rule).
+    #[serde(default, skip_serializing_if = "is_default_join")]
+    pub inclusive_join: InclusiveJoin,
     /// Record every token step of the first N cases (for the animated token replay).
     #[serde(default = "default_trace_cases")]
     pub trace_cases: u64,
@@ -323,6 +340,10 @@ pub struct SimulationSection {
 
 fn default_trace_cases() -> u64 {
     100
+}
+
+fn is_default_join(j: &InclusiveJoin) -> bool {
+    *j == InclusiveJoin::Spec
 }
 
 fn is_default_scope(s: &SignalScope) -> bool {
@@ -350,6 +371,7 @@ impl Default for SimulationSection {
             warm_up_cases: 0,
             time_unit: default_time_unit(),
             signal_scope: SignalScope::Case,
+            inclusive_join: InclusiveJoin::Spec,
             trace_cases: default_trace_cases(),
         }
     }
@@ -574,6 +596,7 @@ pub struct BoundModel<'p> {
     pub decisions: BTreeMap<QId, BoundDecision>,
     pub buffer_unconsumed: bool,
     pub signal_scope: SignalScope,
+    pub inclusive_join: InclusiveJoin,
     /// Black-box participant -> reply delay.
     pub black_box_reply: BTreeMap<QId, Dist>,
     /// Delay of externally triggered catch events (timer events, optionally message/signal).
@@ -2047,6 +2070,7 @@ impl Scenario {
             decisions,
             buffer_unconsumed: messages.buffer_unconsumed,
             signal_scope: sim.signal_scope,
+            inclusive_join: sim.inclusive_join,
             black_box_reply,
             events,
             boundaries,

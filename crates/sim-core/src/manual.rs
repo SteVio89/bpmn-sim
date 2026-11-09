@@ -12,6 +12,7 @@ use std::sync::Arc;
 
 use crate::model::*;
 use crate::project::Project;
+use crate::scenario::InclusiveJoin;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TokenState {
@@ -135,7 +136,9 @@ pub struct Game {
     groups: usize,
     buffer: BTreeMap<(usize, QId), usize>,
     joins: BTreeMap<(usize, QId), BTreeMap<QId, VecDeque<u64>>>,
-    or_reach: BTreeMap<QId, BTreeSet<QId>>,
+    or_joins: BTreeMap<QId, crate::engine::OrJoin>,
+    /// When inclusive joins fire (as `simulation.inclusive_join` in a scenario).
+    pub inclusive_join: InclusiveJoin,
     /// What happened, in words.
     pub log: Vec<String>,
     /// Why the case failed (an incident), if it did.
@@ -147,10 +150,10 @@ pub struct Game {
 
 impl Game {
     pub fn new(project: Arc<Project>) -> Self {
-        let or_reach = project
+        let or_joins = project
             .nodes()
             .filter(|n| n.kind == NodeKind::InclusiveGateway && n.incoming.len() > 1)
-            .map(|j| (j.id.clone(), crate::engine::reaching(&project, j)))
+            .map(|j| (j.id.clone(), crate::engine::OrJoin::new(&project, j)))
             .collect();
         Self {
             project,
@@ -164,7 +167,8 @@ impl Game {
             groups: 1,
             buffer: BTreeMap::new(),
             joins: BTreeMap::new(),
-            or_reach,
+            or_joins,
+            inclusive_join: InclusiveJoin::default(),
             log: Vec::new(),
             failure: None,
             rested: BTreeMap::new(),
@@ -1113,7 +1117,7 @@ impl Game {
             .filter(|((i, j), w)| {
                 *i == inst
                     && !self.insts[*i].halted
-                    && self.or_reach.contains_key(j)
+                    && self.or_joins.contains_key(j)
                     && w.values().any(|q| !q.is_empty())
             })
             .map(|(k, _)| k.clone())
@@ -1123,22 +1127,27 @@ impl Game {
             let Some(n) = self.project.node(&key.1).cloned() else {
                 continue;
             };
-            let Some(reach) = self.or_reach.get(&key.1).cloned() else {
-                continue;
-            };
             let waiting: BTreeSet<u64> = self.joins[&key].values().flatten().copied().collect();
             let scopes: BTreeSet<Option<usize>> = waiting
                 .iter()
                 .filter_map(|t| self.tokens.get(t).map(|x| x.scope))
                 .collect();
             for scope in scopes {
-                let blocked = self.tokens.iter().any(|(id, t)| {
-                    t.inst == inst
-                        && !waiting.contains(id)
-                        && t.scope == scope
-                        && reach.contains(&t.node)
-                });
-                if !blocked {
+                let filled: BTreeSet<&QId> = self.joins[&key]
+                    .iter()
+                    .filter(|(_, q)| {
+                        q.iter()
+                            .any(|t| self.tokens.get(t).map(|x| x.scope) == Some(scope))
+                    })
+                    .map(|(f, _)| f)
+                    .collect();
+                let others: Vec<&QId> = self
+                    .tokens
+                    .iter()
+                    .filter(|(id, t)| t.inst == inst && !waiting.contains(id) && t.scope == scope)
+                    .map(|(_, t)| &t.node)
+                    .collect();
+                if self.or_joins[&key.1].ready(self.inclusive_join, &filled, &others) {
                     self.fire_join(&key, &n, Some(scope), work);
                     fired = true;
                 }
@@ -1187,10 +1196,8 @@ impl Game {
                 self.incident(inst, format!("uncaught error '{code}' (R-10.5.1-03)"));
                 return;
             }
-            Some(EventDef::Escalation(code)) => {
-                if !self.raise(tok, false, code.as_deref(), work) {
-                    self.uncaught_escalation(n, code.as_deref());
-                }
+            Some(EventDef::Escalation(code)) if !self.raise(tok, false, code.as_deref(), work) => {
+                self.uncaught_escalation(n, code.as_deref());
             }
             _ => {}
         }

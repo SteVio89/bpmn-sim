@@ -389,3 +389,136 @@ fn d10_r_13_3_4_04_terminate_inside_a_subprocess_lets_the_parent_continue() {
     assert_eq!(ends(&r, "End"), 2);
     assert!(r.failed.is_empty() && r.stuck.is_empty());
 }
+
+// ---------------------------------------------------------------- R-13.4.3-01: inclusive join
+
+/// T1 (10m) reaches the join over F1. T2 (30m) is followed by an XOR that leads back to T1 (so
+/// to F1, the filled flow) or to T3 (5m, then F2, the empty flow). When T1's token arrives,
+/// T2's token can reach the empty flow F2 but also the filled flow F1.
+fn or_join_with_shared_upstream() -> Project {
+    model(
+        r#"
+        <bpmn:startEvent id="Start"/>
+        <bpmn:parallelGateway id="And"/>
+        <bpmn:task id="T1"/><bpmn:task id="T2"/><bpmn:task id="T3"/><bpmn:task id="After"/>
+        <bpmn:exclusiveGateway id="Xor"/>
+        <bpmn:inclusiveGateway id="Join"/>
+        <bpmn:endEvent id="End"/>
+        <bpmn:sequenceFlow id="F0" sourceRef="Start" targetRef="And"/>
+        <bpmn:sequenceFlow id="Fa" sourceRef="And" targetRef="T1"/>
+        <bpmn:sequenceFlow id="Fb" sourceRef="And" targetRef="T2"/>
+        <bpmn:sequenceFlow id="F1" sourceRef="T1" targetRef="Join"/>
+        <bpmn:sequenceFlow id="Fx" sourceRef="T2" targetRef="Xor"/>
+        <bpmn:sequenceFlow id="To_T1" sourceRef="Xor" targetRef="T1"/>
+        <bpmn:sequenceFlow id="To_T3" sourceRef="Xor" targetRef="T3"/>
+        <bpmn:sequenceFlow id="F2" sourceRef="T3" targetRef="Join"/>
+        <bpmn:sequenceFlow id="Fo" sourceRef="Join" targetRef="After"/>
+        <bpmn:sequenceFlow id="Fe" sourceRef="After" targetRef="End"/>"#,
+    )
+}
+
+fn or_join_scenario(option: &str) -> String {
+    base(
+        3,
+        "1h",
+        "\"Start\"",
+        &format!(
+            "{}{}{}{}[gateways.Xor]\nprobabilities = {{ To_T1 = 0.0, To_T3 = 1.0 }}\n",
+            fixed("T1", 10),
+            fixed("T2", 30),
+            fixed("T3", 5),
+            fixed("After", 1)
+        ),
+    )
+    .replace("cases = 3", &format!("cases = 3\n{option}"))
+}
+
+fn after_starts(r: &ReplicationResult) -> Vec<f64> {
+    r.records
+        .iter()
+        .filter(|x| x.activity.id == "After")
+        .map(|x| (x.start - r.cases[x.case as usize].arrival) / MIN)
+        .collect()
+}
+
+#[test]
+fn r_13_4_3_01_inclusive_join_fires_when_waiting_tokens_can_also_reach_a_filled_flow() {
+    // Spec (default): at t=10 T2's token can reach the empty F2 but also the filled F1, so the
+    // join fires at once. T3's token reaches the join at 35 and fires it again on its own.
+    let r = run(&or_join_with_shared_upstream(), &or_join_scenario(""));
+    assert_eq!(r.cases_completed, 3);
+    assert!(r.stuck.is_empty() && r.failed.is_empty());
+    assert_eq!(runs(&r, "After"), 6);
+    assert_eq!(after_starts(&r), vec![10.0, 35.0, 10.0, 35.0, 10.0, 35.0]);
+    // Explicitly set, the same.
+    let r2 = run(
+        &or_join_with_shared_upstream(),
+        &or_join_scenario("inclusive_join = \"spec\""),
+    );
+    assert_eq!(after_starts(&r2), after_starts(&r));
+}
+
+#[test]
+fn r_13_4_3_01_the_old_rule_waits_while_any_token_can_still_arrive() {
+    // inclusive_join = "wait_for_upstream" (before M18, Camunda): the join waits for T2's token
+    // and fires once at 35 with both flows.
+    let r = run(
+        &or_join_with_shared_upstream(),
+        &or_join_scenario("inclusive_join = \"wait_for_upstream\""),
+    );
+    assert_eq!(r.cases_completed, 3);
+    assert_eq!(after_starts(&r), vec![35.0, 35.0, 35.0]);
+}
+
+#[test]
+fn r_13_4_3_01_a_token_that_can_reach_only_an_empty_flow_blocks_the_join() {
+    // or-upstream-like shape: T2's XOR leads only to T3 or to an end event, never to F1.
+    let p = model(
+        r#"
+        <bpmn:startEvent id="Start"/>
+        <bpmn:parallelGateway id="And"/>
+        <bpmn:task id="T1"/><bpmn:task id="T2"/><bpmn:task id="T3"/><bpmn:task id="After"/>
+        <bpmn:exclusiveGateway id="Xor"/>
+        <bpmn:inclusiveGateway id="Join"/>
+        <bpmn:endEvent id="End"/><bpmn:endEvent id="End_X"/>
+        <bpmn:sequenceFlow id="F0" sourceRef="Start" targetRef="And"/>
+        <bpmn:sequenceFlow id="Fa" sourceRef="And" targetRef="T1"/>
+        <bpmn:sequenceFlow id="Fb" sourceRef="And" targetRef="T2"/>
+        <bpmn:sequenceFlow id="F1" sourceRef="T1" targetRef="Join"/>
+        <bpmn:sequenceFlow id="Fx" sourceRef="T2" targetRef="Xor"/>
+        <bpmn:sequenceFlow id="To_T1" sourceRef="Xor" targetRef="End_X"/>
+        <bpmn:sequenceFlow id="To_T3" sourceRef="Xor" targetRef="T3"/>
+        <bpmn:sequenceFlow id="F2" sourceRef="T3" targetRef="Join"/>
+        <bpmn:sequenceFlow id="Fo" sourceRef="Join" targetRef="After"/>
+        <bpmn:sequenceFlow id="Fe" sourceRef="After" targetRef="End"/>"#,
+    );
+    let r = run(&p, &or_join_scenario(""));
+    assert_eq!(after_starts(&r), vec![35.0, 35.0, 35.0]);
+}
+
+fn complete(g: &mut Game, task: &str) {
+    let token = g
+        .pending()
+        .into_iter()
+        .find_map(|p| match p {
+            Pending::Complete { token, task: t } if t == q(task) => Some(token),
+            _ => None,
+        })
+        .unwrap_or_else(|| panic!("{task} is not waiting: {:?}", g.pending()));
+    g.apply(Action::Complete { token }).unwrap();
+}
+
+#[test]
+fn r_13_4_3_01_the_token_game_uses_the_same_join_rule() {
+    let at_after = |g: &Game| g.tokens().iter().any(|t| t.node == q("After"));
+    let mut g = Game::new(Arc::new(or_join_with_shared_upstream()));
+    g.apply(Action::Start { event: q("Start") }).unwrap();
+    complete(&mut g, "T1");
+    assert!(at_after(&g), "spec: the join fires while T2 still runs");
+
+    let mut g = Game::new(Arc::new(or_join_with_shared_upstream()));
+    g.inclusive_join = InclusiveJoin::WaitForUpstream;
+    g.apply(Action::Start { event: q("Start") }).unwrap();
+    complete(&mut g, "T1");
+    assert!(!at_after(&g), "old rule: the join waits for T2's token");
+}

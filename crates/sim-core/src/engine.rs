@@ -17,7 +17,7 @@ use rand_chacha::ChaCha8Rng;
 
 use crate::feel::Value;
 use crate::model::*;
-use crate::scenario::{BoundModel, SignalScope, SplitRule};
+use crate::scenario::{BoundModel, InclusiveJoin, SignalScope, SplitRule};
 use crate::stats::*;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -241,8 +241,8 @@ pub struct Engine<'a> {
     es_subs: BTreeMap<usize, Option<usize>>,
     link_catch: BTreeMap<(QId, String), QId>,
     signal_starts: BTreeMap<String, Vec<QId>>,
-    /// Inclusive join -> every element from which a token can still reach it.
-    or_reach: BTreeMap<QId, BTreeSet<QId>>,
+    /// Inclusive joins with several incoming flows: what can still reach them.
+    or_joins: BTreeMap<QId, OrJoin>,
     /// Elements whose completion a history gateway asks about.
     watched: BTreeSet<QId>,
 }
@@ -316,7 +316,7 @@ impl<'a> Engine<'a> {
                 }
             }
         }
-        let or_reach = m
+        let or_joins = m
             .project
             .nodes()
             .filter(|n| {
@@ -324,7 +324,7 @@ impl<'a> Engine<'a> {
                     && n.kind == NodeKind::InclusiveGateway
                     && n.incoming.len() > 1
             })
-            .map(|j| (j.id.clone(), reaching(m.project, j)))
+            .map(|j| (j.id.clone(), OrJoin::new(m.project, j)))
             .collect();
         Self {
             m,
@@ -375,7 +375,7 @@ impl<'a> Engine<'a> {
             es_subs: BTreeMap::new(),
             link_catch,
             signal_starts,
-            or_reach,
+            or_joins,
             watched: m.history.values().map(|h| h.element.clone()).collect(),
         }
     }
@@ -666,10 +666,10 @@ impl<'a> Engine<'a> {
                                 return;
                             }
                         }
-                        Some(EventDef::Escalation(code)) => {
-                            if !self.raise(inst, tok, false, code.as_deref(), &mut work) {
-                                self.uncaught_escalation(inst, &node_id, code.as_deref());
-                            }
+                        Some(EventDef::Escalation(code))
+                            if !self.raise(inst, tok, false, code.as_deref(), &mut work) =>
+                        {
+                            self.uncaught_escalation(inst, &node_id, code.as_deref());
                         }
                         _ => {}
                     }
@@ -745,25 +745,23 @@ impl<'a> Engine<'a> {
         }
     }
 
-    /// Fire every inclusive join of the instance that no other token (of the same subprocess
-    /// scope) can still reach. Returns whether one fired (then there is new work).
+    /// Fire every inclusive join of the instance that is ready (`OrJoin::ready`, per subprocess
+    /// scope). Returns whether one fired (then there is new work).
     fn fire_or_joins(&mut self, inst: usize, work: &mut Vec<Work>) -> bool {
         let mut fired = false;
         let joins: Vec<QId> = self.instances[inst]
             .joins
             .iter()
             .filter(|(j, flows)| {
-                self.or_reach.contains_key(*j) && flows.values().any(|q| !q.is_empty())
+                self.or_joins.contains_key(*j) && flows.values().any(|q| !q.is_empty())
             })
             .map(|(j, _)| j.clone())
             .collect();
+        let rule = self.m.inclusive_join;
         for j in joins {
             if self.instances[inst].halted {
                 break;
             }
-            let Some(reach) = self.or_reach.get(&j).cloned() else {
-                continue;
-            };
             let i = &self.instances[inst];
             let waiting: BTreeSet<u64> = i.joins[&j].values().flatten().copied().collect();
             let scopes: BTreeSet<Option<usize>> = waiting
@@ -772,24 +770,30 @@ impl<'a> Engine<'a> {
                 .collect();
             for scope in scopes {
                 let i = &self.instances[inst];
-                let blocked = i.tokens.iter().any(|(id, t)| {
-                    !waiting.contains(id) && t.scope == scope && reach.contains(&t.node)
-                });
-                if blocked {
+                let scope_of = |t: &u64| i.tokens.get(t).map(|x| x.scope);
+                let filled: BTreeSet<&QId> = i.joins[&j]
+                    .iter()
+                    .filter(|(_, q)| q.iter().any(|t| scope_of(t) == Some(scope)))
+                    .map(|(f, _)| f)
+                    .collect();
+                let others: Vec<&QId> = i
+                    .tokens
+                    .iter()
+                    .filter(|(id, t)| !waiting.contains(id) && t.scope == scope)
+                    .map(|(_, t)| &t.node)
+                    .collect();
+                if !self.or_joins[&j].ready(rule, &filled, &others) {
                     continue;
                 }
-                // One token per incoming flow (of this scope) is consumed; the first continues.
-                let mut firing = Vec::new();
-                let tokens = &self.instances[inst].tokens;
-                let scope_of = |t: &u64| tokens.get(t).map(|x| x.scope);
+                // One token per filled incoming flow (of this scope) is consumed; the first
+                // continues.
                 let mut picks = Vec::new();
-                if let Some(flows) = self.instances[inst].joins.get(&j) {
-                    for (f, q) in flows {
-                        if let Some(pos) = q.iter().position(|t| scope_of(t) == Some(scope)) {
-                            picks.push((f.clone(), pos));
-                        }
+                for (f, q) in &i.joins[&j] {
+                    if let Some(pos) = q.iter().position(|t| scope_of(t) == Some(scope)) {
+                        picks.push((f.clone(), pos));
                     }
                 }
+                let mut firing = Vec::new();
                 if let Some(flows) = self.instances[inst].joins.get_mut(&j) {
                     for (f, pos) in picks {
                         if let Some(t) = flows.get_mut(&f).and_then(|q| q.remove(pos)) {
@@ -2746,9 +2750,6 @@ impl<'a> Engine<'a> {
     }
 }
 
-/// Every element of the same process (and subprocess level) from which `join` is reachable:
-/// backwards over sequence flows, from link catch events to their link throws, and from
-/// boundary events to the activity they are attached to.
 /// The handler for exactly `code`, else a catch-all one (without a code).
 pub(crate) fn best_match<'q>(
     handlers: &[(&'q QId, Option<&str>)],
@@ -2760,43 +2761,118 @@ pub(crate) fn best_match<'q>(
         .map(|(h, _)| *h)
 }
 
+/// Every element of the same process (and subprocess level) from which `join` is reachable:
+/// backwards over sequence flows, from link catch events to their link throws, and from
+/// boundary events to the activity they are attached to.
 pub(crate) fn reaching(project: &crate::project::Project, join: &FlowNode) -> BTreeSet<QId> {
     let mut seen = BTreeSet::new();
     let mut stack = vec![join.id.clone()];
     while let Some(id) = stack.pop() {
-        let Some(n) = project.node(&id) else { continue };
-        let mut preds: Vec<QId> = n
-            .incoming
-            .iter()
-            .filter_map(|f| project.flow(f))
-            .map(|f| f.source.clone())
-            .collect();
-        if n.kind == NodeKind::IntermediateCatchEvent {
-            for d in &n.event_defs {
-                if let EventDef::Link(name) = d {
-                    preds.extend(
-                        project
-                            .nodes()
-                            .filter(|t| {
-                                t.process == n.process
-                                    && t.kind == NodeKind::IntermediateThrowEvent
-                                    && t.event_defs
-                                        .iter()
-                                        .any(|e| matches!(e, EventDef::Link(l) if l == name))
-                            })
-                            .map(|t| t.id.clone()),
-                    );
-                }
-            }
-        }
-        if let Some(a) = &n.attached_to {
-            preds.push(a.clone());
-        }
-        for p in preds {
+        for p in predecessors(project, &id) {
             if seen.insert(p.clone()) {
                 stack.push(p);
             }
         }
     }
     seen
+}
+
+/// What can still reach an inclusive join with several incoming flows (BPMN 2.0.2 §13.4.3).
+#[derive(Debug, Clone)]
+pub(crate) struct OrJoin {
+    /// Every element from which the join can be reached (for `InclusiveJoin::WaitForUpstream`).
+    upstream: BTreeSet<QId>,
+    /// Incoming flow -> the elements from which a token can reach that flow without passing the
+    /// join (the flow's source included).
+    to_flow: BTreeMap<QId, BTreeSet<QId>>,
+}
+
+impl OrJoin {
+    pub(crate) fn new(project: &crate::project::Project, join: &FlowNode) -> Self {
+        let to_flow = join
+            .incoming
+            .iter()
+            .filter_map(|f| project.flow(f))
+            .map(|f| {
+                let mut seen = BTreeSet::new();
+                if f.source != join.id {
+                    seen.insert(f.source.clone());
+                    let mut stack = vec![f.source.clone()];
+                    while let Some(id) = stack.pop() {
+                        for p in predecessors(project, &id) {
+                            if p != join.id && seen.insert(p.clone()) {
+                                stack.push(p);
+                            }
+                        }
+                    }
+                }
+                (f.id.clone(), seen)
+            })
+            .collect();
+        Self {
+            upstream: reaching(project, join),
+            to_flow,
+        }
+    }
+
+    /// Whether the join fires, given the incoming flows that hold a waiting token (`filled`,
+    /// at least one) and the elements where the other tokens of the same instance and
+    /// subprocess scope are (`others`).
+    ///
+    /// `Spec` (R-13.4.3-01): every token that can reach an empty incoming flow can also reach a
+    /// filled one. `WaitForUpstream`: no other token can reach the join at all.
+    pub(crate) fn ready(
+        &self,
+        rule: InclusiveJoin,
+        filled: &BTreeSet<&QId>,
+        others: &[&QId],
+    ) -> bool {
+        match rule {
+            InclusiveJoin::WaitForUpstream => !others.iter().any(|n| self.upstream.contains(*n)),
+            InclusiveJoin::Spec => others.iter().all(|n| {
+                let reaches = |filled_flow: bool| {
+                    self.to_flow
+                        .iter()
+                        .any(|(f, from)| filled.contains(f) == filled_flow && from.contains(*n))
+                };
+                !reaches(false) || reaches(true)
+            }),
+        }
+    }
+}
+
+/// The elements a token can come from to reach `id`: sources of its incoming flows, link
+/// throw events for a link catch event, the activity of a boundary event.
+fn predecessors(project: &crate::project::Project, id: &QId) -> Vec<QId> {
+    let Some(n) = project.node(id) else {
+        return Vec::new();
+    };
+    let mut preds: Vec<QId> = n
+        .incoming
+        .iter()
+        .filter_map(|f| project.flow(f))
+        .map(|f| f.source.clone())
+        .collect();
+    if n.kind == NodeKind::IntermediateCatchEvent {
+        for d in &n.event_defs {
+            if let EventDef::Link(name) = d {
+                preds.extend(
+                    project
+                        .nodes()
+                        .filter(|t| {
+                            t.process == n.process
+                                && t.kind == NodeKind::IntermediateThrowEvent
+                                && t.event_defs
+                                    .iter()
+                                    .any(|e| matches!(e, EventDef::Link(l) if l == name))
+                        })
+                        .map(|t| t.id.clone()),
+                );
+            }
+        }
+    }
+    if let Some(a) = &n.attached_to {
+        preds.push(a.clone());
+    }
+    preds
 }
