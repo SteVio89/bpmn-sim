@@ -11,7 +11,7 @@ publish = false
 eframe = { version = "0.37.0", features = ["persistence"] }
 egui = "0.37.0"
 egui_plot = "0.38.0"
-rfd = "0.17.2"
+rfd = "0.18.0"
 serde_json = "1.0.154"
 sim-core = { version = "0.5.0", path = "../sim-core" }
 toml = "1.1.8"
